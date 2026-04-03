@@ -1,8 +1,11 @@
 from preflight.domain.models import CommandResult
+from preflight.infrastructure.parsers.cgroup_parser import CgroupParser
 from preflight.infrastructure.parsers.cpu_parser import CpuParser
+from preflight.infrastructure.parsers.irq_parser import IrqParser
 from preflight.infrastructure.parsers.kernel_parser import KernelParser
 from preflight.infrastructure.parsers.memory_parser import MemoryParser
 from preflight.infrastructure.parsers.platform_parser import PlatformParser
+from preflight.infrastructure.parsers.storage_parser import StorageParser
 
 
 def test_platform_parser_normalizes_runtime_state() -> None:
@@ -65,6 +68,70 @@ def test_kernel_parser_extracts_permissions() -> None:
     assert kernel.selinux_mode == "Permissive"
     assert ("net.core.somaxconn", "128") in kernel.sysctl_profile
     assert ("vm.swappiness", "60") in kernel.sysctl_profile
+
+
+def test_storage_parser_converts_readahead_sectors_to_kb() -> None:
+    storage = StorageParser().parse(
+        device_name=CommandResult("dev", 0, "sda", ""),
+        rotational=CommandResult("rot", 0, "0", ""),
+        scheduler=CommandResult("sched", 0, "[mq-deadline] none", ""),
+        readahead=CommandResult("blockdev", 0, "256", ""),
+    )
+
+    assert storage.readahead_kb == 128  # 256 sectors * 512 bytes / 1024 = 128 KiB
+
+
+def test_storage_parser_handles_missing_readahead() -> None:
+    storage = StorageParser().parse(
+        device_name=CommandResult("dev", 0, "sda", ""),
+        rotational=CommandResult("rot", 0, "0", ""),
+        scheduler=CommandResult("sched", 0, "[mq-deadline] none", ""),
+        readahead=CommandResult("blockdev", 1, "", ""),
+    )
+
+    assert storage.readahead_kb == -1
+
+
+def test_irq_parser_detects_active_irqbalance() -> None:
+    irq = IrqParser().parse(
+        irqbalance_status=CommandResult("systemctl", 0, "active", ""),
+        nic_irq_cpu_list=CommandResult("awk", 0, "0-3", ""),
+    )
+
+    assert irq.irqbalance_active is True
+    assert irq.nic_irq_cpu_summary == "0-3"
+
+
+def test_irq_parser_handles_inactive_irqbalance_and_unknown_cpus() -> None:
+    irq = IrqParser().parse(
+        irqbalance_status=CommandResult("systemctl", 1, "inactive", ""),
+        nic_irq_cpu_list=CommandResult("awk", 0, "", ""),
+    )
+
+    assert irq.irqbalance_active is False
+    assert irq.nic_irq_cpu_summary == "unknown"
+
+
+def test_cgroup_parser_detects_v2() -> None:
+    cgroup = CgroupParser().parse(
+        cgroup_fs_type=CommandResult("stat", 0, "cgroup2fs", ""),
+        controllers=CommandResult("cat", 0, "cpuset cpu io memory hugetlb pids rdma misc", ""),
+    )
+
+    assert cgroup.cgroup_version == "v2"
+    assert cgroup.cpu_controller_available is True
+    assert cgroup.memory_controller_available is True
+
+
+def test_cgroup_parser_detects_v1() -> None:
+    cgroup = CgroupParser().parse(
+        cgroup_fs_type=CommandResult("stat", 0, "tmpfs", ""),
+        controllers=CommandResult("cat", 1, "", ""),
+    )
+
+    assert cgroup.cgroup_version == "v1"
+    assert cgroup.cpu_controller_available is False
+    assert cgroup.memory_controller_available is False
 
 
 def test_kernel_parser_sysctl_profile_orders_keys_and_fills_missing() -> None:

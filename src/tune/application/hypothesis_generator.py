@@ -13,6 +13,7 @@ from tune.application.hypothesis_prompt_layer import (
     format_baseline_digest_lines,
     format_candidate_line_for_llm,
     format_contract_digest_lines,
+    format_limit_baseline_lines,
     format_preflight_digest_lines,
     hypothesis_prompt_layer_preamble,
 )
@@ -85,6 +86,8 @@ class HypothesisPromptBuilder:
             *(capability_lines or ["- none"]),
             "Onboard service contract (summary):",
             *format_contract_digest_lines(tune_context),
+            "Limit baselines (prlimit/systemd-unit; check before no-op):",
+            *format_limit_baseline_lines(context.candidates + context.deferred_candidates),
             "Snapshot digest (effective runtime view; truncated, not full dumps):",
             format_snapshot_digest_for_prompt(tune_context.snapshot),
             "Baseline digest:",

@@ -11,7 +11,9 @@ from preflight.domain.models import (
     PlatformInfo,
     TargetConfig,
 )
+from preflight.infrastructure.probes.cgroup_probe import CgroupProbe
 from preflight.infrastructure.probes.cpu_probe import CpuProbe
+from preflight.infrastructure.probes.irq_probe import IrqProbe
 from preflight.infrastructure.probes.kernel_probe import KernelProbe
 from preflight.infrastructure.probes.memory_probe import MemoryProbe
 from preflight.infrastructure.probes.network_probe import NetworkProbe
@@ -28,6 +30,8 @@ class DiscoveryRunner:
     kernel_probe: KernelProbe
     network_probe: NetworkProbe
     storage_probe: StorageProbe
+    irq_probe: IrqProbe
+    cgroup_probe: CgroupProbe
     capability_builder: CapabilityMapBuilder
     benchmark_runner: BenchmarkRunner | None = None
     logger: ExecutionLogger = NullExecutionLogger()
@@ -50,6 +54,10 @@ class DiscoveryRunner:
         network = self.network_probe.collect(executor)
         self.logger.stage_detail("preflight", "Collecting storage information")
         storage = self.storage_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting IRQ information")
+        irq = self.irq_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting cgroup information")
+        cgroup = self.cgroup_probe.collect(executor)
         self.logger.stage_detail("preflight", "Building capability map")
         capability_map = self.capability_builder.build(
             platform=platform,
@@ -58,6 +66,8 @@ class DiscoveryRunner:
             kernel=kernel,
             network=network,
             storage=storage,
+            irq=irq,
+            cgroup=cgroup,
         )
         benchmark_result = None
         if self.benchmark_runner is not None:
@@ -73,6 +83,8 @@ class DiscoveryRunner:
             kernel=kernel,
             network=network,
             storage=storage,
+            irq=irq,
+            cgroup=cgroup,
             capability_map=capability_map,
             benchmark_result=benchmark_result,
             raw_probe_results=None,

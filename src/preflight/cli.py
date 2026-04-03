@@ -22,13 +22,17 @@ from preflight.domain.models import (
 from preflight.infrastructure.config_loader import ConfigLoader
 from preflight.infrastructure.executors.local_executor import LocalCommandExecutor
 from preflight.infrastructure.executors.ssh_executor import SshCommandExecutor
+from preflight.infrastructure.parsers.cgroup_parser import CgroupParser
 from preflight.infrastructure.parsers.cpu_parser import CpuParser
+from preflight.infrastructure.parsers.irq_parser import IrqParser
 from preflight.infrastructure.parsers.kernel_parser import KernelParser
 from preflight.infrastructure.parsers.memory_parser import MemoryParser
 from preflight.infrastructure.parsers.network_parser import NetworkParser
 from preflight.infrastructure.parsers.platform_parser import PlatformParser
 from preflight.infrastructure.parsers.storage_parser import StorageParser
+from preflight.infrastructure.probes.cgroup_probe import CgroupProbe
 from preflight.infrastructure.probes.cpu_probe import CpuProbe
+from preflight.infrastructure.probes.irq_probe import IrqProbe
 from preflight.infrastructure.probes.kernel_probe import KernelProbe
 from preflight.infrastructure.probes.memory_probe import MemoryProbe
 from preflight.infrastructure.probes.network_probe import NetworkProbe
@@ -100,6 +104,8 @@ def build_discovery_runner(
         kernel_probe=KernelProbe(parser=KernelParser()),
         network_probe=NetworkProbe(parser=NetworkParser()),
         storage_probe=StorageProbe(parser=StorageParser()),
+        irq_probe=IrqProbe(parser=IrqParser()),
+        cgroup_probe=CgroupProbe(parser=CgroupParser()),
         capability_builder=CapabilityMapBuilder(),
         logger=logger or NullExecutionLogger(),
     )

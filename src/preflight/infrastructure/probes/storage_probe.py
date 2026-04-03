@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from preflight.domain.models import CommandExecutor, CommandResult, StorageInfo
@@ -41,8 +42,13 @@ class StorageProbe(BaseProbe):
             scheduler=executor.run(
                 f"cat /sys/block/{device_name}/queue/scheduler 2>/dev/null || true"
             ),
+            readahead=executor.run(
+                f"blockdev --getra /dev/{device_name} 2>/dev/null || printf 'unknown'"
+            ),
         )
 
     def _normalize_device_name(self, raw_value: str) -> str:
         cleaned = raw_value.strip().removeprefix("├─").removeprefix("└─").strip()
-        return cleaned or "unknown"
+        if not cleaned or not re.fullmatch(r"[a-zA-Z0-9._-]+", cleaned):
+            return "unknown"
+        return cleaned

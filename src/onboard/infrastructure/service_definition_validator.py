@@ -130,6 +130,7 @@ class ServiceDefinitionValidator:
         ring_layer_raw = data.get("network_ring_tuning_layer")
         runtime_limits_raw = cast(dict[str, Any], data.get("runtime_limits", {}))
         systemd_limits_raw = cast(dict[str, Any], data.get("systemd_unit_limits", {}))
+        cgroup_controls_raw = cast(dict[str, Any], data.get("cgroup_resource_controls", {}))
         return ServiceTunableSurface(
             allowed_directives={
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
@@ -148,6 +149,10 @@ class ServiceDefinitionValidator:
                 for name, value in systemd_limits_raw.items()
             },
             network_ring_tuning_layer=self._optional_tuning_layer_string(ring_layer_raw),
+            cgroup_resource_controls={
+                name: self._parse_directive_constraint(cast(dict[str, Any], value))
+                for name, value in cgroup_controls_raw.items()
+            },
         )
 
     def _parse_relevant_sysctls(self, value: object) -> tuple[SysctlTunable, ...]:

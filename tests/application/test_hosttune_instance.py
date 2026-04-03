@@ -12,10 +12,12 @@ from preflight.application.hosttune_instance import HostTuneInstance
 from preflight.domain.kernel_sysctl_profile import PREFLIGHT_SYSCTL_KEYS
 from preflight.domain.models import (
     CapabilityMap,
+    CgroupInfo,
     CommandResult,
     CpuInfo,
     DiscoverySnapshot,
     EngagementPolicy,
+    IrqInfo,
     KernelInfo,
     LocalTargetConfig,
     MemoryInfo,
@@ -100,6 +102,12 @@ class FakeRunner:
                 device_type="ssd",
                 scheduler="[mq-deadline] none",
                 scheduler_meaningful=True,
+            ),
+            irq=IrqInfo(irqbalance_active=True, nic_irq_cpu_summary="0-7"),
+            cgroup=CgroupInfo(
+                cgroup_version="v2",
+                cpu_controller_available=True,
+                memory_controller_available=True,
             ),
             capability_map=CapabilityMap(flags=()),
         )

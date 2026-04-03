@@ -47,6 +47,7 @@ def test_storage_parser_extracts_device_capabilities() -> None:
         device_name=CommandResult("device", 0, "nvme0n1", ""),
         rotational=CommandResult("rot", 0, "0", ""),
         scheduler=CommandResult("sched", 0, "[none] mq-deadline", ""),
+        readahead=CommandResult("blockdev", 0, "256", ""),
     )
 
     assert storage.device_type == "nvme"
@@ -58,6 +59,7 @@ def test_storage_parser_detects_device_mapper_backing_disk() -> None:
         device_name=CommandResult("device", 0, "sda", ""),
         rotational=CommandResult("rot", 0, "0", ""),
         scheduler=CommandResult("sched", 0, "none [mq-deadline] kyber bfq", ""),
+        readahead=CommandResult("blockdev", 0, "256", ""),
     )
 
     assert storage.device_name == "sda"
@@ -69,6 +71,7 @@ def test_storage_parser_detects_virtio_devices() -> None:
         device_name=CommandResult("device", 0, "vda", ""),
         rotational=CommandResult("rot", 0, "0", ""),
         scheduler=CommandResult("sched", 0, "[mq-deadline] none", ""),
+        readahead=CommandResult("blockdev", 0, "256", ""),
     )
 
     assert storage.device_type == "virtio"
@@ -80,11 +83,13 @@ def test_storage_parser_detects_rotational_and_unknown_devices() -> None:
         device_name=CommandResult("device", 0, "sdb", ""),
         rotational=CommandResult("rot", 0, "1", ""),
         scheduler=CommandResult("sched", 0, "mq-deadline [bfq]", ""),
+        readahead=CommandResult("blockdev", 0, "256", ""),
     )
     unknown = StorageParser().parse(
         device_name=CommandResult("device", 0, "dm-0", ""),
         rotational=CommandResult("rot", 0, "x", ""),
         scheduler=CommandResult("sched", 0, "", ""),
+        readahead=CommandResult("blockdev", 1, "", ""),
     )
 
     assert rotational.device_type == "rotational"

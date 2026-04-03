@@ -2,9 +2,11 @@ from preflight.application.discovery_runner import DiscoveryRunner
 from preflight.domain.capability_builder import CapabilityMapBuilder
 from preflight.domain.models import (
     BenchmarkResult,
+    CgroupInfo,
     CommandResult,
     CpuInfo,
     EngagementPolicy,
+    IrqInfo,
     KernelInfo,
     LocalTargetConfig,
     MemoryInfo,
@@ -98,6 +100,20 @@ class FakeStorageProbe:
         )
 
 
+class FakeIrqProbe:
+    def collect(self, _executor: FakeExecutor) -> IrqInfo:
+        return IrqInfo(irqbalance_active=True, nic_irq_cpu_summary="0-7")
+
+
+class FakeCgroupProbe:
+    def collect(self, _executor: FakeExecutor) -> CgroupInfo:
+        return CgroupInfo(
+            cgroup_version="v2",
+            cpu_controller_available=True,
+            memory_controller_available=True,
+        )
+
+
 def test_runner_builds_snapshot() -> None:
     executor = FakeExecutor()
     runner = DiscoveryRunner(
@@ -107,6 +123,8 @@ def test_runner_builds_snapshot() -> None:
         kernel_probe=FakeKernelProbe(),
         network_probe=FakeNetworkProbe(),
         storage_probe=FakeStorageProbe(),
+        irq_probe=FakeIrqProbe(),
+        cgroup_probe=FakeCgroupProbe(),
         capability_builder=CapabilityMapBuilder(),
         benchmark_runner=FakeBenchmarkRunner(),
     )
@@ -128,4 +146,4 @@ def test_runner_builds_snapshot() -> None:
     assert snapshot.network.driver_name == "ixgbe"
     assert snapshot.storage.device_name == "sda"
     assert snapshot.benchmark_result is not None
-    assert len(snapshot.capability_map.flags) == 11
+    assert len(snapshot.capability_map.flags) == 13

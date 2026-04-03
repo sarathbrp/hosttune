@@ -7,9 +7,11 @@ from onboard.infrastructure.service_compatibility_evaluator import ServiceCompat
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.domain.models import (
     CapabilityMap,
+    CgroupInfo,
     CpuInfo,
     DiscoverySnapshot,
     EngagementPolicy,
+    IrqInfo,
     KernelInfo,
     LocalTargetConfig,
     MemoryInfo,
@@ -56,6 +58,8 @@ def build_preflight_snapshot(os_name: str = "Red Hat Enterprise Linux 9.4") -> D
         kernel=KernelInfo(True, "Enforcing", "unknown"),
         network=NetworkInfo("eth0", "ixgbe", "1.2.3", 512, 4096, 512, 4096, 8, True),
         storage=StorageInfo("sda", "ssd", "[mq-deadline] none", True),
+        irq=IrqInfo(irqbalance_active=False, nic_irq_cpu_summary="unknown"),
+        cgroup=CgroupInfo(cgroup_version="unknown", cpu_controller_available=False, memory_controller_available=False),
         capability_map=CapabilityMap(flags=()),
     )
 

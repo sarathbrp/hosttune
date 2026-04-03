@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
@@ -140,6 +140,10 @@ class ServiceTunableSurface:
     systemd_unit_limits: dict[str, DirectiveConstraint]
     # Optional YAML override for network.ring.* catalog entries (rx/tx).
     network_ring_tuning_layer: str | None = None
+    # systemd cgroup resource controls (CPUQuota, MemoryMax) via systemctl set-property.
+    # YAML keys: cpu_quota_percent -> CPUQuota=N%, memory_max_mib -> MemoryMax=NM.
+    # Requires cgroup v2 (cgroup_resource_control capability flag). No applier yet.
+    cgroup_resource_controls: dict[str, DirectiveConstraint] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

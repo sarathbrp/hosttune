@@ -72,6 +72,9 @@ def test_storage_probe_collects_storage_info() -> None:
             "cat /sys/block/sda/queue/scheduler 2>/dev/null || true": CommandResult(
                 "sched", 0, "[mq-deadline] none", ""
             ),
+            "blockdev --getra /dev/sda 2>/dev/null || printf 'unknown'": CommandResult(
+                "blockdev", 0, "256", ""
+            ),
         }
     )
 
@@ -79,6 +82,7 @@ def test_storage_probe_collects_storage_info() -> None:
 
     assert storage.device_name == "sda"
     assert storage.scheduler_meaningful is True
+    assert storage.readahead_kb == 128
 
 
 def test_storage_probe_normalizes_tree_glyph_device_name() -> None:
@@ -93,6 +97,9 @@ def test_storage_probe_normalizes_tree_glyph_device_name() -> None:
             ),
             "cat /sys/block/sda/queue/scheduler 2>/dev/null || true": CommandResult(
                 "sched", 0, "none [mq-deadline] kyber bfq", ""
+            ),
+            "blockdev --getra /dev/sda 2>/dev/null || printf 'unknown'": CommandResult(
+                "blockdev", 0, "512", ""
             ),
         }
     )

@@ -120,6 +120,21 @@ class StorageInfo:
     device_type: str
     scheduler: str
     scheduler_meaningful: bool
+    readahead_kb: int = 0
+
+
+@dataclass(frozen=True)
+class IrqInfo:
+    irqbalance_active: bool
+    # Comma-separated CPU ranges from smp_affinity_list for the default NIC's IRQs, e.g. "0-3".
+    nic_irq_cpu_summary: str
+
+
+@dataclass(frozen=True)
+class CgroupInfo:
+    cgroup_version: str  # "v1", "v2", or "unknown"
+    cpu_controller_available: bool
+    memory_controller_available: bool
 
 
 @dataclass(frozen=True)
@@ -133,6 +148,8 @@ class DiscoverySnapshot:
     kernel: KernelInfo
     network: NetworkInfo
     storage: StorageInfo
+    irq: IrqInfo
+    cgroup: CgroupInfo
     capability_map: CapabilityMap
     benchmark_result: BenchmarkResult | None = None
     raw_probe_results: dict[str, CommandResult] | None = None

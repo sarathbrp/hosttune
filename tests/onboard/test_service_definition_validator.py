@@ -50,6 +50,7 @@ def build_valid_definition() -> dict[str, object]:
                 "service_config": "reload",
                 "runtime_limits": "reload",
                 "systemd_unit_limits": "restart",
+                "cgroup_resource_controls": "restart",
             },
             "drain_policy": "best_effort",
             "dependency_chain": [],
@@ -113,11 +114,40 @@ def build_valid_definition() -> dict[str, object]:
                 },
             },
             "systemd_unit_limits": {
+                "limit_nofile": {
+                    "value_type": "integer",
+                    "priority_tier": "high",
+                    "min_value": 65535,
+                    "max_value": 2097152,
+                    "allowed_values": [],
+                    "forbidden_values": [],
+                    "apply_mode": "restart",
+                },
                 "limit_nproc": {
                     "value_type": "integer",
                     "priority_tier": "medium",
                     "min_value": 64,
                     "max_value": 655350,
+                    "allowed_values": [],
+                    "forbidden_values": [],
+                    "apply_mode": "restart",
+                },
+            },
+            "cgroup_resource_controls": {
+                "cpu_quota_percent": {
+                    "value_type": "integer",
+                    "priority_tier": "medium",
+                    "min_value": 10,
+                    "max_value": 400,
+                    "allowed_values": [],
+                    "forbidden_values": [],
+                    "apply_mode": "restart",
+                },
+                "memory_max_mib": {
+                    "value_type": "integer",
+                    "priority_tier": "low",
+                    "min_value": 64,
+                    "max_value": 65536,
                     "allowed_values": [],
                     "forbidden_values": [],
                     "apply_mode": "restart",
@@ -150,9 +180,13 @@ def test_validator_builds_typed_service_definition() -> None:
         PriorityTier.MEDIUM,
     ]
     assert "nofile_soft" in definition.tunable_surface.runtime_limits
+    assert "limit_nofile" in definition.tunable_surface.systemd_unit_limits
     assert "limit_nproc" in definition.tunable_surface.systemd_unit_limits
+    assert "cpu_quota_percent" in definition.tunable_surface.cgroup_resource_controls
+    assert "memory_max_mib" in definition.tunable_surface.cgroup_resource_controls
     assert definition.restart.change_categories["runtime_limits"] is ApplyMode.RELOAD
     assert definition.restart.change_categories["systemd_unit_limits"] is ApplyMode.RESTART
+    assert definition.restart.change_categories["cgroup_resource_controls"] is ApplyMode.RESTART
 
 
 def test_validator_parses_sysctl_strings_as_high_tier() -> None:

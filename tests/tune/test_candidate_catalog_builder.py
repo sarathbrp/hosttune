@@ -7,11 +7,13 @@ from onboard.infrastructure.service_definition_validator import ServiceDefinitio
 from preflight.domain.models import (
     CapabilityFlag,
     CapabilityMap,
+    CgroupInfo,
     CommandExecutor,
     CommandResult,
     CpuInfo,
     DiscoverySnapshot,
     EngagementPolicy,
+    IrqInfo,
     KernelInfo,
     LocalTargetConfig,
     MemoryInfo,
@@ -76,7 +78,9 @@ def build_tune_context() -> TuneContext:
         kernel=KernelInfo(True, "Permissive", "unknown"),
         network=NetworkInfo("eth0", "ixgbe", "1.0.0", 512, 4096, 512, 4096, 8, True),
         storage=StorageInfo("sda", "ssd", "[none] mq-deadline", True),
-        capability_map=        CapabilityMap(
+        irq=IrqInfo(irqbalance_active=False, nic_irq_cpu_summary="unknown"),
+        cgroup=CgroupInfo(cgroup_version="unknown", cpu_controller_available=False, memory_controller_available=False),
+        capability_map=CapabilityMap(
             flags=(
                 CapabilityFlag("kernel_sysctl_tuning", True, "supported"),
                 CapabilityFlag("network_ring_buffer_tuning", True, "supported"),

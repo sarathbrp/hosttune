@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from preflight.domain.models import (
     CapabilityFlag,
     CapabilityMap,
+    CgroupInfo,
     CpuInfo,
+    IrqInfo,
     KernelInfo,
     MemoryInfo,
     NetworkInfo,
@@ -24,6 +26,8 @@ class CapabilityMapBuilder:
         kernel: KernelInfo,
         network: NetworkInfo,
         storage: StorageInfo,
+        irq: IrqInfo,
+        cgroup: CgroupInfo,
     ) -> CapabilityMap:
         flags = (
             CapabilityFlag(
@@ -100,6 +104,23 @@ class CapabilityMapBuilder:
                 detail=(
                     f"device={storage.device_name}, device_type={storage.device_type}, "
                     f"scheduler={storage.scheduler}"
+                ),
+            ),
+            CapabilityFlag(
+                name="irq_affinity_tuning",
+                available=not platform.is_container and irq.nic_irq_cpu_summary != "unknown",
+                detail=(
+                    f"irqbalance_active={irq.irqbalance_active}, "
+                    f"nic_irq_cpus={irq.nic_irq_cpu_summary}"
+                ),
+            ),
+            CapabilityFlag(
+                name="cgroup_resource_control",
+                available=cgroup.cgroup_version == "v2" and not platform.is_container,
+                detail=(
+                    f"cgroup_version={cgroup.cgroup_version}, "
+                    f"cpu_controller={cgroup.cpu_controller_available}, "
+                    f"memory_controller={cgroup.memory_controller_available}"
                 ),
             ),
             CapabilityFlag(

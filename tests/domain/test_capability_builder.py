@@ -1,6 +1,8 @@
 from preflight.domain.capability_builder import CapabilityMapBuilder
 from preflight.domain.models import (
+    CgroupInfo,
     CpuInfo,
+    IrqInfo,
     KernelInfo,
     MemoryInfo,
     NetworkInfo,
@@ -54,6 +56,12 @@ def test_capability_builder_marks_bare_metal_numa_as_available() -> None:
             device_type="ssd",
             scheduler="[mq-deadline] none",
             scheduler_meaningful=True,
+        ),
+        irq=IrqInfo(irqbalance_active=True, nic_irq_cpu_summary="0-7"),
+        cgroup=CgroupInfo(
+            cgroup_version="v2",
+            cpu_controller_available=True,
+            memory_controller_available=True,
         ),
     )
 
@@ -112,6 +120,12 @@ def test_capability_builder_restricts_container_tuning() -> None:
             device_type="nvme",
             scheduler="[none] mq-deadline",
             scheduler_meaningful=False,
+        ),
+        irq=IrqInfo(irqbalance_active=False, nic_irq_cpu_summary="unknown"),
+        cgroup=CgroupInfo(
+            cgroup_version="v1",
+            cpu_controller_available=False,
+            memory_controller_available=False,
         ),
     )
 

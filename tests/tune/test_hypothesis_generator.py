@@ -45,7 +45,11 @@ class FakeModelClient:
         assert "forbidden=" not in prompt
         assert "priority=high" in prompt
         assert "runtime_limits=nofile_soft" in prompt
-        assert "systemd_unit_limits=limit_nproc" in prompt
+        assert "systemd_unit_limits=limit_nofile, limit_nproc" in prompt
+        assert "cgroup_resource_controls=cpu_quota_percent, memory_max_mib" in prompt
+        assert "Limit baselines" in prompt
+        assert "runtime.prlimit.nofile_soft" in prompt
+        assert "systemd.unit.limit_nproc" in prompt
         assert "Snapshot digest" in prompt
         assert "nginx -T" in prompt
         assert "process_state" in prompt

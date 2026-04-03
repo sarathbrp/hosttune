@@ -11,10 +11,12 @@ from preflight.domain.models import (
     BenchmarkResult,
     CapabilityFlag,
     CapabilityMap,
+    CgroupInfo,
     CommandResult,
     CpuInfo,
     DiscoverySnapshot,
     EngagementPolicy,
+    IrqInfo,
     KernelInfo,
     LocalTargetConfig,
     MemoryInfo,
@@ -62,6 +64,8 @@ def build_snapshot() -> DiscoverySnapshot:
         kernel=KernelInfo(True, "Permissive", "throughput-performance"),
         network=NetworkInfo("eth0", "ixgbe", "1.0.0", 512, 4096, 512, 4096, 8, True),
         storage=StorageInfo("sda", "ssd", "[mq-deadline] none", True),
+        irq=IrqInfo(irqbalance_active=False, nic_irq_cpu_summary="unknown"),
+        cgroup=CgroupInfo(cgroup_version="unknown", cpu_controller_available=False, memory_controller_available=False),
         capability_map=CapabilityMap(
             flags=(CapabilityFlag(name="irq_affinity", available=True, detail="supported"),)
         ),
