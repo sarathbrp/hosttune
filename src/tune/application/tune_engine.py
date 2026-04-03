@@ -100,6 +100,7 @@ class TuneEngine:
                     ),
                 )
             self.recorder.record(context, record)
+            self.recorder.record_scoreboard(context, state.scoreboard)
         self.logger.stage_end("tune")
         return state
 

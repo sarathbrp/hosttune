@@ -3,9 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from tune.domain.apply_models import AppliedChange
-from tune.domain.evaluation_models import EvaluationResult
+from tune.domain.evaluation_models import EvaluationDecision, EvaluationResult
 from tune.domain.hypothesis_models import HypothesisRecord, TunePhase
 from tune.domain.iteration_record import TuneIterationRecord
+from tune.domain.scoreboard_models import (
+    DomainImpactScore,
+    ParameterImpactScore,
+    TuneScoreboard,
+    WorkloadImpactScore,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +32,7 @@ class TuneState:
     active_changes: dict[str, AppliedChange] = field(default_factory=dict)
     best_configuration: BestKnownConfiguration | None = None
     drift_detected: bool = False
+    scoreboard: TuneScoreboard = field(default_factory=TuneScoreboard)
 
     @classmethod
     def initialize(cls: type[TuneState], max_iterations: int) -> TuneState:
@@ -78,6 +85,7 @@ class TuneState:
         if record.evaluation_result is not None:
             self.drift_detected = self.drift_detected or record.evaluation_result.drift_detected
             self._update_best_configuration(record.evaluation_result, record)
+            self._update_scoreboard(record)
 
     def _update_best_configuration(
         self,
@@ -99,3 +107,90 @@ class TuneState:
             parameter_values=parameter_values,
             iteration_number=record.iteration_number,
         )
+
+    def _update_scoreboard(self, record: TuneIterationRecord) -> None:
+        evaluation_result = record.evaluation_result
+        if evaluation_result is None or not evaluation_result.workload_evaluations:
+            return
+
+        parameter_key = record.hypothesis.parameter_key
+        domain = record.hypothesis.domain
+        average_change = sum(
+            item.relative_change for item in evaluation_result.workload_evaluations
+        ) / len(evaluation_result.workload_evaluations)
+
+        parameter_score = self.scoreboard.parameter_scores.setdefault(
+            parameter_key,
+            ParameterImpactScore(parameter_key=parameter_key, domain=domain),
+        )
+        parameter_score.evaluated_count += 1
+        parameter_score.average_relative_change = self._rolling_average(
+            previous_average=parameter_score.average_relative_change,
+            previous_count=parameter_score.evaluated_count - 1,
+            new_value=average_change,
+        )
+        parameter_score.best_relative_change = max(
+            parameter_score.best_relative_change,
+            average_change,
+        )
+        parameter_score.worst_relative_change = min(
+            parameter_score.worst_relative_change,
+            average_change,
+        )
+        self._increment_decision_count(parameter_score, evaluation_result.decision)
+
+        domain_score = self.scoreboard.domain_scores.setdefault(
+            domain,
+            DomainImpactScore(domain=domain),
+        )
+        domain_score.evaluated_count += 1
+        domain_score.average_relative_change = self._rolling_average(
+            previous_average=domain_score.average_relative_change,
+            previous_count=domain_score.evaluated_count - 1,
+            new_value=average_change,
+        )
+        self._increment_decision_count(domain_score, evaluation_result.decision)
+        if parameter_key not in domain_score.parameter_keys:
+            domain_score.parameter_keys = (*domain_score.parameter_keys, parameter_key)
+
+        for workload_evaluation in evaluation_result.workload_evaluations:
+            workload_score = self.scoreboard.workload_scores.setdefault(
+                workload_evaluation.workload_name,
+                WorkloadImpactScore(workload_name=workload_evaluation.workload_name),
+            )
+            if (
+                workload_score.best_parameter_key is None
+                or workload_evaluation.relative_change > workload_score.best_relative_change
+            ):
+                workload_score.best_parameter_key = parameter_key
+                workload_score.best_relative_change = workload_evaluation.relative_change
+            if (
+                workload_score.worst_parameter_key is None
+                or workload_evaluation.relative_change < workload_score.worst_relative_change
+            ):
+                workload_score.worst_parameter_key = parameter_key
+                workload_score.worst_relative_change = workload_evaluation.relative_change
+            if workload_evaluation.relative_change > 0.0:
+                workload_score.win_count += 1
+            if workload_evaluation.relative_change < 0.0:
+                workload_score.loss_count += 1
+
+    def _increment_decision_count(
+        self,
+        score: ParameterImpactScore | DomainImpactScore,
+        decision: EvaluationDecision,
+    ) -> None:
+        if decision is EvaluationDecision.ACCEPT:
+            score.accepted_count += 1
+        elif decision is EvaluationDecision.REJECT:
+            score.rejected_count += 1
+        else:
+            score.inconclusive_count += 1
+
+    def _rolling_average(
+        self,
+        previous_average: float,
+        previous_count: int,
+        new_value: float,
+    ) -> float:
+        return ((previous_average * previous_count) + new_value) / (previous_count + 1)

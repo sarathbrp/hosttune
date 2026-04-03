@@ -54,10 +54,10 @@ class TargetExecutorDouble:
                 stdout=f"worker_processes {self.directive_value};",
                 stderr="",
             )
-        if command.startswith("perl -0pi -e"):
-            if "worker_processes 56;" in command:
+        if command.startswith("python3 -c "):
+            if command.endswith("/etc/nginx/nginx.conf worker_processes 56"):
                 self.directive_value = "56"
-            if "worker_processes 112;" in command:
+            if command.endswith("/etc/nginx/nginx.conf worker_processes 112"):
                 self.directive_value = "112"
             return CommandResult(command=command, exit_code=0, stdout="", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
