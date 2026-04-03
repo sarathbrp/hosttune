@@ -31,7 +31,9 @@ class FakeModelClient:
     def __init__(self, response: dict[str, object]) -> None:
         self._response = response
 
-    def complete(self, prompt: str) -> ModelCompletion:
+    def complete(self, context: HypothesisContext) -> ModelCompletion:
+        # Build the full monolithic prompt to validate its contents.
+        prompt = HypothesisPromptBuilder().build(context)
         assert "Selectable candidates (this phase):" in prompt
         assert "Deferred candidates" in prompt
         assert "Context policy:" in prompt
@@ -132,7 +134,7 @@ def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
                 "rationale": "Match worker count to a balanced subset of logical cores.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
     )
 
     hypothesis = generator.generate(context)
@@ -156,13 +158,13 @@ def test_llm_hypothesis_generator_logs_prompt_and_response_in_debug() -> None:
                 "rationale": "Match worker count to a balanced subset of logical cores.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
         logger=logger,
     )
 
     generator.generate(context)
 
-    assert any("LLM prompt:" in message for message in logger.messages)
+    assert any("LLM call:" in message for message in logger.messages)
     assert any("LLM raw response:" in message for message in logger.messages)
     assert any("LLM parsed payload:" in message for message in logger.messages)
 
@@ -177,7 +179,7 @@ def test_llm_hypothesis_generator_does_not_log_prompt_in_verbose() -> None:
                 "rationale": "Match worker count to a balanced subset of logical cores.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
         logger=VerboseExecutionLogger(),
     )
 
@@ -196,7 +198,7 @@ def test_llm_hypothesis_generator_rejects_unknown_parameter() -> None:
                 "rationale": "Try something unsupported.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
     )
 
     with pytest.raises(ValueError, match="unsupported parameter_key"):
@@ -213,7 +215,7 @@ def test_llm_hypothesis_generator_rejects_noop_value() -> None:
                 "rationale": "Repeat the current value.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
     )
 
     with pytest.raises(ValueError, match="no-op value"):
@@ -231,7 +233,7 @@ def test_llm_hypothesis_generator_passes_forbidden_value_to_pre_apply_gate() -> 
                 "rationale": "Try a known-bad setting.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
     )
 
     hypothesis = generator.generate(context)
@@ -250,7 +252,7 @@ def test_llm_hypothesis_generator_accepts_numeric_proposed_value() -> None:
                 "rationale": "Return a numeric JSON value.",
             }
         ),
-        prompt_builder=HypothesisPromptBuilder(),
+
     )
 
     hypothesis = generator.generate(context)

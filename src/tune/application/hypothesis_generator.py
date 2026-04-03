@@ -28,7 +28,7 @@ from tune.domain.hypothesis_models import (
 
 
 class HypothesisModelClient(Protocol):
-    def complete(self, prompt: str) -> ModelCompletion:
+    def complete(self, context: HypothesisContext) -> ModelCompletion:
         """Return a serialized hypothesis proposal plus optional model usage."""
 
 
@@ -128,13 +128,15 @@ class HypothesisPromptBuilder:
 @dataclass
 class LlmHypothesisGenerator:
     model_client: HypothesisModelClient
-    prompt_builder: HypothesisPromptBuilder
     logger: ExecutionLogger = NullExecutionLogger()
 
     def generate(self, context: HypothesisContext) -> TuningHypothesis:
-        prompt = self.prompt_builder.build(context)
-        self._debug_log("LLM prompt", prompt)
-        response = self.model_client.complete(prompt)
+        self._debug_log(
+            "LLM call",
+            f"phase={context.phase.value} iteration={context.iteration_number} "
+            f"candidates={len(context.candidates)}",
+        )
+        response = self.model_client.complete(context)
         self._debug_log("LLM raw response", response.content)
         payload = json.loads(response.content)
         self._debug_log("LLM parsed payload", json.dumps(payload, sort_keys=True))

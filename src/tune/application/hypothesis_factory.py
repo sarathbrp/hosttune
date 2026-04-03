@@ -17,7 +17,9 @@ def build_langgraph_hypothesis_generator(
 ) -> LlmHypothesisGenerator:
     config = ModelEndpointConfigLoader().load(env_path)
     return LlmHypothesisGenerator(
-        model_client=LangGraphHypothesisClient(config=config),
-        prompt_builder=HypothesisPromptBuilder(),
+        model_client=LangGraphHypothesisClient(
+            config=config,
+            prompt_builder=HypothesisPromptBuilder(),
+        ),
         logger=logger or NullExecutionLogger(),
     )

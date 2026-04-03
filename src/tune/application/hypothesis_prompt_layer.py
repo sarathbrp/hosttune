@@ -9,9 +9,20 @@ from __future__ import annotations
 
 from preflight.domain.kernel_sysctl_profile import format_sysctl_profile_compact
 from preflight.domain.models import DiscoverySnapshot
-from tune.application.benchmark_runtime_telemetry import truncate_for_prompt
-from tune.domain.hypothesis_models import CandidateParameter, CandidateSource
+from tune.application.benchmark_runtime_telemetry import (
+    format_runtime_telemetry_digest,
+    truncate_for_prompt,
+)
+from tune.application.snapshot_prompt_digest import format_snapshot_digest_for_prompt
+from tune.domain.hypothesis_context import HypothesisContext
+from tune.domain.hypothesis_models import (
+    CandidateParameter,
+    CandidateSource,
+    HypothesisRecord,
+    TunePhase,
+)
 from tune.domain.tune_context import TuneContext
+from tune.domain.tuning_layer import TuningLayer
 
 _LIMIT_SOURCES = frozenset({CandidateSource.RUNTIME_PRLIMIT, CandidateSource.SYSTEMD_UNIT_LIMIT})
 
@@ -158,6 +169,158 @@ def format_limit_baseline_lines(candidates: tuple[CandidateParameter, ...]) -> l
         if c.source in _LIMIT_SOURCES
     ]
     return lines or ["- (no limit candidates in catalog)"]
+
+
+_SERVICE_LAYERS = frozenset({TuningLayer.SERVICE, TuningLayer.RUNTIME})
+_RHEL_LAYERS = frozenset({TuningLayer.KERNEL, TuningLayer.NETWORK})
+_TELEMETRY_MAX_SECTION = 420
+
+_PHASE_OBJECTIVES: dict[TunePhase, str] = {
+    TunePhase.WIDE_SWEEP: "Explore broadly across domains with maximum diversity.",
+    TunePhase.DOMAIN_FOCUS: "Focus on domains that have shown positive signal.",
+    TunePhase.INTERACTION: "Explore interactions between promising parameters.",
+    TunePhase.BOUNDARY_PUSH: "Push promising parameters toward safe limits.",
+    TunePhase.EXPLOIT: "Refine around the current best configuration.",
+    TunePhase.REBOOT_BATCH: "Apply reboot-required parameters as a batch.",
+}
+
+
+def _format_history_lines(history: tuple[HypothesisRecord, ...]) -> list[str]:
+    _hist_eval_max = 180
+    return [
+        (
+            f"- iteration={r.iteration_number}; phase={r.phase.value}; "
+            f"parameter_key={r.hypothesis.parameter_key}; value={r.hypothesis.proposed_value}; "
+            f"status={r.status.value}; "
+            f"evaluation={truncate_for_prompt(r.evaluation_summary or '', _hist_eval_max)}"
+        )
+        for r in history
+    ] or ["- none"]
+
+
+def format_service_expert_prompt(context: HypothesisContext) -> str:
+    """Prompt for the service configuration expert (service/runtime layer candidates only)."""
+    tune_context = context.tune_context
+    phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
+    service_candidates = [c for c in context.candidates if c.tuning_layer in _SERVICE_LAYERS]
+    service_deferred = [c for c in context.deferred_candidates if c.tuning_layer in _SERVICE_LAYERS]
+    limit_candidates = context.candidates + context.deferred_candidates
+    candidate_lines = [format_candidate_line_for_llm(c) for c in service_candidates]
+    deferred_lines = [format_candidate_line_for_llm(c) for c in service_deferred]
+    sections = [
+        "You are the service configuration expert for HostTune.",
+        "Your domain: service-level and runtime parameters "
+        "(application directives, fd limits, process limits, keepalive settings).",
+        "Select ONE candidate from the service/runtime list below.",
+        "Return strict JSON: "
+        '{"parameter_key": "...", "proposed_value": "...", "rationale": "...", '
+        '"confidence": "high|medium|low"}',
+        f"Current phase: {context.phase.value}",
+        f"Phase objective: {phase_obj}",
+        f"Iteration: {context.iteration_number}",
+        "Service contract (your domain):",
+        *format_contract_digest_lines(tune_context),
+        "Limit baselines (current prlimit/systemd-unit values):",
+        *format_limit_baseline_lines(limit_candidates),
+        "Snapshot digest:",
+        format_snapshot_digest_for_prompt(tune_context.snapshot),
+        "Baseline workload results:",
+        *format_baseline_digest_lines(tune_context),
+        "Prior history:",
+        *_format_history_lines(context.history),
+        "Service/runtime candidates (YOUR DOMAIN — pick from this list only):",
+        *(candidate_lines or ["- none"]),
+        "Deferred service/runtime candidates (reboot-required):",
+        *(deferred_lines or ["- none"]),
+    ]
+    return "\n".join(sections)
+
+
+def format_rhel_expert_prompt(context: HypothesisContext) -> str:
+    """Prompt for the RHEL system tuning expert (kernel/network layer candidates only)."""
+    tune_context = context.tune_context
+    phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
+    rhel_candidates = [c for c in context.candidates if c.tuning_layer in _RHEL_LAYERS]
+    rhel_deferred = [c for c in context.deferred_candidates if c.tuning_layer in _RHEL_LAYERS]
+    candidate_lines = [format_candidate_line_for_llm(c) for c in rhel_candidates]
+    deferred_lines = [format_candidate_line_for_llm(c) for c in rhel_deferred]
+    capability_lines = [
+        f"- {flag.name}: {flag.detail}"
+        for flag in tune_context.preflight.capability_map.flags
+        if flag.available
+    ]
+    telemetry_body = (
+        context.last_benchmark_runtime_telemetry_digest
+        if context.last_benchmark_runtime_telemetry_digest
+        else format_runtime_telemetry_digest((), max_chars_per_section=_TELEMETRY_MAX_SECTION)
+    )
+    sections = [
+        "You are the RHEL system tuning expert for HostTune.",
+        "Your domain: kernel parameters, network stack, IRQ affinity, cgroup, and storage.",
+        "Select ONE candidate from the kernel/network list below.",
+        "Return strict JSON: "
+        '{"parameter_key": "...", "proposed_value": "...", "rationale": "...", '
+        '"confidence": "high|medium|low"}',
+        f"Current phase: {context.phase.value}",
+        f"Phase objective: {phase_obj}",
+        f"Iteration: {context.iteration_number}",
+        "Host facts (your domain):",
+        *format_preflight_digest_lines(tune_context.preflight),
+        "Available tunable surfaces (capability flags):",
+        *(capability_lines or ["- none"]),
+        "Last benchmark runtime telemetry (ss -s, softnet_stat, ethtool -S; truncated):",
+        telemetry_body,
+        "Prior history:",
+        *_format_history_lines(context.history),
+        "Kernel/network candidates (YOUR DOMAIN — pick from this list only):",
+        *(candidate_lines or ["- none"]),
+        "Deferred kernel/network candidates (reboot-required):",
+        *(deferred_lines or ["- none"]),
+    ]
+    return "\n".join(sections)
+
+
+def format_debate_planner_prompt(
+    context: HypothesisContext,
+    expert_recommendations: list[str],
+    full_prompt: str,
+) -> str:
+    """Prompt for the debate planner that synthesizes both expert recommendations."""
+    phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
+    candidate_lines = [format_candidate_line_for_llm(c) for c in context.candidates]
+    deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
+    best_config = ", ".join(f"{k}={v}" for k, v in context.best_parameter_values) or "none"
+    active_changes = ", ".join(context.active_parameter_keys) or "none"
+    labeled_recommendations = [
+        f"[{label}]: {rec}"
+        for label, rec in zip(
+            ["service_agent", "rhel_expert"], expert_recommendations, strict=False
+        )
+    ]
+    sections = [
+        "You are the tuning decision planner for HostTune.",
+        "Two domain experts have made recommendations for the next tuning action.",
+        "Select the single best parameter to try next — you may pick either expert's "
+        "recommendation or override both if the full candidate list shows a better option.",
+        "The parameter_key MUST appear in the selectable candidates list below.",
+        "Return strict JSON: "
+        '{"parameter_key": "...", "proposed_value": "...", "rationale": "..."}',
+        f"Current phase: {context.phase.value}",
+        f"Phase objective: {phase_obj}",
+        f"Iteration: {context.iteration_number}",
+        "Current tune state:",
+        f"- active_changes={active_changes}",
+        f"- best_config={best_config}",
+        "Expert recommendations:",
+        *labeled_recommendations,
+        "Selectable candidates (ALL domains — final answer must use one of these keys):",
+        *(candidate_lines or ["- none"]),
+        "Deferred candidates (reboot-required; selectable only in reboot_batch phase):",
+        *(deferred_lines or ["- none"]),
+        "Prior history:",
+        *_format_history_lines(context.history),
+    ]
+    return "\n".join(sections)
 
 
 def format_candidate_line_for_llm(candidate: CandidateParameter) -> str:
