@@ -37,13 +37,36 @@ class CandidateCatalogBuilder:
         context: TuneContext,
         executor: CommandExecutor | None = None,
     ) -> tuple[CandidateParameter, ...]:
+        _log = logging.getLogger(__name__)
         candidates: list[CandidateParameter] = []
-        candidates.extend(self._build_service_directive_candidates(context, executor))
-        candidates.extend(self._build_service_sysctl_candidates(context, executor))
-        candidates.extend(self._build_network_ring_candidates(context, executor))
-        candidates.extend(self._build_runtime_prlimit_candidates(context, executor))
-        candidates.extend(self._build_systemd_unit_limit_candidates(context, executor))
-        candidates.extend(self._build_host_profile_candidates(context, executor))
+        builders = [
+            ("service_directives", self._build_service_directive_candidates),
+            ("service_sysctls", self._build_service_sysctl_candidates),
+            ("network_rings", self._build_network_ring_candidates),
+            ("runtime_prlimit", self._build_runtime_prlimit_candidates),
+            ("systemd_unit_limits", self._build_systemd_unit_limit_candidates),
+            ("host_profile", self._build_host_profile_candidates),
+        ]
+        for builder_name, builder in builders:
+            try:
+                rows = builder(context, executor)
+                candidates.extend(rows)
+            except Exception as exc:
+                _log.warning(
+                    "Catalog builder '%s' failed and returned 0 candidates: %s",
+                    builder_name,
+                    exc,
+                    exc_info=True,
+                )
+        # Warn when expected service directives are missing (helps diagnose Issues).
+        if context.onboard.service.tunable_surface.allowed_directives and not any(
+            c.source.value == "service_directive" for c in candidates
+        ):
+            _log.warning(
+                "No service directive candidates built despite %d allowed_directives — "
+                "check executor connectivity and config_path resolution.",
+                len(context.onboard.service.tunable_surface.allowed_directives),
+            )
         return tuple(
             sorted(
                 candidates,

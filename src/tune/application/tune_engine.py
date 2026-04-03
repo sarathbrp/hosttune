@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Protocol
 
+from onboard.domain.models import ApplyMode
 from preflight.domain.models import CommandExecutor
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from snapshot.domain.models import SnapshotResult
@@ -30,6 +31,7 @@ from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateAvailability,
     CandidateParameter,
+    CandidateSource,
     HypothesisRecord,
     HypothesisStatus,
     TunePhase,
@@ -38,6 +40,7 @@ from tune.domain.hypothesis_models import (
 from tune.domain.iteration_record import TuneIterationRecord
 from tune.domain.tune_context import TuneContext
 from tune.domain.tune_state import TuneState
+from tune.domain.tuning_layer import TuningLayer
 from tune.domain.validation_models import ValidationResult
 
 
@@ -226,25 +229,74 @@ class TuneEngine:
         # not the stale snapshot captured before tuning started.
         live_snapshot = _refresh_snapshot_runtime_state(context, target_executor)
         live_context = replace(context, snapshot=live_snapshot)
-        hypotheses = self.hypothesis_generator.generate(
-            HypothesisContext(
-                tune_context=live_context,
-                phase=phase,
-                iteration_number=iteration_number,
-                candidates=candidates,
-                deferred_candidates=deferred_candidates,
-                history=tuple(state.history),
-                active_parameter_keys=tuple(sorted(state.active_changes)),
-                best_parameter_values=(
-                    tuple(sorted(state.best_configuration.parameter_values.items()))
-                    if state.best_configuration is not None
-                    else ()
-                ),
-                last_benchmark_runtime_telemetry_digest=_last_benchmark_runtime_telemetry_digest(
-                    state.iteration_records
-                ),
-            )
+        hyp_context = HypothesisContext(
+            tune_context=live_context,
+            phase=phase,
+            iteration_number=iteration_number,
+            candidates=candidates,
+            deferred_candidates=deferred_candidates,
+            history=tuple(state.history),
+            active_parameter_keys=tuple(sorted(state.active_changes)),
+            best_parameter_values=(
+                tuple(sorted(state.best_configuration.parameter_values.items()))
+                if state.best_configuration is not None
+                else ()
+            ),
+            last_benchmark_runtime_telemetry_digest=_last_benchmark_runtime_telemetry_digest(
+                state.iteration_records
+            ),
         )
+        try:
+            hypotheses = self.hypothesis_generator.generate(hyp_context)
+        except ValueError as exc:
+            # All proposed hypotheses were invalid/no-op — skip this iteration gracefully
+            # rather than crashing the session. This happens when all candidates are at
+            # their current value (no-op) or outside allowed ranges.
+            self.logger.stage_detail(
+                "tune",
+                f"Hypothesis generation failed (no valid proposals): {exc} — skipping iteration.",
+            )
+            completed_at = datetime.now(UTC)
+            duration_seconds = perf_counter() - started_timer
+            # Build a placeholder record so the engine can continue to the next iteration.
+            placeholder = TuningHypothesis(
+                phase=phase,
+                parameter_key="__no_hypothesis__",
+                parameter_name="__no_hypothesis__",
+                domain="none",
+                tuning_layer=next(iter(candidates)).tuning_layer
+                if candidates
+                else TuningLayer.SERVICE,
+                proposed_value="",
+                source=next(iter(candidates)).source
+                if candidates
+                else CandidateSource.SERVICE_DIRECTIVE,
+                apply_mode=ApplyMode.RELOAD,
+                rationale=str(exc),
+            )
+            record = TuneIterationRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=placeholder,
+                applied_change=None,
+                validation_result=None,
+                benchmark_result=None,
+                evaluation_result=None,
+                attribution_verification=None,
+                active_parameter_keys=tuple(sorted(state.active_changes)),
+                started_at_utc=started_at.isoformat(),
+                completed_at_utc=completed_at.isoformat(),
+                duration_seconds=duration_seconds,
+            )
+            history_record = HypothesisRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=placeholder,
+                status=HypothesisStatus.FAILED_VALIDATION,
+                evaluation_summary=f"hypothesis generation failed: {exc}",
+            )
+            return record, history_record
+
         # Primary hypothesis drives the iteration record; companions are logged and co-applied.
         primary = hypotheses[0]
         primary_candidate = self._find_candidate(candidates, primary.parameter_key)

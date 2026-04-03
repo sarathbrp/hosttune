@@ -61,6 +61,12 @@ class AttributionVerifier:
             accepted_benchmark_result=accepted_benchmark_result,
             reverted_benchmark_result=reverted_benchmark_result,
         )
+        # When reverting the change actually *improved* performance (negative drop),
+        # the change was harmful — mark as not verified so the engine rolls it back.
+        # When average_drop is near zero and there are already large active changes,
+        # the primary hypothesis likely contributed little on top of cumulative gains;
+        # treat as unverified so it can be cleanly rolled back without masking the
+        # real signal. This avoids spurious INCONCLUSIVE loops.
         verified = average_drop > context.effective_variance_threshold
         if verified:
             reapply_result = target_executor.run(applied_change.apply_command)
