@@ -17,7 +17,13 @@ policy:
   allow_reload: true
   max_iterations: 4
 benchmark:
-  command: "printf '123.0'"
+  runner:
+    mode: local
+  contestant_name: hosttune
+  script_path: /root/hackathon-tools/benchmark.sh
+  results_directory: /root/hackathon-results
+  workloads:
+    - homepage
 """.strip(),
         encoding="utf-8",
     )
@@ -27,7 +33,9 @@ benchmark:
     assert loaded.target.mode == "local"
     assert loaded.policy.allow_reload is True
     assert loaded.service_name == "nginx"
-    assert loaded.benchmark_command == "printf '123.0'"
+    assert loaded.benchmark_config is not None
+    assert loaded.benchmark_config.contestant_name == "hosttune"
+    assert loaded.benchmark_config.runner_target.mode == "local"
 
 
 def test_loads_ssh_configuration(tmp_path: Path) -> None:
@@ -85,7 +93,7 @@ service:
         ConfigLoader().load(config_path)
 
 
-def test_rejects_non_string_benchmark_command(tmp_path: Path) -> None:
+def test_rejects_non_mapping_benchmark_runner(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         """
@@ -94,12 +102,39 @@ target:
 service:
   name: nginx
 benchmark:
-  command: 42
+  contestant_name: hosttune
+  script_path: /root/hackathon-tools/benchmark.sh
+  results_directory: /root/hackathon-results
+  workloads:
+    - homepage
 """.strip(),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="benchmark.command must be a string"):
+    with pytest.raises(ValueError, match="benchmark.runner must be configured"):
+        ConfigLoader().load(config_path)
+
+
+def test_rejects_invalid_workloads(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+target:
+  mode: local
+service:
+  name: nginx
+benchmark:
+  runner:
+    mode: local
+  contestant_name: hosttune
+  script_path: /root/hackathon-tools/benchmark.sh
+  results_directory: /root/hackathon-results
+  workloads: 42
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="benchmark.workloads must be a non-empty list"):
         ConfigLoader().load(config_path)
 
 

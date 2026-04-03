@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from baseline.domain.models import BaselineResult
+from baseline.domain.models import BaselineResult, BenchmarkConfig, WorkloadBenchmarkResult
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.application.hosttune_instance import HostTuneInstance
 from preflight.domain.models import (
-    BenchmarkResult,
     CapabilityMap,
     CpuInfo,
     DiscoverySnapshot,
@@ -105,7 +104,14 @@ class FakeConfigLoader(ConfigLoader):
                 benchmark_stability_threshold=0.1,
             ),
             service_name="nginx",
-            benchmark_command="printf '1.0'",
+            benchmark_config=BenchmarkConfig(
+                runner_target=LocalTargetConfig(),
+                contestant_name="hosttune",
+                script_path="/root/hackathon-tools/benchmark.sh",
+                results_directory="/root/hackathon-results",
+                workloads=("homepage",),
+                compare_script_path="/root/hackathon-tools/compare-results.sh",
+            ),
         )
 
 
@@ -115,7 +121,7 @@ def test_instance_stores_preflight_snapshot() -> None:
         discovery_runner_factory=lambda benchmark_command: FakeRunner(),
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
-        baseline_runner_factory=lambda benchmark_command: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
         executor_factory=lambda target: object(),  # type: ignore[arg-type]
     )
 
@@ -144,7 +150,7 @@ def test_instance_stores_onboard_result() -> None:
         discovery_runner_factory=lambda benchmark_command: FakeRunner(),
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
-        baseline_runner_factory=lambda benchmark_command: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
         executor_factory=lambda target: object(),  # type: ignore[arg-type]
     )
 
@@ -171,22 +177,27 @@ def test_instance_stores_snapshot_and_baseline_results() -> None:
             )
 
     class FakeBaselineRunner:
-        def run(self, service, executor):  # type: ignore[no-untyped-def]
+        def run(self, service, executor, dut_target):  # type: ignore[no-untyped-def]
             _ = service
             _ = executor
+            _ = dut_target
             return BaselineResult(
                 service_name="nginx",
-                benchmark_command="printf '1.0'",
-                benchmark_result=BenchmarkResult(
-                    command="printf '1.0'",
-                    exit_code=0,
-                    primary_metric_name="score",
-                    primary_metric_value=1.0,
-                    raw_output="1.0",
+                benchmark_command="TARGET_HOST=10.1.90.178 /root/hackathon-tools/benchmark.sh hosttune",
+                benchmark_target="10.1.90.178",
+                workload_results=(
+                    WorkloadBenchmarkResult(
+                        workload_name="homepage",
+                        result_path="/root/hackathon-results/hosttune_homepage.json",
+                        requests_per_second=1234.5,
+                        total_requests=9999,
+                        average_latency_ms=4.2,
+                    ),
                 ),
                 expected_variance=0.05,
                 warmup_seconds=10,
                 guardrail_metrics=("p95_latency",),
+                comparison_output="homepage improved by 3%",
             )
 
     instance = HostTuneInstance(
@@ -194,7 +205,7 @@ def test_instance_stores_snapshot_and_baseline_results() -> None:
         discovery_runner_factory=lambda benchmark_command: FakeRunner(),
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: FakeSnapshotRunner(),
-        baseline_runner_factory=lambda benchmark_command: FakeBaselineRunner(),
+        baseline_runner_factory=lambda benchmark_config: FakeBaselineRunner(),
         executor_factory=lambda target: object(),  # type: ignore[arg-type]
     )
 

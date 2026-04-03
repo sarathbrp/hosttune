@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from baseline.application.baseline_runner import BaselineRunner
+from baseline.domain.models import BenchmarkConfig
 from onboard.application.onboard_runner import OnboardRunner
 from onboard.infrastructure.service_compatibility_evaluator import ServiceCompatibilityEvaluator
 from onboard.infrastructure.service_definition_loader import ServiceDefinitionLoader
@@ -99,8 +100,8 @@ def build_snapshot_runner() -> SnapshotRunner:
     return SnapshotRunner()
 
 
-def build_baseline_runner(benchmark_command: str) -> BaselineRunner:
-    return BaselineRunner(benchmark_runner=ShellBenchmarkRunner(benchmark_command))
+def build_baseline_runner(benchmark_config: BenchmarkConfig) -> BaselineRunner:
+    return BaselineRunner(benchmark_config=benchmark_config)
 
 
 def main() -> int:
@@ -116,7 +117,7 @@ def main() -> int:
     onboard = instance.load_onboard(args.config)
     snapshot = instance.load_snapshot(args.config)
     baseline = None
-    if loaded_config.benchmark_command is not None:
+    if loaded_config.benchmark_config is not None:
         baseline = instance.load_baseline(args.config)
     print(
         ConsoleReporter().render_runtime(

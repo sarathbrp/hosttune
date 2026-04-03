@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from baseline.application.baseline_runner import BaselineRunner
-from baseline.domain.models import BaselineResult
+from baseline.domain.models import BaselineResult, BenchmarkConfig
 from onboard.application.onboard_runner import OnboardRunner
 from onboard.domain.models import OnboardResult
 from preflight.application.discovery_runner import DiscoveryRunner
@@ -23,7 +23,7 @@ ExecutorFactory = Callable[[LocalTargetConfig | SshTargetConfig], CommandExecuto
 DiscoveryRunnerFactory = Callable[[str | None], DiscoveryRunner]
 OnboardRunnerFactory = Callable[[], OnboardRunner]
 SnapshotRunnerFactory = Callable[[], SnapshotRunner]
-BaselineRunnerFactory = Callable[[str], BaselineRunner]
+BaselineRunnerFactory = Callable[[BenchmarkConfig], BaselineRunner]
 
 
 @dataclass
@@ -76,17 +76,22 @@ class HostTuneInstance:
             msg = "Onboard must be loaded before baseline."
             raise ValueError(msg)
         loaded_config = self.config_loader.load(config_path)
-        if loaded_config.benchmark_command is None:
-            msg = "benchmark.command must be configured before baseline."
+        if loaded_config.benchmark_config is None:
+            msg = "benchmark must be configured before baseline."
             raise ValueError(msg)
-        executor = self.executor_factory(loaded_config.target)
-        runner = self.baseline_runner_factory(loaded_config.benchmark_command)
-        result = runner.run(self.onboard.service, executor)
+        benchmark_executor = self.executor_factory(loaded_config.benchmark_config.runner_target)
+        runner = self.baseline_runner_factory(loaded_config.benchmark_config)
+        result = runner.run(self.onboard.service, benchmark_executor, loaded_config.target)
         self.baseline = result
         return result
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
-        runner = self.discovery_runner_factory(loaded_config.benchmark_command)
+        benchmark_command = (
+            loaded_config.benchmark_config.script_path
+            if loaded_config.benchmark_config is not None
+            else None
+        )
+        runner = self.discovery_runner_factory(benchmark_command)
         executor = self.executor_factory(loaded_config.target)
         return runner.run(
             executor=executor,

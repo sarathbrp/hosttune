@@ -13,8 +13,7 @@ from preflight.domain.models import (
 )
 from preflight.interfaces.console_reporter import ConsoleReporter
 from snapshot.domain.models import SnapshotResult
-from baseline.domain.models import BaselineResult
-from preflight.domain.models import BenchmarkResult
+from baseline.domain.models import BaselineResult, WorkloadBenchmarkResult
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 
@@ -129,17 +128,21 @@ def test_console_reporter_serializes_full_runtime() -> None:
     )
     baseline = BaselineResult(
         service_name="nginx",
-        benchmark_command="printf '1.0'",
-        benchmark_result=BenchmarkResult(
-            command="printf '1.0'",
-            exit_code=0,
-            primary_metric_name="score",
-            primary_metric_value=1.0,
-            raw_output="1.0",
+        benchmark_command="TARGET_HOST=10.1.90.178 /root/hackathon-tools/benchmark.sh hosttune",
+        benchmark_target="10.1.90.178",
+        workload_results=(
+            WorkloadBenchmarkResult(
+                workload_name="homepage",
+                result_path="/root/hackathon-results/hosttune_homepage.json",
+                requests_per_second=1234.5,
+                total_requests=9999,
+                average_latency_ms=4.2,
+            ),
         ),
         expected_variance=0.05,
         warmup_seconds=10,
         guardrail_metrics=("p95_latency",),
+        comparison_output="homepage improved by 3%",
     )
 
     rendered = reporter.render_runtime(snapshot, onboard, runtime_snapshot, baseline)
