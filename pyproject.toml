@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Step 1 scaffold for a generic RHEL performance-tuning agent."
 requires-python = ">=3.11"
 dependencies = [
+  "openai>=1.52",
   "PyYAML>=6.0",
+  "langgraph>=0.2.39",
 ]
 
 [project.optional-dependencies]

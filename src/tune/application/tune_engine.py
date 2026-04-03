@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from time import perf_counter
+from typing import Protocol
+
+from preflight.domain.models import CommandExecutor
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
+from tune.application.apply_coordinator import ApplyCoordinator
+from tune.application.benchmark_executor import TuneBenchmarkExecutor
+from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
+from tune.application.health_validator import HealthValidator
+from tune.application.phase_controller import PhaseController
+from tune.application.result_evaluator import ResultEvaluator
+from tune.application.rollback_coordinator import RollbackCoordinator
+from tune.application.tune_recorder import TuneRecorder
+from tune.domain.benchmark_models import TuneBenchmarkResult
+from tune.domain.evaluation_models import EvaluationDecision, EvaluationResult
+from tune.domain.hypothesis_context import HypothesisContext
+from tune.domain.hypothesis_models import (
+    CandidateParameter,
+    HypothesisRecord,
+    HypothesisStatus,
+    TunePhase,
+    TuningHypothesis,
+)
+from tune.domain.iteration_record import TuneIterationRecord
+from tune.domain.tune_context import TuneContext
+from tune.domain.tune_state import TuneState
+from tune.domain.validation_models import ValidationResult
+
+
+class SupportsHypothesisGeneration(Protocol):
+    def generate(self, context: HypothesisContext) -> TuningHypothesis:
+        """Generate one validated tuning hypothesis."""
+
+
+@dataclass
+class TuneEngine:
+    candidate_catalog_builder: CandidateCatalogBuilder
+    phase_controller: PhaseController
+    hypothesis_generator: SupportsHypothesisGeneration
+    apply_coordinator: ApplyCoordinator
+    health_validator: HealthValidator
+    benchmark_executor: TuneBenchmarkExecutor
+    result_evaluator: ResultEvaluator
+    rollback_coordinator: RollbackCoordinator
+    recorder: TuneRecorder
+    logger: ExecutionLogger = NullExecutionLogger()
+
+    def run(
+        self,
+        context: TuneContext,
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+    ) -> TuneState:
+        state = TuneState.initialize(context.preflight.policy.max_iterations)
+        all_candidates = self.candidate_catalog_builder.build(context)
+        self.logger.stage_start("tune")
+        while not self.phase_controller.should_stop(state):
+            previous_phase = state.current_phase
+            phase = self.phase_controller.determine_phase(state, all_candidates)
+            if phase is not previous_phase:
+                self.logger.stage_detail(
+                    "tune",
+                    f"Phase advanced: {previous_phase.value} -> {phase.value}",
+                )
+            candidates = self.phase_controller.filter_candidates(phase, state, all_candidates)
+            if not candidates:
+                self.logger.stage_detail("tune", "No eligible candidates remain for current phase.")
+                break
+            iteration_number = state.total_iterations + 1
+            self.logger.stage_detail("tune", f"Iteration {iteration_number} phase={phase.value}")
+            previous_best_iteration = (
+                None
+                if state.best_configuration is None
+                else state.best_configuration.iteration_number
+            )
+            record, history_record = self._run_iteration(
+                context=context,
+                state=state,
+                phase=phase,
+                iteration_number=iteration_number,
+                candidates=candidates,
+                target_executor=target_executor,
+                benchmark_executor=benchmark_executor,
+            )
+            state.record_iteration(record, history_record)
+            if (
+                state.best_configuration is not None
+                and state.best_configuration.iteration_number != previous_best_iteration
+            ):
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Best config updated: "
+                        f"iteration={state.best_configuration.iteration_number} "
+                        f"score={state.best_configuration.score:.2%}"
+                    ),
+                )
+            self.recorder.record(context, record)
+        self.logger.stage_end("tune")
+        return state
+
+    def _run_iteration(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        phase: TunePhase,
+        iteration_number: int,
+        candidates: tuple[CandidateParameter, ...],
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+    ) -> tuple[TuneIterationRecord, HypothesisRecord]:
+        started_at = datetime.now(UTC)
+        started_timer = perf_counter()
+        hypothesis = self.hypothesis_generator.generate(
+            HypothesisContext(
+                phase=phase,
+                iteration_number=iteration_number,
+                candidates=candidates,
+                history=tuple(state.history),
+            )
+        )
+        self._log_hypothesis(hypothesis)
+        applied_change = self.apply_coordinator.apply(context, hypothesis, target_executor)
+        self.logger.stage_detail(
+            "tune",
+            (
+                "Apply: "
+                f"parameter={hypothesis.parameter_key} "
+                f"previous={applied_change.previous_value} "
+                f"applied={applied_change.applied_value} "
+                f"mode={applied_change.apply_mode.value}"
+            ),
+        )
+        validation_result = self.health_validator.validate(context, applied_change, target_executor)
+        self._log_validation(validation_result)
+
+        benchmark_result = None
+        evaluation_result = None
+        if not validation_result.healthy:
+            self.rollback_coordinator.rollback(applied_change, target_executor)
+            self.logger.stage_detail(
+                "tune",
+                f"Rollback: parameter={hypothesis.parameter_key} reason=validation_failed",
+            )
+            status = HypothesisStatus.FAILED_VALIDATION
+        else:
+            benchmark_result = self.benchmark_executor.run(
+                context=context,
+                validation_result=validation_result,
+                benchmark_executor=benchmark_executor,
+            )
+            self._log_benchmark(benchmark_result)
+            evaluation_result = self.result_evaluator.evaluate(context, benchmark_result)
+            self._log_evaluation(evaluation_result)
+            status = self._resolve_status(evaluation_result)
+            if status is HypothesisStatus.ACCEPTED:
+                state.active_changes[hypothesis.parameter_key] = applied_change
+                self.logger.stage_detail(
+                    "tune",
+                    "Decision: accepted; retaining change as active configuration.",
+                )
+            else:
+                self.rollback_coordinator.rollback(applied_change, target_executor)
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Rollback: "
+                        f"parameter={hypothesis.parameter_key} "
+                        f"reason={evaluation_result.decision.value}"
+                    ),
+                )
+
+        completed_at = datetime.now(UTC)
+        duration_seconds = perf_counter() - started_timer
+        active_parameter_keys = tuple(sorted(state.active_changes))
+        record = TuneIterationRecord(
+            iteration_number=iteration_number,
+            phase=phase,
+            hypothesis=hypothesis,
+            applied_change=applied_change,
+            validation_result=validation_result,
+            benchmark_result=benchmark_result,
+            evaluation_result=evaluation_result,
+            active_parameter_keys=active_parameter_keys,
+            started_at_utc=started_at.isoformat(),
+            completed_at_utc=completed_at.isoformat(),
+            duration_seconds=duration_seconds,
+        )
+        history_record = HypothesisRecord(
+            iteration_number=iteration_number,
+            phase=phase,
+            hypothesis=hypothesis,
+            status=status,
+            evaluation_summary=evaluation_result.summary if evaluation_result is not None else None,
+        )
+        return record, history_record
+
+    def _resolve_status(self, evaluation_result: EvaluationResult) -> HypothesisStatus:
+        if evaluation_result.decision is EvaluationDecision.ACCEPT:
+            return HypothesisStatus.ACCEPTED
+        if evaluation_result.decision is EvaluationDecision.REJECT:
+            return HypothesisStatus.REJECTED
+        return HypothesisStatus.INCONCLUSIVE
+
+    def _log_hypothesis(self, hypothesis: TuningHypothesis) -> None:
+        self.logger.stage_detail(
+            "tune",
+            (
+                "Hypothesis: "
+                f"parameter={hypothesis.parameter_key} "
+                f"value={hypothesis.proposed_value} "
+                f"mode={hypothesis.apply_mode.value} "
+                f"reason={hypothesis.rationale}"
+            ),
+        )
+
+    def _log_validation(self, validation_result: ValidationResult) -> None:
+        passed_checks = sum(1 for check in validation_result.checks if check.passed)
+        total_checks = len(validation_result.checks)
+        self.logger.stage_detail(
+            "tune",
+            f"Validate: healthy={validation_result.healthy} checks={passed_checks}/{total_checks}",
+        )
+        for check in validation_result.checks:
+            self.logger.stage_detail(
+                "tune",
+                f"Validate check: {check.name} passed={check.passed} detail={check.detail}",
+            )
+
+    def _log_benchmark(self, benchmark_result: TuneBenchmarkResult) -> None:
+        self.logger.stage_detail(
+            "tune",
+            (
+                "Benchmark: "
+                f"stable={benchmark_result.stable} "
+                f"run_count={benchmark_result.run_count} "
+                f"variance_threshold={benchmark_result.variance_threshold:.2%}"
+            ),
+        )
+        for summary in benchmark_result.workload_summaries:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"Benchmark workload: {summary.workload_name} "
+                    f"rps={summary.median_requests_per_second:.2f} "
+                    f"latency_ms={summary.median_latency_ms:.2f} "
+                    f"variance={summary.relative_variance:.2%} "
+                    f"stable={summary.stable}"
+                ),
+            )
+
+    def _log_evaluation(self, evaluation_result: EvaluationResult) -> None:
+        self.logger.stage_detail(
+            "tune",
+            (
+                "Evaluate: "
+                f"decision={evaluation_result.decision.value} "
+                f"guardrails_held={evaluation_result.guardrails_held} "
+                f"drift_detected={evaluation_result.drift_detected}"
+            ),
+        )
+        self.logger.stage_detail("tune", f"Evaluate summary: {evaluation_result.summary}")

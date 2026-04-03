@@ -16,6 +16,8 @@ from snapshot.domain.models import SnapshotResult
 from baseline.domain.models import BaselineResult, WorkloadBenchmarkResult
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
+from tune.domain.hypothesis_models import HypothesisStatus, TunePhase
+from tune.domain.tune_state import TuneState
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
 
@@ -149,13 +151,29 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
             "homepage   |          374706 |         1085909 |          189.8% | IMPROVED\n"
         ),
     )
+    tune = TuneState.initialize(3)
+    tune.current_phase = TunePhase.DOMAIN_FOCUS
+    tune.total_iterations = 2
+    tune.history = [
+        type(
+            "HistoryRecord",
+            (),
+            {"status": HypothesisStatus.ACCEPTED},
+        )(),
+        type(
+            "HistoryRecord",
+            (),
+            {"status": HypothesisStatus.REJECTED},
+        )(),
+    ]
 
-    rendered = reporter.render_runtime(snapshot, onboard, runtime_snapshot, baseline)
+    rendered = reporter.render_runtime(snapshot, onboard, runtime_snapshot, baseline, tune)
 
     assert "Preflight" in rendered
     assert "Onboard" in rendered
     assert "Snapshot" in rendered
     assert "Baseline" in rendered
+    assert "Tune" in rendered
     assert "homepage" in rendered
     assert "Comparison" in rendered
     assert "baseline_rps" in rendered

@@ -8,6 +8,8 @@ from baseline.domain.models import BaselineResult
 from onboard.domain.models import OnboardResult
 from preflight.domain.models import DiscoverySnapshot
 from snapshot.domain.models import SnapshotResult
+from tune.domain.hypothesis_models import HypothesisStatus
+from tune.domain.tune_state import TuneState
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -25,12 +27,14 @@ class ConsoleReporter:
         onboard: OnboardResult | None,
         snapshot: SnapshotResult | None,
         baseline: BaselineResult | None,
+        tune: TuneState | None,
     ) -> str:
         sections = [
             self._render_preflight(preflight),
             self._render_onboard(onboard),
             self._render_snapshot(snapshot),
             self._render_baseline(baseline),
+            self._render_tune(tune),
         ]
         return "\n\n".join(section for section in sections if section)
 
@@ -144,3 +148,33 @@ class ConsoleReporter:
             for name, baseline_rps, current_rps, change, status in rows
         )
         return rendered
+
+    def _render_tune(self, tune: TuneState | None) -> str:
+        if tune is None:
+            return ""
+
+        accepted = sum(1 for item in tune.history if item.status is HypothesisStatus.ACCEPTED)
+        best_config = "none"
+        best_score = "n/a"
+        if tune.best_configuration is not None:
+            best_score = f"{tune.best_configuration.score:.2%}"
+            best_config = (
+                ", ".join(
+                    f"{key}={value}"
+                    for key, value in sorted(tune.best_configuration.parameter_values.items())
+                )
+                or "none"
+            )
+        active = ", ".join(sorted(tune.active_changes)) or "none"
+        return "\n".join(
+            (
+                "Tune",
+                f"  Current phase: {tune.current_phase.value}",
+                f"  Iterations: {tune.total_iterations}",
+                f"  Accepted hypotheses: {accepted}",
+                f"  Active changes: {active}",
+                f"  Best score: {best_score}",
+                f"  Best config: {best_config}",
+                f"  Drift detected: {tune.drift_detected}",
+            )
+        )

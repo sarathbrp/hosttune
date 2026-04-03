@@ -30,3 +30,5 @@ benchmark:
     - medium
     - large
     - mixed
+
+      #dut_host: 172.21.90.178

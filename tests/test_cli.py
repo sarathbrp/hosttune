@@ -24,6 +24,7 @@ from preflight.domain.models import (
 )
 from preflight.infrastructure.config_loader import LoadedConfig
 from snapshot.domain.models import SnapshotResult
+from tune.domain.tune_state import TuneState
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
 
@@ -86,6 +87,12 @@ def build_baseline() -> BaselineResult:
         guardrail_metrics=("p95_latency",),
         comparison_output="homepage improved by 3%",
     )
+
+
+def build_tune_state() -> TuneState:
+    state = TuneState.initialize(2)
+    state.total_iterations = 1
+    return state
 
 
 def test_shell_benchmark_runner_normalizes_output() -> None:
@@ -169,6 +176,7 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
         onboard: OnboardResult | None = None
         snapshot: SnapshotResult | None = None
         baseline: BaselineResult | None = None
+        tune: TuneState | None = None
 
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
             self.preflight = build_snapshot()
@@ -197,6 +205,13 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
             self.baseline = build_baseline()
             return self.baseline
 
+        def run_tune(self, _config_path: Path, _tune_engine: object) -> TuneState:
+            self.tune = build_tune_state()
+            return self.tune
+
+        def build_tune_context(self) -> object:
+            return object()
+
     fake_config_loader = type(
         "FakeConfigLoader",
         (),
@@ -221,6 +236,7 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
         "build_instance",
         lambda verbose=False, debug=False: FakeInstance(config_loader=fake_config_loader),
     )
+    monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None: object())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
 
     exit_code = cli.main()
@@ -231,6 +247,7 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
     assert "Onboard" in output
     assert "Snapshot" in output
     assert "Baseline" in output
+    assert "Tune" in output
     assert "Target: 10.1.90.178" in output
 
 

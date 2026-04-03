@@ -42,6 +42,21 @@ from preflight.interfaces.execution_logger import (
     VerboseExecutionLogger,
 )
 from snapshot.application.snapshot_runner import SnapshotRunner
+from tune.application.apply_coordinator import (
+    ApplyCoordinator,
+    NginxDirectiveApplier,
+    SysctlApplier,
+)
+from tune.application.benchmark_executor import TuneBenchmarkExecutor
+from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
+from tune.application.health_validator import HealthValidator
+from tune.application.hypothesis_factory import build_langgraph_hypothesis_generator
+from tune.application.hypothesis_generator import DeterministicHypothesisGenerator
+from tune.application.phase_controller import PhaseController
+from tune.application.result_evaluator import ResultEvaluator
+from tune.application.rollback_coordinator import RollbackCoordinator
+from tune.application.tune_engine import TuneEngine
+from tune.application.tune_recorder import TuneRecorder
 
 SERVICE_REGISTRY_PATH = Path("service-monitor")
 
@@ -133,6 +148,34 @@ def build_baseline_runner(
     )
 
 
+def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
+    execution_logger = logger or NullExecutionLogger()
+    try:
+        hypothesis_generator = build_langgraph_hypothesis_generator()
+        execution_logger.stage_detail("tune", "Using LangGraph-backed hypothesis generation.")
+    except (ImportError, ModuleNotFoundError, ValueError) as error:
+        execution_logger.stage_detail(
+            "tune",
+            f"LangGraph unavailable, falling back to deterministic hypotheses: {error}",
+        )
+        hypothesis_generator = DeterministicHypothesisGenerator()
+    return TuneEngine(
+        candidate_catalog_builder=CandidateCatalogBuilder(),
+        phase_controller=PhaseController(),
+        hypothesis_generator=hypothesis_generator,
+        apply_coordinator=ApplyCoordinator(
+            service_directive_applier=NginxDirectiveApplier(),
+            sysctl_applier=SysctlApplier(),
+        ),
+        health_validator=HealthValidator(),
+        benchmark_executor=TuneBenchmarkExecutor(),
+        result_evaluator=ResultEvaluator(),
+        rollback_coordinator=RollbackCoordinator(),
+        recorder=TuneRecorder(),
+        logger=execution_logger,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run step1 discovery and optional baseline benchmark."
@@ -163,14 +206,18 @@ def main() -> int:
     onboard = instance.load_onboard(args.config)
     snapshot = instance.load_snapshot(args.config)
     baseline = None
+    tune = None
     if loaded_config.benchmark_config is not None:
         baseline = instance.load_baseline(args.config)
+        tune_logger = getattr(instance, "logger", None)
+        tune = instance.run_tune(args.config, build_tune_engine(tune_logger))
     print(
         ConsoleReporter().render_runtime(
             preflight=preflight,
             onboard=onboard,
             snapshot=snapshot,
             baseline=baseline,
+            tune=tune,
         )
     )
     return 0

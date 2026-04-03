@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from baseline.application.baseline_runner import BaselineRunner
 from baseline.domain.models import BaselineResult, BenchmarkConfig
@@ -23,6 +24,7 @@ from preflight.interfaces.execution_logger import ExecutionLogger, NullExecution
 from snapshot.application.snapshot_runner import SnapshotRunner
 from snapshot.domain.models import SnapshotResult
 from tune.domain.tune_context import TuneContext
+from tune.domain.tune_state import TuneState
 
 ExecutorFactory = Callable[[LocalTargetConfig | SshTargetConfig], CommandExecutor]
 DiscoveryRunnerFactory = Callable[[str | None], DiscoveryRunner]
@@ -45,6 +47,8 @@ class HostTuneInstance:
     onboard: OnboardResult | None = None
     snapshot: SnapshotResult | None = None
     baseline: BaselineResult | None = None
+    tune: TuneState | None = None
+    benchmark_config: BenchmarkConfig | None = None
     artifacts: RuntimeArtifacts | None = None
 
     def load_preflight(self, config_path: Path) -> DiscoverySnapshot:
@@ -106,6 +110,7 @@ class HostTuneInstance:
         result = runner.run(self.onboard.service, benchmark_executor, loaded_config.target)
         self.logger.stage_end("baseline")
         self.baseline = result
+        self.benchmark_config = loaded_config.benchmark_config
         self._persist_stage_result("baseline", result)
         return result
 
@@ -122,14 +127,39 @@ class HostTuneInstance:
         if self.baseline is None:
             msg = "Baseline must be loaded before building TuneContext."
             raise ValueError(msg)
+        if self.benchmark_config is None:
+            msg = "Benchmark config must be loaded before building TuneContext."
+            raise ValueError(msg)
 
         return TuneContext(
             preflight=self.preflight,
             onboard=self.onboard,
             snapshot=self.snapshot,
             baseline=self.baseline,
+            benchmark_config=self.benchmark_config,
             artifacts=self.artifacts,
         )
+
+    def run_tune(
+        self,
+        config_path: Path,
+        tune_engine: TuneEngineProtocol,
+    ) -> TuneState:
+        loaded_config = self.config_loader.load(config_path)
+        context = self.build_tune_context()
+        target_executor = self._build_stage_executor(loaded_config.target, "tune")
+        benchmark_executor = self._build_stage_executor(
+            loaded_config.benchmark_config.runner_target,
+            "tune",
+        )
+        result = tune_engine.run(
+            context=context,
+            target_executor=target_executor,
+            benchmark_executor=benchmark_executor,
+        )
+        self.tune = result
+        self._persist_stage_result("tune", result)
+        return result
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
         runner = self.discovery_runner_factory(None)
@@ -161,3 +191,13 @@ class HostTuneInstance:
         artifacts = self._ensure_artifacts()
         file_path = self.artifact_store.write_stage_result(artifacts, stage_name, payload)
         self.logger.artifact_written(stage_name, str(file_path))
+
+
+class TuneEngineProtocol(Protocol):
+    def run(
+        self,
+        context: TuneContext,
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+    ) -> TuneState:
+        """Execute the tune stage for a prepared TuneContext."""

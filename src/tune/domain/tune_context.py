@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from baseline.domain.models import BaselineResult
+from baseline.domain.models import BaselineResult, BenchmarkConfig
 from onboard.domain.models import OnboardResult
 from preflight.domain.models import DiscoverySnapshot
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
@@ -15,4 +15,5 @@ class TuneContext:
     onboard: OnboardResult
     snapshot: SnapshotResult
     baseline: BaselineResult
+    benchmark_config: BenchmarkConfig
     artifacts: RuntimeArtifacts | None
