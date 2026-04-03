@@ -64,6 +64,12 @@ def test_build_discovery_runner_builds_typed_probes() -> None:
     assert runner.storage_probe.name == "storage"
 
 
+def test_build_instance_exposes_preflight_slot() -> None:
+    instance = cli.build_instance()
+
+    assert instance.preflight is None
+
+
 def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yml"
     config_path.write_text("target:\n  mode: local\n", encoding="utf-8")
@@ -124,8 +130,15 @@ def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
                 ),
             )
 
-    monkeypatch.setattr(cli, "build_discovery_runner", lambda benchmark_command: FakeRunner())
-    monkeypatch.setattr(cli, "build_executor", lambda target: FakeExecutor())
+    class FakeInstance:
+        def __init__(self) -> None:
+            self.preflight = None
+
+        def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
+            self.preflight = FakeRunner().run(None, LocalTargetConfig(), None)
+            return self.preflight
+
+    monkeypatch.setattr(cli, "build_instance", lambda: FakeInstance())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
 
     exit_code = cli.main()
@@ -209,14 +222,16 @@ benchmark:
 
     fake_runner = FakeRunner()
 
-    def fake_build_discovery_runner(benchmark_command: str | None) -> FakeRunner:
-        fake_runner.benchmark_runner_type = (
-            "ShellBenchmarkRunner" if benchmark_command is not None else None
-        )
-        return fake_runner
+    class FakeInstance:
+        def __init__(self) -> None:
+            self.preflight = None
 
-    monkeypatch.setattr(cli, "build_discovery_runner", fake_build_discovery_runner)
-    monkeypatch.setattr(cli, "build_executor", lambda target: FakeExecutor())
+        def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
+            fake_runner.benchmark_runner_type = "ShellBenchmarkRunner"
+            self.preflight = fake_runner.run(None, LocalTargetConfig(), None)
+            return self.preflight
+
+    monkeypatch.setattr(cli, "build_instance", lambda: FakeInstance())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
 
     exit_code = cli.main()

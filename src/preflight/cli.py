@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from preflight.application.discovery_runner import DiscoveryRunner
+from preflight.application.hosttune_instance import HostTuneInstance
 from preflight.domain.capability_builder import CapabilityMapBuilder
 from preflight.domain.models import (
     BenchmarkResult,
@@ -67,6 +68,14 @@ def build_discovery_runner(benchmark_command: str | None) -> DiscoveryRunner:
     )
 
 
+def build_instance() -> HostTuneInstance:
+    return HostTuneInstance(
+        config_loader=ConfigLoader(),
+        discovery_runner_factory=build_discovery_runner,
+        executor_factory=build_executor,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run step1 discovery and optional baseline benchmark."
@@ -74,13 +83,8 @@ def main() -> int:
     parser.add_argument("config", type=Path, help="Path to the YAML configuration file.")
     args = parser.parse_args()
 
-    loaded = ConfigLoader().load(args.config)
-    runner = build_discovery_runner(loaded.benchmark_command)
-    snapshot = runner.run(
-        executor=build_executor(loaded.target),
-        target=loaded.target,
-        policy=loaded.policy,
-    )
+    instance = build_instance()
+    snapshot = instance.load_preflight(args.config)
     print(ConsoleReporter().render(snapshot))
     return 0
 
