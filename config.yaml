@@ -19,12 +19,7 @@ policy:
 
 benchmark:
   runner:
-    mode: ssh
-    host: d21-h24-000-r650.rdu2.scalelab.redhat.com
-    user: root
-    private_key_path: /root/.ssh/id_rsa
-    port: 22
-    connect_timeout_seconds: 5
+    mode: local
   contestant_name: hosttune
   script_path: /root/hackathon-tools/benchmark.sh
   compare_script_path: /root/hackathon-tools/compare-results.sh

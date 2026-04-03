@@ -61,10 +61,7 @@ def build_executor(target: LocalTargetConfig | SshTargetConfig) -> CommandExecut
     return SshCommandExecutor(target)
 
 
-def build_discovery_runner(benchmark_command: str | None) -> DiscoveryRunner:
-    benchmark_runner = (
-        ShellBenchmarkRunner(benchmark_command) if benchmark_command is not None else None
-    )
+def build_discovery_runner(_benchmark_command: str | None) -> DiscoveryRunner:
     return DiscoveryRunner(
         platform_probe=PlatformProbe(parser=PlatformParser()),
         cpu_probe=CpuProbe(parser=CpuParser()),
@@ -73,7 +70,6 @@ def build_discovery_runner(benchmark_command: str | None) -> DiscoveryRunner:
         network_probe=NetworkProbe(parser=NetworkParser()),
         storage_probe=StorageProbe(parser=StorageParser()),
         capability_builder=CapabilityMapBuilder(),
-        benchmark_runner=benchmark_runner,
     )
 
 

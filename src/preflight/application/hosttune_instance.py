@@ -86,12 +86,7 @@ class HostTuneInstance:
         return result
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
-        benchmark_command = (
-            loaded_config.benchmark_config.script_path
-            if loaded_config.benchmark_config is not None
-            else None
-        )
-        runner = self.discovery_runner_factory(benchmark_command)
+        runner = self.discovery_runner_factory(None)
         executor = self.executor_factory(loaded_config.target)
         return runner.run(
             executor=executor,
