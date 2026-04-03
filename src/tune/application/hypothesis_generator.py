@@ -123,6 +123,11 @@ class HypothesisPromptBuilder:
             "Current tune state:",
             f"- active_changes={active_changes}",
             f"- best_config={best_config}",
+            (
+                "- note: "
+                "1.1M RPS baseline achieved at 56 workers; "
+                "112 logical cores may share physical resources."
+            ),
             "Allowed candidates:",
             *candidate_lines,
             "Prior hypothesis history:",
@@ -215,6 +220,11 @@ class LlmHypothesisGenerator:
 
     def _require_string(self, payload: dict[str, object], field_name: str) -> str:
         value = payload.get(field_name)
+        if isinstance(value, bool):
+            msg = f"Model response must include non-empty string field: {field_name}"
+            raise ValueError(msg)
+        if isinstance(value, int | float):
+            return str(value)
         if not isinstance(value, str) or value == "":
             msg = f"Model response must include non-empty string field: {field_name}"
             raise ValueError(msg)

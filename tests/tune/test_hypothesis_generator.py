@@ -23,7 +23,7 @@ from tests.tune.test_candidate_catalog_builder import FakeExecutor
 
 
 class FakeModelClient:
-    def __init__(self, response: dict[str, str]) -> None:
+    def __init__(self, response: dict[str, object]) -> None:
         self._response = response
 
     def complete(self, prompt: str) -> ModelCompletion:
@@ -33,6 +33,7 @@ class FakeModelClient:
         assert "Baseline summary:" in prompt
         assert "Current tune state:" in prompt
         assert "current=112" in prompt
+        assert "1.1M RPS baseline achieved at 56 workers" in prompt
         return ModelCompletion(
             content=json.dumps(self._response),
             usage=ModelUsage(
@@ -161,6 +162,24 @@ def test_llm_hypothesis_generator_rejects_noop_value() -> None:
 
     with pytest.raises(ValueError, match="no-op value"):
         generator.generate(context)
+
+
+def test_llm_hypothesis_generator_accepts_numeric_proposed_value() -> None:
+    context = build_hypothesis_context()
+    generator = LlmHypothesisGenerator(
+        model_client=FakeModelClient(
+            {
+                "parameter_key": "service.directive.worker_processes",
+                "proposed_value": 56,
+                "rationale": "Return a numeric JSON value.",
+            }
+        ),
+        prompt_builder=HypothesisPromptBuilder(),
+    )
+
+    hypothesis = generator.generate(context)
+
+    assert hypothesis.proposed_value == "56"
 
 
 def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:
