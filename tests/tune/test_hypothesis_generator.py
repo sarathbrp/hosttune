@@ -19,6 +19,7 @@ from tune.domain.hypothesis_models import (
 )
 
 from tests.tune.test_candidate_catalog_builder import build_tune_context
+from tests.tune.test_candidate_catalog_builder import FakeExecutor
 
 
 class FakeModelClient:
@@ -31,6 +32,7 @@ class FakeModelClient:
         assert "Service contract summary:" in prompt
         assert "Baseline summary:" in prompt
         assert "Current tune state:" in prompt
+        assert "current=112" in prompt
         return ModelCompletion(
             content=json.dumps(self._response),
             usage=ModelUsage(
@@ -52,7 +54,7 @@ class CaptureDebugLogger(DebugExecutionLogger):
 
 def build_hypothesis_context() -> HypothesisContext:
     context = build_tune_context()
-    candidates = CandidateCatalogBuilder().build(context)
+    candidates = CandidateCatalogBuilder().build(context, FakeExecutor())
     return HypothesisContext(
         tune_context=context,
         phase=TunePhase.WIDE_SWEEP,
@@ -141,6 +143,23 @@ def test_llm_hypothesis_generator_rejects_unknown_parameter() -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported parameter_key"):
+        generator.generate(context)
+
+
+def test_llm_hypothesis_generator_rejects_noop_value() -> None:
+    context = build_hypothesis_context()
+    generator = LlmHypothesisGenerator(
+        model_client=FakeModelClient(
+            {
+                "parameter_key": "service.directive.worker_processes",
+                "proposed_value": "112",
+                "rationale": "Repeat the current value.",
+            }
+        ),
+        prompt_builder=HypothesisPromptBuilder(),
+    )
+
+    with pytest.raises(ValueError, match="no-op value"):
         generator.generate(context)
 
 

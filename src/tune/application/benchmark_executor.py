@@ -7,6 +7,7 @@ from statistics import median
 from typing import Any, cast
 
 from preflight.domain.models import CommandExecutor
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.domain.benchmark_models import (
     BenchmarkSample,
     BenchmarkWorkloadSummary,
@@ -19,20 +20,35 @@ from tune.domain.validation_models import ValidationResult
 @dataclass
 class TuneBenchmarkExecutor:
     run_count: int = 3
+    logger: ExecutionLogger = NullExecutionLogger()
 
     def run(
         self,
         context: TuneContext,
+        iteration_number: int,
         validation_result: ValidationResult,
         benchmark_executor: CommandExecutor,
     ) -> TuneBenchmarkResult:
         benchmark_target = context.baseline.benchmark_target
-        benchmark_command = self._build_benchmark_command(context, benchmark_target)
+        benchmark_command = ""
         workload_samples: dict[str, list[BenchmarkSample]] = {
             workload_name: [] for workload_name in context.benchmark_config.workloads
         }
 
         for run_index in range(1, self.run_count + 1):
+            contestant_name = self._build_contestant_name(context, iteration_number, run_index)
+            benchmark_command = self._build_benchmark_command(
+                context=context,
+                benchmark_target=benchmark_target,
+                contestant_name=contestant_name,
+            )
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"Benchmark run {run_index}/{self.run_count} started against "
+                    f"{benchmark_target} as {contestant_name}"
+                ),
+            )
             run_result = benchmark_executor.run(benchmark_command)
             if run_result.exit_code != 0:
                 msg = f"Benchmark command failed: {run_result.stderr or run_result.stdout}"
@@ -41,10 +57,15 @@ class TuneBenchmarkExecutor:
                 sample = self._load_workload_sample(
                     benchmark_executor=benchmark_executor,
                     context=context,
+                    contestant_name=contestant_name,
                     workload_name=workload_name,
                     run_index=run_index,
                 )
                 workload_samples[workload_name].append(sample)
+            self.logger.stage_detail(
+                "tune",
+                self._build_run_summary(run_index, workload_samples),
+            )
 
         workload_summaries = tuple(
             self._summarize_workload(
@@ -64,26 +85,31 @@ class TuneBenchmarkExecutor:
             workload_summaries=workload_summaries,
         )
 
-    def _build_benchmark_command(self, context: TuneContext, benchmark_target: str) -> str:
+    def _build_benchmark_command(
+        self,
+        context: TuneContext,
+        benchmark_target: str,
+        contestant_name: str,
+    ) -> str:
         config = context.benchmark_config
         env_assignments = [
             f"TARGET_HOST={shlex.quote(benchmark_target)}",
             f"RESULTS_DIR={shlex.quote(config.results_directory)}",
         ]
         benchmark_script = shlex.quote(config.script_path)
-        contestant_name = shlex.quote(config.contestant_name)
-        return " ".join((*env_assignments, benchmark_script, contestant_name))
+        return " ".join((*env_assignments, benchmark_script, shlex.quote(contestant_name)))
 
     def _load_workload_sample(
         self,
         benchmark_executor: CommandExecutor,
         context: TuneContext,
+        contestant_name: str,
         workload_name: str,
         run_index: int,
     ) -> BenchmarkSample:
         result_path = (
             f"{context.benchmark_config.results_directory}/"
-            f"{context.benchmark_config.contestant_name}_{workload_name}.json"
+            f"{contestant_name}_{workload_name}.json"
         )
         command = f"cat {shlex.quote(result_path)}"
         command_result = benchmark_executor.run(command)
@@ -147,3 +173,31 @@ class TuneBenchmarkExecutor:
         if normalized.endswith("s"):
             return float(normalized.removesuffix("s")) * 1000.0
         return float(normalized)
+
+    def _build_contestant_name(
+        self,
+        context: TuneContext,
+        iteration_number: int,
+        run_index: int,
+    ) -> str:
+        session_id = "nosession"
+        if context.artifacts is not None:
+            session_id = context.artifacts.session_id
+        base_name = context.benchmark_config.contestant_name
+        return f"{base_name}_{session_id}_iter{iteration_number:03d}_run{run_index:02d}"
+
+    def _build_run_summary(
+        self,
+        run_index: int,
+        workload_samples: dict[str, list[BenchmarkSample]],
+    ) -> str:
+        lines = [f"Benchmark run {run_index}/{self.run_count} summary:"]
+        for workload_name, samples in workload_samples.items():
+            sample = samples[-1]
+            lines.append(
+                f"{workload_name:<10} "
+                f"rps={sample.requests_per_second:>10.2f} "
+                f"total={sample.total_requests:>10} "
+                f"latency_ms={sample.average_latency_ms:>8.2f}"
+            )
+        return "\n".join(lines)

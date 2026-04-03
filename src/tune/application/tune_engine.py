@@ -56,7 +56,7 @@ class TuneEngine:
         benchmark_executor: CommandExecutor,
     ) -> TuneState:
         state = TuneState.initialize(context.preflight.policy.max_iterations)
-        all_candidates = self.candidate_catalog_builder.build(context)
+        all_candidates = self.candidate_catalog_builder.build(context, target_executor)
         self.logger.stage_start("tune")
         while not self.phase_controller.should_stop(state):
             previous_phase = state.current_phase
@@ -158,6 +158,7 @@ class TuneEngine:
         else:
             benchmark_result = self.benchmark_executor.run(
                 context=context,
+                iteration_number=iteration_number,
                 validation_result=validation_result,
                 benchmark_executor=benchmark_executor,
             )
@@ -305,3 +306,14 @@ class TuneEngine:
             ),
         )
         self.logger.stage_detail("tune", f"Evaluate summary: {evaluation_result.summary}")
+        for workload in evaluation_result.workload_evaluations:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"Evaluate workload: {workload.workload_name} "
+                    f"baseline_rps={workload.baseline_requests_per_second:.2f} "
+                    f"current_rps={workload.current_requests_per_second:.2f} "
+                    f"change={workload.relative_change:.2%} "
+                    f"above_noise_floor={workload.above_noise_floor}"
+                ),
+            )

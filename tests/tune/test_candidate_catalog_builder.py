@@ -4,6 +4,7 @@ from onboard.infrastructure.service_definition_validator import ServiceDefinitio
 from preflight.domain.models import (
     CapabilityFlag,
     CapabilityMap,
+    CommandResult,
     CpuInfo,
     DiscoverySnapshot,
     EngagementPolicy,
@@ -20,6 +21,20 @@ from tune.domain.hypothesis_models import CandidateSource
 from tune.domain.tune_context import TuneContext
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
+
+
+class FakeExecutor:
+    def run(self, command: str) -> CommandResult:
+        if command.startswith("grep -E"):
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="worker_processes 112;",
+                stderr="",
+            )
+        if command.startswith("sysctl -n"):
+            return CommandResult(command=command, exit_code=0, stdout="4096", stderr="")
+        return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
 def build_tune_context() -> TuneContext:
@@ -92,7 +107,7 @@ def build_tune_context() -> TuneContext:
 def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> None:
     context = build_tune_context()
 
-    candidates = CandidateCatalogBuilder().build(context)
+    candidates = CandidateCatalogBuilder().build(context, FakeExecutor())
 
     candidate_keys = {candidate.parameter_key for candidate in candidates}
     assert "service.directive.worker_processes" in candidate_keys
@@ -101,3 +116,9 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
         candidate.source == CandidateSource.SERVICE_DIRECTIVE for candidate in candidates
     )
     assert any(candidate.source == CandidateSource.SERVICE_SYSCTL for candidate in candidates)
+    worker_processes = next(
+        candidate
+        for candidate in candidates
+        if candidate.parameter_key == "service.directive.worker_processes"
+    )
+    assert worker_processes.current_value == "112"

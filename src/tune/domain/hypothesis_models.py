@@ -58,6 +58,7 @@ class CandidateParameter:
     min_value: int | None
     max_value: int | None
     rationale_hint: str
+    current_value: str | None = None
 
 
 @dataclass(frozen=True)

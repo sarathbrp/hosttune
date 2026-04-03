@@ -34,6 +34,7 @@ class HypothesisPromptBuilder:
                 f"min={candidate.min_value}; "
                 f"max={candidate.max_value}; "
                 f"allowed={candidate.allowed_values}; "
+                f"current={candidate.current_value}; "
                 f"hint={candidate.rationale_hint}"
             )
             for candidate in context.candidates
@@ -207,6 +208,9 @@ class LlmHypothesisGenerator:
             raise ValueError(msg)
         if candidate.max_value is not None and numeric_value > candidate.max_value:
             msg = f"Value {numeric_value} is above maximum for {candidate.parameter_key}"
+            raise ValueError(msg)
+        if candidate.current_value is not None and proposed_value == candidate.current_value:
+            msg = f"Model proposed no-op value {proposed_value!r} " f"for {candidate.parameter_key}"
             raise ValueError(msg)
 
     def _require_string(self, payload: dict[str, object], field_name: str) -> str:

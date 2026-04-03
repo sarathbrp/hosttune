@@ -168,7 +168,7 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
             sysctl_applier=SysctlApplier(),
         ),
         health_validator=HealthValidator(),
-        benchmark_executor=TuneBenchmarkExecutor(),
+        benchmark_executor=TuneBenchmarkExecutor(logger=execution_logger),
         result_evaluator=ResultEvaluator(),
         rollback_coordinator=RollbackCoordinator(),
         recorder=TuneRecorder(),
