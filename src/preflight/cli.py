@@ -36,6 +36,7 @@ from preflight.infrastructure.probes.storage_probe import StorageProbe
 from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.console_reporter import ConsoleReporter
 from preflight.interfaces.execution_logger import (
+    DebugExecutionLogger,
     ExecutionLogger,
     NullExecutionLogger,
     VerboseExecutionLogger,
@@ -83,8 +84,14 @@ def build_discovery_runner(
     )
 
 
-def build_instance(verbose: bool = False) -> HostTuneInstance:
-    logger: ExecutionLogger = VerboseExecutionLogger() if verbose else NullExecutionLogger()
+def build_instance(verbose: bool = False, debug: bool = False) -> HostTuneInstance:
+    logger: ExecutionLogger
+    if debug:
+        logger = DebugExecutionLogger()
+    elif verbose:
+        logger = VerboseExecutionLogger()
+    else:
+        logger = NullExecutionLogger()
     return HostTuneInstance(
         config_loader=ConfigLoader(),
         discovery_runner_factory=lambda benchmark_command: build_discovery_runner(
@@ -134,7 +141,12 @@ def main() -> int:
         "-v",
         "--verbose",
         action="store_true",
-        help="Print detailed stage and command logs to stderr.",
+        help="Print customer-safe stage and summary logs to stderr.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print internal debug logs including exact commands.",
     )
     parser.add_argument(
         "config",
@@ -145,7 +157,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    instance = build_instance(verbose=args.verbose)
+    instance = build_instance(verbose=args.verbose or args.debug, debug=args.debug)
     loaded_config = instance.config_loader.load(args.config)
     preflight = instance.load_preflight(args.config)
     onboard = instance.load_onboard(args.config)

@@ -38,7 +38,8 @@ class VerboseExecutionLogger(ExecutionLogger):
             self._write(f"[{stage}] {line}")
 
     def command(self, stage: str, command: str) -> None:
-        self._write(f"[{stage}] $ {command}")
+        _ = stage
+        _ = command
 
     def stage_end(self, name: str) -> None:
         self._write(f"--- {name.upper()} complete ---")
@@ -48,3 +49,9 @@ class VerboseExecutionLogger(ExecutionLogger):
 
     def _write(self, message: str) -> None:
         self.stream.write(f"{message}\n")
+
+
+@dataclass
+class DebugExecutionLogger(VerboseExecutionLogger):
+    def command(self, stage: str, command: str) -> None:
+        self._write(f"[{stage}] $ {command}")
