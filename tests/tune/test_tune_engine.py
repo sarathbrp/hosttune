@@ -20,6 +20,7 @@ from tune.domain.hypothesis_models import (
     TunePhase,
     TuningHypothesis,
 )
+from tune.domain.validation_models import ValidationCheck, ValidationResult
 
 from tests.tune.test_benchmark_executor import BenchmarkExecutorDouble
 from tests.tune.test_candidate_catalog_builder import build_tune_context
@@ -94,6 +95,52 @@ class ModelBackedHypothesisGeneratorDouble:
                 input_tokens=100,
                 output_tokens=20,
                 total_tokens=120,
+            ),
+        )
+
+
+class FailingHealthValidator:
+    def validate_baseline(self, context, executor):  # type: ignore[no-untyped-def]
+        _ = context
+        _ = executor
+        return (
+            ValidationCheck(name="systemd_active", passed=True, detail="active"),
+            ValidationCheck(name="health_probe", passed=False, detail="status=500 body_match=True"),
+        )
+
+    def validate(self, context, applied_change, executor) -> ValidationResult:  # type: ignore[no-untyped-def]
+        _ = context
+        _ = executor
+        return ValidationResult(
+            applied_change=applied_change,
+            healthy=False,
+            checks=(
+                ValidationCheck(name="systemd_active", passed=True, detail="active"),
+                ValidationCheck(name="health_probe", passed=False, detail="status=500 body_match=True"),
+                ValidationCheck(name="effective_value", passed=True, detail="ok"),
+            ),
+        )
+
+
+class GatePassFailIterationValidator:
+    def validate_baseline(self, context, executor):  # type: ignore[no-untyped-def]
+        _ = context
+        _ = executor
+        return (
+            ValidationCheck(name="systemd_active", passed=True, detail="active"),
+            ValidationCheck(name="health_probe", passed=True, detail="status=200 body_match=True"),
+        )
+
+    def validate(self, context, applied_change, executor) -> ValidationResult:  # type: ignore[no-untyped-def]
+        _ = context
+        _ = executor
+        return ValidationResult(
+            applied_change=applied_change,
+            healthy=False,
+            checks=(
+                ValidationCheck(name="systemd_active", passed=True, detail="active"),
+                ValidationCheck(name="health_probe", passed=False, detail="status=500 body_match=True"),
+                ValidationCheck(name="effective_value", passed=True, detail="ok"),
             ),
         )
 
@@ -275,3 +322,127 @@ def test_tune_engine_logs_model_token_summary(tmp_path) -> None:  # type: ignore
     )
 
     assert any("Hypothesis tokens:" in message for message in logger.messages)
+
+
+def test_tune_engine_logs_benchmark_skipped_reason(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    base_context = build_tune_context()
+    context = replace(
+        base_context,
+        preflight=replace(
+            base_context.preflight,
+            policy=replace(base_context.preflight.policy, max_iterations=1),
+        ),
+        artifacts=RuntimeArtifacts(
+            session_id="abc123def456",
+            session_directory=tmp_path / "artifacts" / "abc123def456",
+        ),
+    )
+    context.artifacts.session_directory.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+    target_executor = TargetExecutorDouble()
+    benchmark_executor = BenchmarkExecutorDouble(
+        [
+            {
+                "homepage": {
+                    "results": {
+                        "requests": {"per_sec": 1200.0, "total": 12000},
+                        "latency": {"avg": "2.0ms"},
+                    }
+                },
+                "small": {
+                    "results": {
+                        "requests": {"per_sec": 1000.0, "total": 10000},
+                        "latency": {"avg": "1.5ms"},
+                    }
+                },
+            }
+        ]
+    )
+    logger = CaptureLogger()
+
+    state = TuneEngine(
+        candidate_catalog_builder=CandidateCatalogBuilder(),
+        phase_controller=PhaseController(),
+        hypothesis_generator=DeterministicHypothesisGenerator(),
+        apply_coordinator=ApplyCoordinator(
+            service_directive_applier=NginxDirectiveApplier(),
+            sysctl_applier=SysctlApplier(),
+        ),
+        health_validator=GatePassFailIterationValidator(),
+        benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+        result_evaluator=ResultEvaluator(),
+        rollback_coordinator=RollbackCoordinator(),
+        recorder=TuneRecorder(),
+        logger=logger,
+    ).run(
+        context=context,
+        target_executor=target_executor,
+        benchmark_executor=benchmark_executor,
+    )
+
+    assert state.history[0].status is HypothesisStatus.FAILED_VALIDATION
+    assert any("Benchmark skipped: validation failed" in message for message in logger.messages)
+    assert any("health_probe: status=500 body_match=True" in message for message in logger.messages)
+
+
+def test_tune_engine_fails_fast_when_pre_tune_health_gate_fails(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    base_context = build_tune_context()
+    context = replace(
+        base_context,
+        preflight=replace(
+            base_context.preflight,
+            policy=replace(base_context.preflight.policy, max_iterations=1),
+        ),
+        artifacts=RuntimeArtifacts(
+            session_id="abc123def456",
+            session_directory=tmp_path / "artifacts" / "abc123def456",
+        ),
+    )
+    context.artifacts.session_directory.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+    logger = CaptureLogger()
+
+    try:
+        TuneEngine(
+            candidate_catalog_builder=CandidateCatalogBuilder(),
+            phase_controller=PhaseController(),
+            hypothesis_generator=DeterministicHypothesisGenerator(),
+            apply_coordinator=ApplyCoordinator(
+                service_directive_applier=NginxDirectiveApplier(),
+                sysctl_applier=SysctlApplier(),
+            ),
+            health_validator=FailingHealthValidator(),
+            benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+            result_evaluator=ResultEvaluator(),
+            rollback_coordinator=RollbackCoordinator(),
+            recorder=TuneRecorder(),
+            logger=logger,
+        ).run(
+            context=context,
+            target_executor=TargetExecutorDouble(),
+            benchmark_executor=BenchmarkExecutorDouble(
+                [
+                    {
+                        "homepage": {
+                            "results": {
+                                "requests": {"per_sec": 1200.0, "total": 12000},
+                                "latency": {"avg": "2.0ms"},
+                            }
+                        },
+                        "small": {
+                            "results": {
+                                "requests": {"per_sec": 1000.0, "total": 10000},
+                                "latency": {"avg": "1.5ms"},
+                            }
+                        },
+                    }
+                ]
+            ),
+        )
+    except ValueError as error:
+        message = str(error)
+    else:
+        raise AssertionError("Expected pre-tune health gate failure")
+
+    assert "Pre-tune health gate failed" in message
+    assert any("Pre-tune health gate failed" in msg for msg in logger.messages)

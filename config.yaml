@@ -1,6 +1,6 @@
 target:
   mode: ssh
-  host: 10.1.90.178
+  host: 172.21.90.178
   user: root
   private_key_path: /root/.ssh/id_rsa
   port: 22

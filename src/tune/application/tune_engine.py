@@ -58,6 +58,16 @@ class TuneEngine:
         state = TuneState.initialize(context.preflight.policy.max_iterations)
         all_candidates = self.candidate_catalog_builder.build(context, target_executor)
         self.logger.stage_start("tune")
+        baseline_checks = self.health_validator.validate_baseline(context, target_executor)
+        baseline_failed_checks = tuple(check for check in baseline_checks if not check.passed)
+        if baseline_failed_checks:
+            detail = ", ".join(f"{check.name}: {check.detail}" for check in baseline_failed_checks)
+            self.logger.stage_detail(
+                "tune",
+                f"Pre-tune health gate failed ({detail})",
+            )
+            raise ValueError(f"Pre-tune health gate failed: {detail}")
+        self.logger.stage_detail("tune", "Pre-tune health gate passed.")
         while not self.phase_controller.should_stop(state):
             previous_phase = state.current_phase
             phase = self.phase_controller.determine_phase(state, all_candidates)
@@ -149,6 +159,18 @@ class TuneEngine:
         benchmark_result = None
         evaluation_result = None
         if not validation_result.healthy:
+            failed_checks = (
+                ", ".join(
+                    f"{check.name}: {check.detail}"
+                    for check in validation_result.checks
+                    if not check.passed
+                )
+                or "unknown validation failure"
+            )
+            self.logger.stage_detail(
+                "tune",
+                f"Benchmark skipped: validation failed ({failed_checks})",
+            )
             self.rollback_coordinator.rollback(applied_change, target_executor)
             self.logger.stage_detail(
                 "tune",

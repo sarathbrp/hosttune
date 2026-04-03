@@ -54,7 +54,12 @@ class TuneBenchmarkExecutor:
             )
             run_result = benchmark_executor.run(benchmark_command)
             if run_result.exit_code != 0:
-                msg = f"Benchmark command failed: {run_result.stderr or run_result.stdout}"
+                msg = (
+                    "Benchmark command failed "
+                    f"(exit_code={run_result.exit_code}). "
+                    f"stdout={run_result.stdout.strip()!r} "
+                    f"stderr={run_result.stderr.strip()!r}"
+                )
                 raise ValueError(msg)
             for workload_name in context.benchmark_config.workloads:
                 sample = self._load_workload_sample(

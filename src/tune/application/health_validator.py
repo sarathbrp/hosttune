@@ -12,23 +12,41 @@ from tune.domain.validation_models import ValidationCheck, ValidationResult
 
 @dataclass
 class HealthValidator:
+    def validate_baseline(
+        self,
+        context: TuneContext,
+        executor: CommandExecutor,
+    ) -> tuple[ValidationCheck, ...]:
+        checks = self._build_service_health_checks(context, executor)
+        return tuple(checks)
+
     def validate(
         self,
         context: TuneContext,
         applied_change: AppliedChange,
         executor: CommandExecutor,
     ) -> ValidationResult:
-        checks = [
-            self._validate_service_state(context, executor),
-            self._validate_health_check(context, executor),
-            self._validate_effective_value(applied_change, executor),
-        ]
+        checks = self._build_service_health_checks(context, executor)
+        syntax_check = self._validate_config_syntax(context, applied_change, executor)
+        if syntax_check is not None:
+            checks.append(syntax_check)
+        checks.append(self._validate_effective_value(applied_change, executor))
         healthy = all(check.passed for check in checks)
         return ValidationResult(
             applied_change=applied_change,
             healthy=healthy,
             checks=tuple(checks),
         )
+
+    def _build_service_health_checks(
+        self,
+        context: TuneContext,
+        executor: CommandExecutor,
+    ) -> list[ValidationCheck]:
+        return [
+            self._validate_service_state(context, executor),
+            self._validate_health_check(context, executor),
+        ]
 
     def _validate_service_state(
         self,
@@ -158,6 +176,27 @@ class HealthValidator:
             name="effective_value",
             passed=False,
             detail="No effective value validator for applied change type.",
+        )
+
+    def _validate_config_syntax(
+        self,
+        context: TuneContext,
+        applied_change: AppliedChange,
+        executor: CommandExecutor,
+    ) -> ValidationCheck | None:
+        if not applied_change.hypothesis.parameter_key.startswith("service.directive."):
+            return None
+        if context.onboard.service.identity.config_format != "nginx":
+            return None
+
+        command = "nginx -t"
+        result = executor.run(command)
+        passed = result.exit_code == 0
+        detail = result.stderr.strip() or result.stdout.strip() or "nginx -t returned no output"
+        return ValidationCheck(
+            name="config_syntax",
+            passed=passed,
+            detail=detail,
         )
 
     def _split_host_port(self, target: str) -> tuple[str, str]:

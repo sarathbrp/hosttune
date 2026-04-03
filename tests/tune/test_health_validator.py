@@ -15,6 +15,13 @@ class HealthyExecutor:
         self.commands.append(command)
         if command.startswith("systemctl is-active"):
             return CommandResult(command=command, exit_code=0, stdout="active", stderr="")
+        if command == "nginx -t":
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="",
+                stderr="nginx: configuration file /etc/nginx/nginx.conf test is successful",
+            )
         if "curl -sS" in command:
             return CommandResult(
                 command=command,
@@ -102,6 +109,7 @@ def test_health_validator_accepts_healthy_directive_change() -> None:
     assert {check.name for check in result.checks} == {
         "systemd_active",
         "health_probe",
+        "config_syntax",
         "effective_value",
     }
 
@@ -122,3 +130,37 @@ def test_health_validator_flags_unhealthy_service() -> None:
 
     assert result.healthy is False
     assert any(check.name == "systemd_active" and not check.passed for check in result.checks)
+
+
+def test_health_validator_runs_baseline_checks() -> None:
+    validator = HealthValidator()
+    checks = validator.validate_baseline(
+        context=build_tune_context(),
+        executor=HealthyExecutor(),
+    )
+
+    assert {check.name for check in checks} == {"systemd_active", "health_probe"}
+    assert all(check.passed for check in checks)
+
+
+def test_health_validator_flags_nginx_config_syntax_failure() -> None:
+    class BrokenSyntaxExecutor(HealthyExecutor):
+        def run(self, command: str) -> CommandResult:
+            if command == "nginx -t":
+                return CommandResult(
+                    command=command,
+                    exit_code=1,
+                    stdout="",
+                    stderr="nginx: [emerg] invalid number of arguments",
+                )
+            return super().run(command)
+
+    validator = HealthValidator()
+    result = validator.validate(
+        context=build_tune_context(),
+        applied_change=build_directive_change(),
+        executor=BrokenSyntaxExecutor(),
+    )
+
+    assert result.healthy is False
+    assert any(check.name == "config_syntax" and not check.passed for check in result.checks)

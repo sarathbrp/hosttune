@@ -30,6 +30,18 @@ class BenchmarkExecutorDouble:
         return CommandResult(command=command, exit_code=1, stdout="", stderr="missing payload")
 
 
+class FailingBenchmarkExecutorDouble:
+    def run(self, command: str) -> CommandResult:
+        if "benchmark.sh" in command:
+            return CommandResult(
+                command=command,
+                exit_code=2,
+                stdout="=== Hackathon Performance Benchmark ===\nTarget unreachable",
+                stderr="curl: (7) Failed to connect",
+            )
+        return CommandResult(command=command, exit_code=1, stdout="", stderr="unexpected")
+
+
 def build_validation_result() -> ValidationResult:
     hypothesis = TuningHypothesis(
         phase=TunePhase.WIDE_SWEEP,
@@ -241,3 +253,23 @@ def test_tune_benchmark_executor_respects_cooling_period() -> None:
     )
 
     assert sleep_calls == [30, 30]
+
+
+def test_tune_benchmark_executor_surfaces_exit_code_and_output() -> None:
+    context = build_tune_context()
+
+    try:
+        TuneBenchmarkExecutor(run_count=1).run(
+            context=context,
+            iteration_number=1,
+            validation_result=build_validation_result(),
+            benchmark_executor=FailingBenchmarkExecutorDouble(),
+        )
+    except ValueError as error:
+        message = str(error)
+    else:
+        raise AssertionError("Expected benchmark failure to raise ValueError")
+
+    assert "exit_code=2" in message
+    assert "=== Hackathon Performance Benchmark ===" in message
+    assert "Failed to connect" in message
