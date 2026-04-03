@@ -1,0 +1,3 @@
+openai>=1.52
+PyYAML>=6.0
+langgraph>=0.2.39

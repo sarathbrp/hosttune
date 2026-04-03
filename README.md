@@ -80,6 +80,12 @@ target:
 
 The repository uses `pre-commit` for local quality and secret scanning.
 
+Install runtime dependencies with:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 Install and enable it with:
 
 ```bash
