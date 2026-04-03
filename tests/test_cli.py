@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
+from baseline.domain.models import BaselineResult
+from preflight.infrastructure.config_loader import LoadedConfig
+from onboard.domain.models import OnboardResult
+from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
+from onboard.domain.models import CompatibilityReport
 from preflight import cli
 from preflight.domain.models import (
+    BenchmarkResult,
     CapabilityFlag,
     CapabilityMap,
     CommandResult,
@@ -17,6 +24,9 @@ from preflight.domain.models import (
     SshTargetConfig,
     StorageInfo,
 )
+from snapshot.domain.models import SnapshotResult
+
+from tests.onboard.test_service_definition_validator import build_valid_definition
 
 
 class FakeExecutor:
@@ -68,6 +78,9 @@ def test_build_instance_exposes_preflight_slot() -> None:
     instance = cli.build_instance()
 
     assert instance.preflight is None
+    assert instance.onboard is None
+    assert instance.snapshot is None
+    assert instance.baseline is None
 
 
 def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
@@ -130,13 +143,77 @@ def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
                 ),
             )
 
+    @dataclass(frozen=True)
+    class FakeOnboardState:
+        onboard: OnboardResult
+        snapshot: SnapshotResult
+        baseline: BaselineResult
+
+    fake_definition = ServiceDefinitionValidator().validate(build_valid_definition())
+    fake_state = FakeOnboardState(
+        onboard=OnboardResult(
+            service_name="nginx",
+            service=fake_definition,
+            compatibility=CompatibilityReport(compatible=True, findings=()),
+        ),
+        snapshot=SnapshotResult(
+            service_name="nginx",
+            snapshot_directory="/var/tmp/hosttune/snapshots/nginx",
+            captured_paths=("/etc/nginx/nginx.conf",),
+            runtime_state_output="nginx -T",
+            process_state={"pid_file": "1234"},
+            restore_sequence=("systemctl restart nginx",),
+        ),
+        baseline=BaselineResult(
+            service_name="nginx",
+            benchmark_command="printf '1.0'",
+            benchmark_result=BenchmarkResult(
+                command="printf '1.0'",
+                exit_code=0,
+                primary_metric_name="score",
+                primary_metric_value=1.0,
+                raw_output="1.0",
+            ),
+            expected_variance=0.05,
+            warmup_seconds=10,
+            guardrail_metrics=("p95_latency",),
+        ),
+    )
+
     class FakeInstance:
         def __init__(self) -> None:
+            self.config_loader = type(
+                "FakeConfigLoader",
+                (),
+                {
+                    "load": lambda _self, _path: LoadedConfig(
+                        target=LocalTargetConfig(),
+                        policy=None,  # type: ignore[arg-type]
+                        service_name="nginx",
+                        benchmark_command="printf '1.0'",
+                    )
+                },
+            )()
             self.preflight = None
+            self.onboard = None
+            self.snapshot = None
+            self.baseline = None
 
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
             self.preflight = FakeRunner().run(None, LocalTargetConfig(), None)
             return self.preflight
+
+        def load_onboard(self, _config_path: Path) -> OnboardResult:
+            self.onboard = fake_state.onboard
+            return self.onboard
+
+        def load_snapshot(self, _config_path: Path) -> SnapshotResult:
+            self.snapshot = fake_state.snapshot
+            return self.snapshot
+
+        def load_baseline(self, _config_path: Path) -> BaselineResult:
+            self.baseline = fake_state.baseline
+            return self.baseline
 
     monkeypatch.setattr(cli, "build_instance", lambda: FakeInstance())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
@@ -147,6 +224,9 @@ def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
     assert exit_code == 0
     assert '"platform_summary": "bare_metal_linux"' in output
     assert '"hostname": "node-a"' in output
+    assert '"service_name": "nginx"' in output
+    assert '"snapshot_directory": "/var/tmp/hosttune/snapshots/nginx"' in output
+    assert '"benchmark_command": "printf \'1.0\'"' in output
 
 
 def test_main_builds_benchmark_runner_when_command_present(
@@ -221,15 +301,70 @@ benchmark:
             )
 
     fake_runner = FakeRunner()
+    fake_definition = ServiceDefinitionValidator().validate(build_valid_definition())
+    fake_onboard = OnboardResult(
+        service_name="nginx",
+        service=fake_definition,
+        compatibility=CompatibilityReport(compatible=True, findings=()),
+    )
+    fake_snapshot = SnapshotResult(
+        service_name="nginx",
+        snapshot_directory="/var/tmp/hosttune/snapshots/nginx",
+        captured_paths=("/etc/nginx/nginx.conf",),
+        runtime_state_output="nginx -T",
+        process_state={"pid_file": "1234"},
+        restore_sequence=("systemctl restart nginx",),
+    )
+    fake_baseline = BaselineResult(
+        service_name="nginx",
+        benchmark_command="printf '1.0'",
+        benchmark_result=BenchmarkResult(
+            command="printf '1.0'",
+            exit_code=0,
+            primary_metric_name="score",
+            primary_metric_value=1.0,
+            raw_output="1.0",
+        ),
+        expected_variance=0.05,
+        warmup_seconds=10,
+        guardrail_metrics=("p95_latency",),
+    )
 
     class FakeInstance:
         def __init__(self) -> None:
+            self.config_loader = type(
+                "FakeConfigLoader",
+                (),
+                {
+                    "load": lambda _self, _path: LoadedConfig(
+                        target=LocalTargetConfig(),
+                        policy=None,  # type: ignore[arg-type]
+                        service_name="nginx",
+                        benchmark_command="printf '1.0'",
+                    )
+                },
+            )()
             self.preflight = None
+            self.onboard = None
+            self.snapshot = None
+            self.baseline = None
 
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
             fake_runner.benchmark_runner_type = "ShellBenchmarkRunner"
             self.preflight = fake_runner.run(None, LocalTargetConfig(), None)
             return self.preflight
+
+        def load_onboard(self, _config_path: Path) -> OnboardResult:
+            self.onboard = fake_onboard
+            return self.onboard
+
+        def load_snapshot(self, _config_path: Path) -> SnapshotResult:
+            self.snapshot = fake_snapshot
+            return self.snapshot
+
+        def load_baseline(self, _config_path: Path) -> BaselineResult:
+            self.baseline = fake_baseline
+            return self.baseline
 
     monkeypatch.setattr(cli, "build_instance", lambda: FakeInstance())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])

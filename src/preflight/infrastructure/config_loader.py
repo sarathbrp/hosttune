@@ -18,6 +18,7 @@ from preflight.domain.models import (
 class LoadedConfig:
     target: TargetConfig
     policy: EngagementPolicy
+    service_name: str
     benchmark_command: str | None
 
 
@@ -30,13 +31,23 @@ class ConfigLoader:
 
         target = self._load_target(cast(dict[str, Any], content.get("target", {})))
         policy = self._load_policy(cast(dict[str, Any], content.get("policy", {})))
+        service = cast(dict[str, Any], content.get("service", {}))
+        service_name = service.get("name")
+        if not isinstance(service_name, str) or service_name == "":
+            msg = "service.name must be a non-empty string."
+            raise ValueError(msg)
         benchmark = content.get("benchmark", {})
         benchmark_command = benchmark.get("command") if isinstance(benchmark, dict) else None
         if benchmark_command is not None and not isinstance(benchmark_command, str):
             msg = "benchmark.command must be a string when provided."
             raise ValueError(msg)
 
-        return LoadedConfig(target=target, policy=policy, benchmark_command=benchmark_command)
+        return LoadedConfig(
+            target=target,
+            policy=policy,
+            service_name=service_name,
+            benchmark_command=benchmark_command,
+        )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:
         mode = data.get("mode", "local")

@@ -6,6 +6,9 @@ target:
   port: 22
   connect_timeout_seconds: 5
 
+service:
+  name: nginx
+
 policy:
   allow_reload: false
   allow_restart: false

@@ -11,6 +11,8 @@ def test_loads_local_configuration(tmp_path: Path) -> None:
         """
 target:
   mode: local
+service:
+  name: nginx
 policy:
   allow_reload: true
   max_iterations: 4
@@ -24,6 +26,7 @@ benchmark:
 
     assert loaded.target.mode == "local"
     assert loaded.policy.allow_reload is True
+    assert loaded.service_name == "nginx"
     assert loaded.benchmark_command == "printf '123.0'"
 
 
@@ -37,6 +40,8 @@ target:
   user: ec2-user
   private_key_path: /tmp/id_rsa
   port: 2222
+service:
+  name: nginx
 """.strip(),
         encoding="utf-8",
     )
@@ -49,7 +54,7 @@ target:
 
 def test_rejects_unknown_mode(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yml"
-    config_path.write_text("target:\n  mode: serial\n", encoding="utf-8")
+    config_path.write_text("target:\n  mode: serial\nservice:\n  name: nginx\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Unsupported target mode"):
         ConfigLoader().load(config_path)
@@ -70,6 +75,8 @@ def test_rejects_missing_ssh_fields(tmp_path: Path) -> None:
 target:
   mode: ssh
   host: 10.0.0.5
+service:
+  name: nginx
 """.strip(),
         encoding="utf-8",
     )
@@ -84,6 +91,8 @@ def test_rejects_non_string_benchmark_command(tmp_path: Path) -> None:
         """
 target:
   mode: local
+service:
+  name: nginx
 benchmark:
   command: 42
 """.strip(),
@@ -91,4 +100,12 @@ benchmark:
     )
 
     with pytest.raises(ValueError, match="benchmark.command must be a string"):
+        ConfigLoader().load(config_path)
+
+
+def test_rejects_missing_service_name(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("target:\n  mode: local\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="service.name must be a non-empty string"):
         ConfigLoader().load(config_path)

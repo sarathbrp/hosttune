@@ -1,0 +1,100 @@
+identity:
+  service_name: nginx
+  systemd_unit_name: nginx.service
+  rhel_versions:
+    - "9"
+  service_versions: []
+  config_paths:
+    - /etc/nginx/nginx.conf
+    - /etc/nginx/conf.d
+  config_format: nginx
+  working_directory: /var/www/nginx
+  log_paths:
+    - /var/log/nginx/access.log
+    - /var/log/nginx/error.log
+
+health_check:
+  probe_type: http
+  target: http://127.0.0.1/
+  expected_status_code: 200
+  expected_string: null
+  expected_exit_code: null
+  timeout_seconds: 5
+  retries: 3
+  warmup_seconds: 2
+
+snapshot:
+  files_to_snapshot:
+    - /etc/nginx/nginx.conf
+    - /etc/nginx/conf.d
+  runtime_state_command: nginx -T
+  process_state:
+    pid_file: /run/nginx.pid
+    worker_process_hint: nginx
+    open_connections_command: ss -tan '( sport = :80 )'
+  restore_sequence:
+    - cp -a {{ snapshot_dir }}/nginx.conf /etc/nginx/nginx.conf
+    - cp -a {{ snapshot_dir }}/conf.d /etc/nginx/conf.d
+    - systemctl restart nginx
+  snapshot_storage_location: /var/tmp/hosttune/snapshots/nginx
+
+restart:
+  reload:
+    supported: true
+    command: systemctl reload nginx
+  restart:
+    supported: true
+    command: systemctl restart nginx
+    expected_downtime_seconds: 5
+  change_categories:
+    service_config: reload
+    worker_model: restart
+    kernel_network: reboot
+  drain_policy: best_effort
+  dependency_chain: []
+  post_restart_validation: health_check
+
+tunable_surface:
+  allowed_directives:
+    worker_processes:
+      value_type: integer
+      min_value: 1
+      max_value: 112
+      apply_mode: reload
+    worker_connections:
+      value_type: integer
+      min_value: 128
+      max_value: 65535
+      apply_mode: reload
+    keepalive_timeout:
+      value_type: integer
+      min_value: 1
+      max_value: 300
+      apply_mode: reload
+    sendfile:
+      value_type: enum
+      allowed_values:
+        - "on"
+        - "off"
+      apply_mode: reload
+  forbidden_directives:
+    - master_process
+    - daemon
+  interdependencies:
+    - worker_processes -> verify CPU topology and NUMA layout
+    - worker_connections -> verify file descriptor limits
+  relevant_sysctls:
+    - net.core.somaxconn
+    - net.ipv4.ip_local_port_range
+    - net.core.netdev_max_backlog
+
+benchmark_hints:
+  primary_metric: requests_per_second
+  guardrail_metrics:
+    - p95_latency
+    - error_rate
+  expected_variance: 0.05
+  warmup_seconds: 10
+  interference_sources:
+    - access logging to the benchmarked disk
+    - external TLS termination

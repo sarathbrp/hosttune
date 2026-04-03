@@ -3,6 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from baseline.application.baseline_runner import BaselineRunner
+from onboard.application.onboard_runner import OnboardRunner
+from onboard.infrastructure.service_compatibility_evaluator import ServiceCompatibilityEvaluator
+from onboard.infrastructure.service_definition_loader import ServiceDefinitionLoader
+from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.application.discovery_runner import DiscoveryRunner
 from preflight.application.hosttune_instance import HostTuneInstance
 from preflight.domain.capability_builder import CapabilityMapBuilder
@@ -28,6 +33,9 @@ from preflight.infrastructure.probes.network_probe import NetworkProbe
 from preflight.infrastructure.probes.platform_probe import PlatformProbe
 from preflight.infrastructure.probes.storage_probe import StorageProbe
 from preflight.interfaces.console_reporter import ConsoleReporter
+from snapshot.application.snapshot_runner import SnapshotRunner
+
+SERVICE_REGISTRY_PATH = Path("service-monitor")
 
 
 class ShellBenchmarkRunner:
@@ -72,8 +80,27 @@ def build_instance() -> HostTuneInstance:
     return HostTuneInstance(
         config_loader=ConfigLoader(),
         discovery_runner_factory=build_discovery_runner,
+        onboard_runner_factory=build_onboard_runner,
+        snapshot_runner_factory=build_snapshot_runner,
+        baseline_runner_factory=build_baseline_runner,
         executor_factory=build_executor,
     )
+
+
+def build_onboard_runner() -> OnboardRunner:
+    return OnboardRunner(
+        loader=ServiceDefinitionLoader(registry_path=SERVICE_REGISTRY_PATH),
+        validator=ServiceDefinitionValidator(),
+        evaluator=ServiceCompatibilityEvaluator(),
+    )
+
+
+def build_snapshot_runner() -> SnapshotRunner:
+    return SnapshotRunner()
+
+
+def build_baseline_runner(benchmark_command: str) -> BaselineRunner:
+    return BaselineRunner(benchmark_runner=ShellBenchmarkRunner(benchmark_command))
 
 
 def main() -> int:
@@ -84,8 +111,21 @@ def main() -> int:
     args = parser.parse_args()
 
     instance = build_instance()
-    snapshot = instance.load_preflight(args.config)
-    print(ConsoleReporter().render(snapshot))
+    loaded_config = instance.config_loader.load(args.config)
+    preflight = instance.load_preflight(args.config)
+    onboard = instance.load_onboard(args.config)
+    snapshot = instance.load_snapshot(args.config)
+    baseline = None
+    if loaded_config.benchmark_command is not None:
+        baseline = instance.load_baseline(args.config)
+    print(
+        ConsoleReporter().render_runtime(
+            preflight=preflight,
+            onboard=onboard,
+            snapshot=snapshot,
+            baseline=baseline,
+        )
+    )
     return 0
 
 

@@ -51,11 +51,11 @@ warn_unreachable = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src/preflight --cov=main --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=src/preflight --cov=src/onboard --cov=src/snapshot --cov=src/baseline --cov=main --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
 branch = true
-source = ["src/preflight", "main"]
+source = ["src/preflight", "src/onboard", "src/snapshot", "src/baseline", "main"]
 
 [tool.coverage.report]
 skip_empty = true
