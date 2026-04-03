@@ -1,0 +1,12 @@
+target:
+  mode: local
+
+policy:
+  allow_reload: false
+  allow_restart: false
+  allow_reboot: false
+  rollback_required: true
+  max_iterations: 10
+  benchmark_stability_threshold: 0.10
+
+benchmark: {}
