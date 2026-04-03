@@ -79,3 +79,25 @@ def test_storage_probe_collects_storage_info() -> None:
 
     assert storage.device_name == "sda"
     assert storage.scheduler_meaningful is True
+
+
+def test_storage_probe_normalizes_tree_glyph_device_name() -> None:
+    probe = StorageProbe(parser=StorageParser())
+    executor = FakeExecutor(
+        {
+            "root_source=$(findmnt -n -o SOURCE /); root_real=$(realpath \"$root_source\" 2>/dev/null || printf '%s' \"$root_source\"); resolved_disk=$(lsblk -sno NAME,TYPE \"$root_real\" 2>/dev/null | awk '$2==\"disk\" {print $1; exit}'); if [ -n \"$resolved_disk\" ]; then printf '%s' \"$resolved_disk\"; else basename \"$root_real\"; fi": CommandResult(
+                "device", 0, "└─sda", ""
+            ),
+            "cat /sys/block/sda/queue/rotational 2>/dev/null || true": CommandResult(
+                "rot", 0, "0", ""
+            ),
+            "cat /sys/block/sda/queue/scheduler 2>/dev/null || true": CommandResult(
+                "sched", 0, "none [mq-deadline] kyber bfq", ""
+            ),
+        }
+    )
+
+    storage = probe.collect(executor)
+
+    assert storage.device_name == "sda"
+    assert storage.device_type == "ssd"

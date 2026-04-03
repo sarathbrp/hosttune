@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from preflight.domain.models import CommandExecutor, StorageInfo
+from preflight.domain.models import CommandExecutor, CommandResult, StorageInfo
 from preflight.infrastructure.parsers.storage_parser import StorageParser
 from preflight.infrastructure.probes.base import BaseProbe
 
@@ -27,9 +27,14 @@ class StorageProbe(BaseProbe):
             'basename "$root_real"; '
             "fi"
         )
-        device_name = device.stdout or "unknown"
+        device_name = self._normalize_device_name(device.stdout)
         return self.parser.parse(
-            device_name=device,
+            device_name=CommandResult(
+                command=device.command,
+                exit_code=device.exit_code,
+                stdout=device_name,
+                stderr=device.stderr,
+            ),
             rotational=executor.run(
                 f"cat /sys/block/{device_name}/queue/rotational 2>/dev/null || true"
             ),
@@ -37,3 +42,7 @@ class StorageProbe(BaseProbe):
                 f"cat /sys/block/{device_name}/queue/scheduler 2>/dev/null || true"
             ),
         )
+
+    def _normalize_device_name(self, raw_value: str) -> str:
+        cleaned = raw_value.strip().removeprefix("├─").removeprefix("└─").strip()
+        return cleaned or "unknown"
