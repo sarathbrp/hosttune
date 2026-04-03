@@ -280,12 +280,12 @@ def format_rhel_expert_prompt(context: HypothesisContext) -> str:
     return "\n".join(sections)
 
 
-def format_debate_planner_prompt(
+def format_synthesizer_prompt(
     context: HypothesisContext,
     expert_recommendations: list[str],
     full_prompt: str,
 ) -> str:
-    """Prompt for the debate planner that synthesizes both expert recommendations."""
+    """Prompt for the synthesizer that combines both expert recommendations into a final action."""
     phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
     candidate_lines = [format_candidate_line_for_llm(c) for c in context.candidates]
     deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
@@ -298,12 +298,14 @@ def format_debate_planner_prompt(
         )
     ]
     sections = [
-        "You are the tuning decision planner for HostTune.",
-        "Two domain experts have made recommendations for the next tuning action.",
+        "You are the parameter synthesizer for HostTune.",
+        "Two domain experts (service_agent and rhel_expert) have independently recommended "
+        "tuning actions from their respective domains.",
+        "Your job: synthesize their recommendations into the final list of parameters to apply.",
         "Apply BOTH when they are from different tuning layers "
         "(e.g. service directive + kernel sysctl) — orthogonal changes combine safely.",
         "Apply only ONE if: both experts picked the same layer, one returned null/error, "
-        "or there is a resource conflict.",
+        "or there is a resource conflict between them.",
         "All parameter_key values MUST appear in the selectable candidates list below.",
         "Return a JSON ARRAY (even for a single item): "
         '[{"parameter_key": "...", "proposed_value": "...", "rationale": "..."}, ...]',

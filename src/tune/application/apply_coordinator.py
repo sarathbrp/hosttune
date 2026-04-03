@@ -21,6 +21,45 @@ _SYSTEMD_LIMIT_PROPERTIES: dict[str, str] = {
 }
 
 
+def _service_reload_command(context: TuneContext, apply_mode: ApplyMode) -> str | None:
+    """Return the reload or restart shell command from the service contract.
+
+    Returns None if the service has no command configured for the mode.
+    Raises ValueError if the engagement policy disallows the required operation —
+    the change was applied to the config/sysctl but cannot be activated.
+    """
+    policy = context.preflight.policy
+    restart = context.onboard.service.restart
+    if apply_mode is ApplyMode.RESTART:
+        if not policy.allow_restart:
+            msg = (
+                "Service restart is required to activate this change but "
+                "allow_restart=false in engagement policy."
+            )
+            raise ValueError(msg)
+        if restart.restart.supported and restart.restart.command:
+            return restart.restart.command.strip()
+    elif apply_mode is ApplyMode.RELOAD:
+        if not policy.allow_reload:
+            msg = (
+                "Service reload is required to activate this change but "
+                "allow_reload=false in engagement policy."
+            )
+            raise ValueError(msg)
+        if restart.reload.supported and restart.reload.command:
+            return restart.reload.command.strip()
+    if apply_mode in (ApplyMode.RELOAD, ApplyMode.RESTART):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "apply_mode=%s but no %s command configured; "
+            "change written to disk but not activated in running service",
+            apply_mode.value,
+            apply_mode.value,
+        )
+    return None
+
+
 class ChangeApplier(Protocol):
     def apply(
         self,
@@ -82,18 +121,35 @@ class NginxDirectiveApplier:
         if apply_result.exit_code != 0:
             msg = f"Failed to apply nginx directive: {apply_result.stderr or apply_result.stdout}"
             raise ValueError(msg)
-        rollback_command = self._build_replace_command(
+        restore_command = self._build_replace_command(
             config_path=config_path,
             directive_name=hypothesis.parameter_name,
             directive_value=current_value,
         )
+        # Reload/restart nginx so the edited config takes effect before benchmarking.
+        service_cmd = _service_reload_command(context, hypothesis.apply_mode)
+        if service_cmd:
+            reload_result = executor.run(service_cmd)
+            if reload_result.exit_code != 0:
+                # Restore the config file before raising so we don't leave a broken state.
+                executor.run(restore_command)
+                msg = (
+                    f"nginx directive applied but service {hypothesis.apply_mode.value} failed: "
+                    f"{reload_result.stderr or reload_result.stdout}"
+                )
+                raise ValueError(msg)
+            full_apply_command = f"{apply_command} && {service_cmd}"
+            rollback_command = f"{restore_command} && {service_cmd}"
+        else:
+            full_apply_command = apply_command
+            rollback_command = restore_command
         return AppliedChange(
             hypothesis=hypothesis,
             target_path=config_path,
             previous_value=current_value,
             applied_value=hypothesis.proposed_value,
             apply_mode=hypothesis.apply_mode,
-            apply_command=apply_command,
+            apply_command=full_apply_command,
             rollback_command=rollback_command,
         )
 

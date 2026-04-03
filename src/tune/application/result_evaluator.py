@@ -35,7 +35,7 @@ class ResultEvaluator:
                 baseline_requests_per_second=baseline_by_workload[
                     summary.workload_name
                 ].requests_per_second,
-                variance_threshold=context.baseline.expected_variance,
+                variance_threshold=context.effective_variance_threshold,
             )
             for summary in benchmark_result.workload_summaries
             if summary.workload_name in baseline_by_workload
@@ -55,7 +55,7 @@ class ResultEvaluator:
             decision=decision,
             summary=summary,
             primary_metric=context.onboard.service.benchmark_hints.primary_metric,
-            variance_threshold=context.baseline.expected_variance,
+            variance_threshold=context.effective_variance_threshold,
             guardrails_held=guardrails_held,
             drift_detected=drift_detected,
             workload_evaluations=workload_evaluations,

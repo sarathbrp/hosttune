@@ -402,18 +402,40 @@ class TuneEngine:
                 and attribution_verification is not None
                 and not attribution_verification.verified
             )
+            # When rollback_required=false, retain changes even on REJECT/INCONCLUSIVE
+            # so the operator can accumulate changes without reverting each one.
+            # Attribution-unverified INCONCLUSIVE is always rolled back regardless —
+            # it means we couldn't confirm the improvement is real.
+            rollback_override = (
+                not context.preflight.policy.rollback_required
+                and not inconclusive_unverified
+                and not keep
+            )
+            if rollback_override:
+                keep = True
             if keep:
                 for param_key, ac in applied_changes.items():
                     state.active_changes[param_key] = ac
                 applied_keys = ", ".join(sorted(applied_changes))
-                self.logger.stage_detail(
-                    "tune",
-                    (
-                        f"Decision: {status.value}; "
-                        f"parameters={applied_keys}; "
-                        "retaining all applied changes."
-                    ),
-                )
+                if rollback_override:
+                    self.logger.stage_detail(
+                        "tune",
+                        (
+                            f"Decision: {status.value}; "
+                            f"parameters={applied_keys}; "
+                            "retaining despite negative outcome "
+                            "(rollback_required=false in policy)."
+                        ),
+                    )
+                else:
+                    self.logger.stage_detail(
+                        "tune",
+                        (
+                            f"Decision: {status.value}; "
+                            f"parameters={applied_keys}; "
+                            "retaining all applied changes."
+                        ),
+                    )
             else:
                 self._rollback_all(applied_changes, target_executor)
                 reason = (

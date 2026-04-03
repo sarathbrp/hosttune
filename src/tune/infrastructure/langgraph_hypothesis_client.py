@@ -22,7 +22,7 @@ class HypothesisGraphState(TypedDict):
     context: HypothesisContext
     # Expert recommendations appended in parallel (reducer: list concatenation)
     expert_recommendations: Annotated[list[str], operator.add]
-    # Final planner output
+    # Final synthesizer output
     response: str
     usage: ModelUsage | None
 
@@ -83,13 +83,13 @@ class LangGraphHypothesisClient:
         graph = StateGraph(HypothesisGraphState)
         graph.add_node("service_agent", self._service_agent_node)
         graph.add_node("rhel_expert", self._rhel_expert_node)
-        graph.add_node("debate_planner", self._debate_planner_node)
+        graph.add_node("synthesizer", self._synthesizer_node)
 
         graph.add_edge(START, "service_agent")  # fan-out (parallel)
         graph.add_edge(START, "rhel_expert")  # fan-out (parallel)
-        graph.add_edge("service_agent", "debate_planner")  # fan-in
-        graph.add_edge("rhel_expert", "debate_planner")  # fan-in
-        graph.add_edge("debate_planner", END)
+        graph.add_edge("service_agent", "synthesizer")  # fan-in
+        graph.add_edge("rhel_expert", "synthesizer")  # fan-in
+        graph.add_edge("synthesizer", END)
         return graph.compile()
 
     # ── Agent nodes ──────────────────────────────────────────────────────────
@@ -136,50 +136,58 @@ class LangGraphHypothesisClient:
         self._save_agent_artifact(context, "rhel_expert", prompt, content)
         return {"expert_recommendations": [content]}
 
-    def _debate_planner_node(self, state: HypothesisGraphState) -> dict[str, object]:
-        """Debate planner — synthesizes expert recommendations into one final hypothesis array."""
-        from tune.application.hypothesis_prompt_layer import format_debate_planner_prompt
+    def _synthesizer_node(self, state: HypothesisGraphState) -> dict[str, object]:
+        """Synthesizer — combines expert recommendations into one final hypothesis array."""
+        from tune.application.hypothesis_prompt_layer import format_synthesizer_prompt
 
         context = state["context"]
         recommendations = state["expert_recommendations"]
         if len(recommendations) != 2:
             _log.warning(
-                "Debate planner expected 2 expert recommendations, got %d",
+                "Synthesizer expected 2 expert recommendations, got %d",
                 len(recommendations),
             )
-        planner_prompt = format_debate_planner_prompt(
+        planner_prompt = format_synthesizer_prompt(
             context=context,
             expert_recommendations=recommendations,
             full_prompt=state["full_prompt"],
         )
-        self._log_prompt("debate_planner", planner_prompt)
+        self._log_prompt("synthesizer", planner_prompt)
         content, usage = self._call_llm_with_usage(
-            caller="debate_planner",
+            caller="synthesizer",
             system=(
-                "You are the tuning decision planner for HostTune. "
+                "You are the parameter synthesizer for HostTune. "
+                "You receive recommendations from a service_agent and a rhel_expert and decide "
+                "which parameters to apply together. "
                 "Return a JSON ARRAY of hypothesis objects, each with keys: "
                 "parameter_key, proposed_value, rationale. "
-                "Include both service and kernel recommendations when they are orthogonal. "
-                "Return a single-element array if only one is valid."
+                "Include both recommendations when they are from different tuning layers. "
+                "Return a single-element array if only one recommendation is valid."
             ),
             prompt=planner_prompt,
         )
-        self._log_response("debate_planner", content)
-        self._save_agent_artifact(context, "debate_planner", planner_prompt, content)
+        self._log_response("synthesizer", content)
+        self._save_agent_artifact(context, "synthesizer", planner_prompt, content)
         return {"response": content, "usage": usage}
 
     # ── Logging helpers ───────────────────────────────────────────────────────
 
     def _log_prompt(self, agent: str, prompt: str) -> None:
-        """Log prompt at debug level only (can be very long)."""
+        """Log prompt size inline; full prompt is written to the hypothesis artifact file."""
+        self.logger.stage_detail(
+            "tune",
+            f"{'─' * 8} {agent} PROMPT ({len(prompt)} chars) {'─' * 8}",
+        )
         if self.logger.debug_enabled():
-            self.logger.stage_detail("tune", f"[{agent}] prompt ({len(prompt)} chars):")
+            # Full dump only in --debug mode; note that parallel agents interleave here.
             self.logger.stage_detail("tune", prompt)
 
     def _log_response(self, agent: str, response: str) -> None:
-        """Log response at debug level only (can be very long)."""
-        if self.logger.debug_enabled():
-            self.logger.stage_detail("tune", f"[{agent}] response: {response}")
+        """Log the agent response with a clear header so parallel outputs are distinguishable."""
+        self.logger.stage_detail(
+            "tune",
+            f"{'─' * 8} {agent} RESPONSE {'─' * 8}\n{response}",
+        )
 
     # ── Artifact saving ───────────────────────────────────────────────────────
 
@@ -195,7 +203,7 @@ class LangGraphHypothesisClient:
         if artifacts is None:
             return
         iteration = context.iteration_number
-        out_dir = artifacts.session_directory / "hypothesis"
+        out_dir = artifacts.session_directory / "hypotheses"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"iter{iteration:03d}_{agent}.json"
         try:

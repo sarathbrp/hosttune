@@ -61,7 +61,7 @@ class AttributionVerifier:
             accepted_benchmark_result=accepted_benchmark_result,
             reverted_benchmark_result=reverted_benchmark_result,
         )
-        verified = average_drop > context.baseline.expected_variance
+        verified = average_drop > context.effective_variance_threshold
         if verified:
             reapply_result = target_executor.run(applied_change.apply_command)
             if reapply_result.exit_code != 0:
@@ -69,7 +69,7 @@ class AttributionVerifier:
                     verified=False,
                     summary=(
                         f"average_drop={average_drop:.4f}; "
-                        f"threshold={context.baseline.expected_variance:.4f}; "
+                        f"threshold={context.effective_variance_threshold:.4f}; "
                         "attribution reapply failed: "
                         f"{reapply_result.stderr or reapply_result.stdout}"
                     ),
@@ -80,7 +80,7 @@ class AttributionVerifier:
             verified=verified,
             summary=(
                 f"average_drop={average_drop:.4f}; "
-                f"threshold={context.baseline.expected_variance:.4f}; "
+                f"threshold={context.effective_variance_threshold:.4f}; "
                 f"verified={verified}"
             ),
             reverted_benchmark_result=reverted_benchmark_result,

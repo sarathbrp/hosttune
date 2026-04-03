@@ -97,11 +97,13 @@ def test_nginx_directive_applier_builds_apply_and_rollback() -> None:
     assert applied.target_path == "/etc/nginx/nginx.conf"
     assert applied.previous_value == "112"
     assert applied.applied_value == "56"
+    # apply_command = python3 edit && systemctl reload nginx
     assert applied.apply_command.startswith("python3 -c ")
+    assert applied.apply_command.endswith("&& systemctl reload nginx")
+    # rollback_command = python3 restore && systemctl reload nginx
     assert applied.rollback_command.startswith("python3 -c ")
-    assert applied.rollback_command.endswith(
-        "/etc/nginx/nginx.conf worker_processes 112"
-    )
+    assert "worker_processes 112" in applied.rollback_command
+    assert applied.rollback_command.endswith("&& systemctl reload nginx")
 
 
 def test_apply_coordinator_routes_by_parameter_prefix() -> None:

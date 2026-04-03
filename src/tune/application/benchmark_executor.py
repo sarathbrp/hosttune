@@ -9,6 +9,7 @@ from time import sleep
 from typing import Any, cast
 
 from preflight.domain.models import CommandExecutor, CommandResult
+from preflight.infrastructure.executors.logging_executor import LoggingCommandExecutor
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.application.benchmark_runtime_telemetry import (
     BenchmarkRuntimeTelemetryCollector,
@@ -99,9 +100,25 @@ class TuneBenchmarkExecutor:
                         telemetry_seq += 1
                     return tuple(out)
 
+                # Unwrap LoggingCommandExecutor so telemetry commands are not
+                # logged individually — the collector runs ss/ethtool/softnet
+                # every few seconds for the entire benchmark duration and would
+                # otherwise flood the output with repeated command lines.
+                # A single summary message is logged instead.
+                quiet_executor: CommandExecutor = (
+                    telemetry_executor.inner
+                    if isinstance(telemetry_executor, LoggingCommandExecutor)
+                    else telemetry_executor
+                )
+                self.logger.stage_detail(
+                    "tune",
+                    f"Runtime telemetry collection started "
+                    f"(interval={self.telemetry_sample_interval_seconds}s; "
+                    "ss -s, softnet_stat, ethtool -S — aggregate digest only).",
+                )
                 samples = collect_telemetry_during_blocking_command(
                     collector=collector,
-                    telemetry_executor=telemetry_executor,
+                    telemetry_executor=quiet_executor,
                     sample_interval_seconds=self.telemetry_sample_interval_seconds,
                     blocking_call=run_benchmark,
                 )
@@ -148,7 +165,7 @@ class TuneBenchmarkExecutor:
             self._summarize_workload(
                 workload_name=workload_name,
                 samples=tuple(samples),
-                variance_threshold=context.baseline.expected_variance,
+                variance_threshold=context.effective_variance_threshold,
             )
             for workload_name, samples in workload_samples.items()
         )
@@ -169,7 +186,7 @@ class TuneBenchmarkExecutor:
             benchmark_command=benchmark_command,
             run_count=self.run_count,
             stable=stable,
-            variance_threshold=context.baseline.expected_variance,
+            variance_threshold=context.effective_variance_threshold,
             workload_summaries=workload_summaries,
             runtime_telemetry=tuple(telemetry_chunks),
         )
