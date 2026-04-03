@@ -140,7 +140,10 @@ class LangGraphHypothesisClient:
             caller="debate_planner",
             system=(
                 "You are the tuning decision planner for HostTune. "
-                "Return strict JSON with keys: parameter_key, proposed_value, rationale."
+                "Return a JSON ARRAY of hypothesis objects, each with keys: "
+                "parameter_key, proposed_value, rationale. "
+                "Include both service and kernel recommendations when they are orthogonal. "
+                "Return a single-element array if only one is valid."
             ),
             prompt=planner_prompt,
         )

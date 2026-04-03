@@ -56,7 +56,7 @@ class FakeModelClient:
         assert "nginx -T" in prompt
         assert "process_state" in prompt
         return ModelCompletion(
-            content=json.dumps(self._response),
+            content=json.dumps([self._response]),
             usage=ModelUsage(
                 model_name="/models/test-model",
                 input_tokens=120,
@@ -137,7 +137,8 @@ def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
 
     )
 
-    hypothesis = generator.generate(context)
+    hypotheses = generator.generate(context)
+    hypothesis = hypotheses[0]
 
     assert hypothesis.parameter_key == "service.directive.worker_processes"
     assert hypothesis.proposed_value == "56"
@@ -183,7 +184,8 @@ def test_llm_hypothesis_generator_does_not_log_prompt_in_verbose() -> None:
         logger=VerboseExecutionLogger(),
     )
 
-    hypothesis = generator.generate(context)
+    hypotheses = generator.generate(context)
+    hypothesis = hypotheses[0]
 
     assert hypothesis.parameter_key == "service.directive.worker_processes"
 
@@ -201,7 +203,7 @@ def test_llm_hypothesis_generator_rejects_unknown_parameter() -> None:
 
     )
 
-    with pytest.raises(ValueError, match="unsupported parameter_key"):
+    with pytest.raises(ValueError, match="invalid or empty"):
         generator.generate(context)
 
 
@@ -218,7 +220,7 @@ def test_llm_hypothesis_generator_rejects_noop_value() -> None:
 
     )
 
-    with pytest.raises(ValueError, match="no-op value"):
+    with pytest.raises(ValueError, match="invalid or empty"):
         generator.generate(context)
 
 
@@ -236,7 +238,8 @@ def test_llm_hypothesis_generator_passes_forbidden_value_to_pre_apply_gate() -> 
 
     )
 
-    hypothesis = generator.generate(context)
+    hypotheses = generator.generate(context)
+    hypothesis = hypotheses[0]
 
     assert hypothesis.parameter_key == "service.directive.sendfile"
     assert hypothesis.proposed_value == "off"
@@ -255,7 +258,8 @@ def test_llm_hypothesis_generator_accepts_numeric_proposed_value() -> None:
 
     )
 
-    hypothesis = generator.generate(context)
+    hypotheses = generator.generate(context)
+    hypothesis = hypotheses[0]
 
     assert hypothesis.proposed_value == "56"
 
@@ -267,7 +271,7 @@ def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:
         HypothesisRecord(
             iteration_number=1,
             phase=TunePhase.WIDE_SWEEP,
-            hypothesis=DeterministicHypothesisGenerator().generate(base_context),
+            hypothesis=DeterministicHypothesisGenerator().generate(base_context)[0],
             status=HypothesisStatus.REJECTED,
             evaluation_summary="No improvement",
         ),
@@ -283,6 +287,6 @@ def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:
         best_parameter_values=(),
     )
 
-    hypothesis = DeterministicHypothesisGenerator().generate(context)
+    hypothesis = DeterministicHypothesisGenerator().generate(context)[0]
 
     assert hypothesis.parameter_key != first_candidate.parameter_key

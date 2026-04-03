@@ -300,11 +300,13 @@ def format_debate_planner_prompt(
     sections = [
         "You are the tuning decision planner for HostTune.",
         "Two domain experts have made recommendations for the next tuning action.",
-        "Select the single best parameter to try next — you may pick either expert's "
-        "recommendation or override both if the full candidate list shows a better option.",
-        "The parameter_key MUST appear in the selectable candidates list below.",
-        "Return strict JSON: "
-        '{"parameter_key": "...", "proposed_value": "...", "rationale": "..."}',
+        "Apply BOTH when they are from different tuning layers "
+        "(e.g. service directive + kernel sysctl) — orthogonal changes combine safely.",
+        "Apply only ONE if: both experts picked the same layer, one returned null/error, "
+        "or there is a resource conflict.",
+        "All parameter_key values MUST appear in the selectable candidates list below.",
+        "Return a JSON ARRAY (even for a single item): "
+        '[{"parameter_key": "...", "proposed_value": "...", "rationale": "..."}, ...]',
         f"Current phase: {context.phase.value}",
         f"Phase objective: {phase_obj}",
         f"Iteration: {context.iteration_number}",

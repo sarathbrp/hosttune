@@ -13,6 +13,7 @@ from preflight.interfaces.execution_logger import ExecutionLogger, NullExecution
 from tune.application.benchmark_runtime_telemetry import (
     BenchmarkRuntimeTelemetryCollector,
     collect_telemetry_during_blocking_command,
+    save_telemetry_samples_json,
 )
 from tune.domain.benchmark_models import (
     BenchmarkSample,
@@ -157,6 +158,12 @@ class TuneBenchmarkExecutor:
                 "tune",
                 f"Runtime telemetry: {len(telemetry_chunks)} sample(s) during benchmark load.",
             )
+            if context.artifacts is not None:
+                telemetry_path = (
+                    context.artifacts.session_directory
+                    / f"telemetry_iter{iteration_number:03d}.json"
+                )
+                save_telemetry_samples_json(tuple(telemetry_chunks), telemetry_path)
         return TuneBenchmarkResult(
             validation_result=validation_result,
             benchmark_command=benchmark_command,

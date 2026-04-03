@@ -101,21 +101,23 @@ class CaptureLogger(ExecutionLogger):
 class ModelBackedHypothesisGeneratorDouble:
     def generate(self, context):  # type: ignore[no-untyped-def]
         candidate = context.candidates[0]
-        return TuningHypothesis(
-            phase=TunePhase.WIDE_SWEEP,
-            parameter_key=candidate.parameter_key,
-            parameter_name=candidate.parameter_name,
-            domain=candidate.domain,
-            tuning_layer=candidate.tuning_layer,
-            proposed_value="56",
-            source=CandidateSource.SERVICE_DIRECTIVE,
-            apply_mode=candidate.apply_mode,
-            rationale="Test model-backed hypothesis.",
-            model_usage=ModelUsage(
-                model_name="/models/test-model",
-                input_tokens=100,
-                output_tokens=20,
-                total_tokens=120,
+        return (
+            TuningHypothesis(
+                phase=TunePhase.WIDE_SWEEP,
+                parameter_key=candidate.parameter_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value="56",
+                source=CandidateSource.SERVICE_DIRECTIVE,
+                apply_mode=candidate.apply_mode,
+                rationale="Test model-backed hypothesis.",
+                model_usage=ModelUsage(
+                    model_name="/models/test-model",
+                    input_tokens=100,
+                    output_tokens=20,
+                    total_tokens=120,
+                ),
             ),
         )
 
@@ -538,16 +540,18 @@ def test_tune_engine_rejects_forbidden_value_before_apply(tmp_path) -> None:  # 
                 for item in context.candidates
                 if item.parameter_key == "service.directive.worker_processes"
             )
-            return TuningHypothesis(
-                phase=TunePhase.WIDE_SWEEP,
-                parameter_key=candidate.parameter_key,
-                parameter_name=candidate.parameter_name,
-                domain=candidate.domain,
-                tuning_layer=candidate.tuning_layer,
-                proposed_value="1",
-                source=CandidateSource.SERVICE_DIRECTIVE,
-                apply_mode=candidate.apply_mode,
-                rationale="Propose forbidden value.",
+            return (
+                TuningHypothesis(
+                    phase=TunePhase.WIDE_SWEEP,
+                    parameter_key=candidate.parameter_key,
+                    parameter_name=candidate.parameter_name,
+                    domain=candidate.domain,
+                    tuning_layer=candidate.tuning_layer,
+                    proposed_value="1",
+                    source=CandidateSource.SERVICE_DIRECTIVE,
+                    apply_mode=candidate.apply_mode,
+                    rationale="Propose forbidden value.",
+                ),
             )
 
     state = TuneEngine(

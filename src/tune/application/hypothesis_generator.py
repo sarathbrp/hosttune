@@ -130,7 +130,7 @@ class LlmHypothesisGenerator:
     model_client: HypothesisModelClient
     logger: ExecutionLogger = NullExecutionLogger()
 
-    def generate(self, context: HypothesisContext) -> TuningHypothesis:
+    def generate(self, context: HypothesisContext) -> tuple[TuningHypothesis, ...]:
         self._debug_log(
             "LLM call",
             f"phase={context.phase.value} iteration={context.iteration_number} "
@@ -138,25 +138,46 @@ class LlmHypothesisGenerator:
         )
         response = self.model_client.complete(context)
         self._debug_log("LLM raw response", response.content)
-        payload = json.loads(response.content)
-        self._debug_log("LLM parsed payload", json.dumps(payload, sort_keys=True))
-        parameter_key = self._require_string(payload, "parameter_key")
-        proposed_value = self._require_string(payload, "proposed_value")
-        rationale = self._require_string(payload, "rationale")
-        candidate = self._find_candidate(context, parameter_key)
-        self._validate_proposed_value(candidate, proposed_value)
-        return TuningHypothesis(
-            phase=context.phase,
-            parameter_key=candidate.parameter_key,
-            parameter_name=candidate.parameter_name,
-            domain=candidate.domain,
-            tuning_layer=candidate.tuning_layer,
-            proposed_value=proposed_value,
-            source=candidate.source,
-            apply_mode=candidate.apply_mode,
-            rationale=rationale,
-            model_usage=response.usage,
-        )
+        try:
+            raw = json.loads(response.content)
+        except json.JSONDecodeError as exc:
+            snippet = response.content[:200]
+            msg = f"LLM returned non-JSON response: {exc}; content: {snippet!r}"
+            raise ValueError(msg) from exc
+        # Accept both a single object and an array of proposals.
+        items: list[object] = raw if isinstance(raw, list) else [raw]
+        self._debug_log("LLM parsed payload", json.dumps(items, sort_keys=True))
+        hypotheses: list[TuningHypothesis] = []
+        for item in items:
+            if not isinstance(item, dict):
+                self.logger.stage_detail("tune", f"LLM item skipped: not a dict: {item!r}")
+                continue
+            try:
+                parameter_key = self._require_string(item, "parameter_key")
+                proposed_value = self._require_string(item, "proposed_value")
+                rationale = self._require_string(item, "rationale")
+                candidate = self._find_candidate(context, parameter_key)
+                self._validate_proposed_value(candidate, proposed_value)
+                hypotheses.append(
+                    TuningHypothesis(
+                        phase=context.phase,
+                        parameter_key=candidate.parameter_key,
+                        parameter_name=candidate.parameter_name,
+                        domain=candidate.domain,
+                        tuning_layer=candidate.tuning_layer,
+                        proposed_value=proposed_value,
+                        source=candidate.source,
+                        apply_mode=candidate.apply_mode,
+                        rationale=rationale,
+                        model_usage=response.usage,
+                    )
+                )
+            except ValueError as exc:
+                self.logger.stage_detail("tune", f"LLM item skipped: {exc}")
+        if not hypotheses:
+            msg = "All model-proposed hypotheses were invalid or empty."
+            raise ValueError(msg)
+        return tuple(hypotheses)
 
     def _debug_log(self, title: str, content: str) -> None:
         if not self.logger.debug_enabled():
@@ -214,7 +235,7 @@ class LlmHypothesisGenerator:
 
 @dataclass
 class DeterministicHypothesisGenerator:
-    def generate(self, context: HypothesisContext) -> TuningHypothesis:
+    def generate(self, context: HypothesisContext) -> tuple[TuningHypothesis, ...]:
         tried_keys = {
             record.hypothesis.parameter_key
             for record in context.history
@@ -224,20 +245,22 @@ class DeterministicHypothesisGenerator:
             if candidate.parameter_key in tried_keys:
                 continue
             proposed_value = self._default_value(candidate)
-            return TuningHypothesis(
-                phase=context.phase,
-                parameter_key=candidate.parameter_key,
-                parameter_name=candidate.parameter_name,
-                domain=candidate.domain,
-                tuning_layer=candidate.tuning_layer,
-                proposed_value=proposed_value,
-                source=candidate.source,
-                apply_mode=candidate.apply_mode,
-                rationale=(
-                    "Deterministic fallback selected the first untried allowed candidate "
-                    f"for phase {context.phase.value}"
+            return (
+                TuningHypothesis(
+                    phase=context.phase,
+                    parameter_key=candidate.parameter_key,
+                    parameter_name=candidate.parameter_name,
+                    domain=candidate.domain,
+                    tuning_layer=candidate.tuning_layer,
+                    proposed_value=proposed_value,
+                    source=candidate.source,
+                    apply_mode=candidate.apply_mode,
+                    rationale=(
+                        "Deterministic fallback selected the first untried allowed candidate "
+                        f"for phase {context.phase.value}"
+                    ),
+                    model_usage=None,
                 ),
-                model_usage=None,
             )
         msg = "No untried candidates remain for the current phase."
         raise ValueError(msg)
