@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from onboard.domain.models import PriorityTier
 from tune.domain.evaluation_models import EvaluationDecision
 from tune.domain.hypothesis_models import (
+    CandidateAvailability,
     CandidateParameter,
     HypothesisRecord,
     HypothesisStatus,
@@ -21,6 +22,12 @@ PHASE_SEQUENCE = (
     TunePhase.EXPLOIT,
     TunePhase.REBOOT_BATCH,
 )
+
+
+def active_catalog_candidates(
+    candidates: tuple[CandidateParameter, ...],
+) -> tuple[CandidateParameter, ...]:
+    return tuple(c for c in candidates if c.availability is CandidateAvailability.ACTIVE)
 
 
 @dataclass
@@ -47,18 +54,23 @@ class PhaseController:
         phase: TunePhase,
         state: TuneState,
         candidates: tuple[CandidateParameter, ...],
+        *,
+        allow_reboot: bool = False,
     ) -> tuple[CandidateParameter, ...]:
+        if phase is TunePhase.REBOOT_BATCH:
+            if not allow_reboot:
+                return ()
+            return tuple(c for c in candidates if c.availability is CandidateAvailability.DEFERRED)
+        active = active_catalog_candidates(candidates)
         if phase is TunePhase.WIDE_SWEEP:
-            return self._filter_by_priority_tier(state, candidates)
+            return self._filter_by_priority_tier(state, active)
         if phase is TunePhase.DOMAIN_FOCUS:
-            return self._filter_domain_focus(state, candidates)
+            return self._filter_domain_focus(state, active)
         if phase is TunePhase.EXPLOIT and state.best_configuration is not None:
             winning_keys = set(state.best_configuration.parameter_values)
             if winning_keys:
-                return tuple(
-                    candidate for candidate in candidates if candidate.parameter_key in winning_keys
-                )
-        return candidates
+                return tuple(c for c in active if c.parameter_key in winning_keys)
+        return active
 
     def _filter_domain_focus(
         self,
@@ -69,13 +81,15 @@ class PhaseController:
         Keep candidates in domains that produced an accept, or on any tuning layer that
         produced an accept (C7 — layer-aligned focus beyond the domain string alone).
         """
-        accepted = [
-            record for record in state.history if record.status is HypothesisStatus.ACCEPTED
+        positive = [
+            record
+            for record in state.history
+            if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING)
         ]
-        if not accepted:
+        if not positive:
             return candidates
-        winning_domains = {record.hypothesis.domain for record in accepted}
-        winning_layers = {record.hypothesis.tuning_layer for record in accepted}
+        winning_domains = {record.hypothesis.domain for record in positive}
+        winning_layers = {record.hypothesis.tuning_layer for record in positive}
         return tuple(
             candidate
             for candidate in candidates
@@ -89,7 +103,7 @@ class PhaseController:
     ) -> bool:
         if sum(state.remaining_budget.values()) == 0:
             return True
-        return self._has_converged(state, candidates)
+        return self._has_converged(state, active_catalog_candidates(candidates))
 
     def _should_advance(
         self,
@@ -97,24 +111,27 @@ class PhaseController:
         state: TuneState,
         candidates: tuple[CandidateParameter, ...],
     ) -> bool:
+        candidates = active_catalog_candidates(candidates)
         if state.remaining_budget[phase] == 0:
             return True
         phase_history = [record for record in state.history if record.phase is phase]
         tried_keys = {record.hypothesis.parameter_key for record in phase_history}
-        accepted = [
-            record for record in phase_history if record.status is HypothesisStatus.ACCEPTED
+        positive_signal = [
+            record
+            for record in phase_history
+            if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING)
         ]
         if phase is TunePhase.WIDE_SWEEP:
             mandate = self._wide_sweep_mandate_keys(candidates, phase_history)
             return tried_keys >= mandate
         if phase is TunePhase.DOMAIN_FOCUS:
-            return len(phase_history) >= max(2, len(accepted))
+            return len(phase_history) >= max(2, len(positive_signal))
         if phase is TunePhase.INTERACTION:
             return len(phase_history) >= 2
         if phase is TunePhase.BOUNDARY_PUSH:
             return len(phase_history) >= 2
         if phase is TunePhase.EXPLOIT:
-            return len(phase_history) >= max(2, len(accepted))
+            return len(phase_history) >= max(2, len(positive_signal))
         return False
 
     def _next_phase(self, phase: TunePhase) -> TunePhase:

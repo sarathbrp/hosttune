@@ -46,10 +46,12 @@ restart:
     supported: true
     command: systemctl restart nginx
     expected_downtime_seconds: 5
+  # kernel_network: use reload for tunable_surface relevant_sysctls (live sysctl writes).
+  # reboot here omits every sysctl from the candidate catalog; reserve reboot for knobs that truly need it.
   change_categories:
     service_config: reload
     worker_model: restart
-    kernel_network: reboot
+    kernel_network: reload
     runtime_limits: reload
   drain_policy: best_effort
   dependency_chain: []

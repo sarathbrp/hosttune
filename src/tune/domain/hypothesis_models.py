@@ -25,6 +25,13 @@ class CandidateSource(StrEnum):
     RUNTIME_PRLIMIT = "runtime_prlimit"
 
 
+class CandidateAvailability(StrEnum):
+    """Active = normal phases; deferred = reboot_batch when policy allows."""
+
+    ACTIVE = "active"
+    DEFERRED = "deferred"
+
+
 class HypothesisStatus(StrEnum):
     PROPOSED = "proposed"
     APPLIED = "applied"
@@ -32,6 +39,7 @@ class HypothesisStatus(StrEnum):
     FAILED_VALIDATION = "failed_validation"
     BENCHMARKED = "benchmarked"
     ACCEPTED = "accepted"
+    PROMISING = "promising"
     INCONCLUSIVE = "inconclusive"
     ROLLED_BACK = "rolled_back"
     REJECTED_PRE_APPLY = "rejected_pre_apply"
@@ -67,6 +75,7 @@ class CandidateParameter:
     max_value: int | None
     rationale_hint: str
     current_value: str | None = None
+    availability: CandidateAvailability = CandidateAvailability.ACTIVE
 
 
 @dataclass(frozen=True)

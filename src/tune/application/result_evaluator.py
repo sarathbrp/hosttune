@@ -8,7 +8,13 @@ from tune.domain.evaluation_models import (
     EvaluationResult,
     WorkloadEvaluation,
 )
+from tune.domain.hypothesis_models import TunePhase
 from tune.domain.tune_context import TuneContext
+
+# Wide sweep: average relative gain in [floor, variance_threshold) counts as directional signal.
+_WIDE_SWEEP_PROMISING_MIN_RELATIVE_CHANGE = 0.025
+# Never classify as inconclusive when mean regression is this severe or worse.
+_STRONG_REGRESSION_RELATIVE_CHANGE = -0.20
 
 
 @dataclass
@@ -17,6 +23,8 @@ class ResultEvaluator:
         self,
         context: TuneContext,
         benchmark_result: TuneBenchmarkResult,
+        *,
+        phase: TunePhase | None = None,
     ) -> EvaluationResult:
         baseline_by_workload = {
             workload.workload_name: workload for workload in context.baseline.workload_results
@@ -39,6 +47,7 @@ class ResultEvaluator:
             benchmark_result=benchmark_result,
             workload_evaluations=workload_evaluations,
             missing_guardrails=missing_guardrails,
+            phase=phase,
         )
         summary = self._build_summary(decision, benchmark_result.stable, workload_evaluations)
         return EvaluationResult(
@@ -87,6 +96,7 @@ class ResultEvaluator:
         benchmark_result: TuneBenchmarkResult,
         workload_evaluations: tuple[WorkloadEvaluation, ...],
         missing_guardrails: tuple[str, ...],
+        phase: TunePhase | None,
     ) -> EvaluationDecision:
         if not benchmark_result.stable:
             return EvaluationDecision.INCONCLUSIVE
@@ -98,10 +108,18 @@ class ResultEvaluator:
         average_change = sum(item.relative_change for item in workload_evaluations) / len(
             workload_evaluations
         )
-        if average_change > benchmark_result.variance_threshold:
-            return EvaluationDecision.ACCEPT
-        if average_change < -benchmark_result.variance_threshold:
+        v = benchmark_result.variance_threshold
+        if average_change <= _STRONG_REGRESSION_RELATIVE_CHANGE:
             return EvaluationDecision.REJECT
+        if average_change < -v:
+            return EvaluationDecision.REJECT
+        if average_change > v:
+            return EvaluationDecision.ACCEPT
+        if (
+            phase is TunePhase.WIDE_SWEEP
+            and average_change >= _WIDE_SWEEP_PROMISING_MIN_RELATIVE_CHANGE
+        ):
+            return EvaluationDecision.PROMISING
         return EvaluationDecision.INCONCLUSIVE
 
     def _build_summary(

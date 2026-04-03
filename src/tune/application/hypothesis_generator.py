@@ -23,11 +23,13 @@ class HypothesisModelClient(Protocol):
 class HypothesisPromptBuilder:
     def build(self, context: HypothesisContext) -> str:
         tune_context = context.tune_context
-        candidate_lines = [
-            (
+
+        def _candidate_line(candidate: CandidateParameter) -> str:
+            return (
                 f"- key={candidate.parameter_key}; "
                 f"domain={candidate.domain}; "
                 f"tuning_layer={candidate.tuning_layer.value}; "
+                f"availability={candidate.availability.value}; "
                 f"parameter={candidate.parameter_name}; "
                 f"source={candidate.source.value}; "
                 f"apply_mode={candidate.apply_mode.value}; "
@@ -39,8 +41,9 @@ class HypothesisPromptBuilder:
                 f"current={candidate.current_value}; "
                 f"hint={candidate.rationale_hint}"
             )
-            for candidate in context.candidates
-        ]
+
+        candidate_lines = [_candidate_line(candidate) for candidate in context.candidates]
+        deferred_lines = [_candidate_line(candidate) for candidate in context.deferred_candidates]
         history_lines = [
             (
                 f"- iteration={record.iteration_number}; "
@@ -132,13 +135,13 @@ class HypothesisPromptBuilder:
             "Current tune state:",
             f"- active_changes={active_changes}",
             f"- best_config={best_config}",
-            (
-                "- note: "
-                "1.1M RPS baseline achieved at 56 workers; "
-                "112 logical cores may share physical resources."
-            ),
-            "Allowed candidates:",
+            "Selectable candidates (this phase):",
             *candidate_lines,
+            (
+                "Deferred candidates (reboot-required per service policy; listed for visibility; "
+                "selectable only in reboot_batch when engagement allow_reboot is true):"
+            ),
+            *(deferred_lines or ["- none"]),
             "Prior hypothesis history:",
             *(history_lines or ["- none"]),
         ]
@@ -225,7 +228,7 @@ class LlmHypothesisGenerator:
             msg = f"Value {numeric_value} is above maximum for {candidate.parameter_key}"
             raise ValueError(msg)
         if candidate.current_value is not None and proposed_value == candidate.current_value:
-            msg = f"Model proposed no-op value {proposed_value!r} " f"for {candidate.parameter_key}"
+            msg = f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key}"
             raise ValueError(msg)
 
     def _require_string(self, payload: dict[str, object], field_name: str) -> str:

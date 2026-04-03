@@ -9,6 +9,7 @@ class ParameterImpactScore:
     domain: str
     evaluated_count: int = 0
     accepted_count: int = 0
+    promising_count: int = 0
     rejected_count: int = 0
     inconclusive_count: int = 0
     average_relative_change: float = 0.0
@@ -21,6 +22,7 @@ class DomainImpactScore:
     domain: str
     evaluated_count: int = 0
     accepted_count: int = 0
+    promising_count: int = 0
     rejected_count: int = 0
     inconclusive_count: int = 0
     average_relative_change: float = 0.0

@@ -25,6 +25,7 @@ from tune.domain.evaluation_models import (
 )
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
+    CandidateAvailability,
     CandidateParameter,
     HypothesisRecord,
     HypothesisStatus,
@@ -65,6 +66,9 @@ class TuneEngine:
     ) -> TuneState:
         state = TuneState.initialize(context.preflight.policy.max_iterations)
         all_candidates = self.candidate_catalog_builder.build(context, target_executor)
+        deferred_catalog = tuple(
+            c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
+        )
         self.logger.stage_start("tune")
         baseline_checks = self.health_validator.validate_baseline(context, target_executor)
         baseline_failed_checks = tuple(check for check in baseline_checks if not check.passed)
@@ -76,6 +80,11 @@ class TuneEngine:
             )
             raise ValueError(f"Pre-tune health gate failed: {detail}")
         self.logger.stage_detail("tune", "Pre-tune health gate passed.")
+        if deferred_catalog:
+            self.logger.stage_detail(
+                "tune",
+                f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
+            )
         while not self.phase_controller.should_stop(state, all_candidates):
             previous_phase = state.current_phase
             phase = self.phase_controller.determine_phase(state, all_candidates)
@@ -84,9 +93,26 @@ class TuneEngine:
                     "tune",
                     f"Phase advanced: {previous_phase.value} -> {phase.value}",
                 )
-            candidates = self.phase_controller.filter_candidates(phase, state, all_candidates)
+            candidates = self.phase_controller.filter_candidates(
+                phase,
+                state,
+                all_candidates,
+                allow_reboot=context.preflight.policy.allow_reboot,
+            )
             if not candidates:
-                self.logger.stage_detail("tune", "No eligible candidates remain for current phase.")
+                if phase is TunePhase.REBOOT_BATCH and deferred_catalog:
+                    self.logger.stage_detail(
+                        "tune",
+                        (
+                            f"REBOOT_BATCH phase has {len(deferred_catalog)} deferred "
+                            "candidate(s) but engagement policy disallows reboot. "
+                            "Set allow_reboot=true to unlock."
+                        ),
+                    )
+                else:
+                    self.logger.stage_detail(
+                        "tune", "No eligible candidates remain for current phase."
+                    )
                 break
             iteration_number = state.total_iterations + 1
             self.logger.stage_detail("tune", f"Iteration {iteration_number} phase={phase.value}")
@@ -101,6 +127,7 @@ class TuneEngine:
                 phase=phase,
                 iteration_number=iteration_number,
                 candidates=candidates,
+                deferred_candidates=deferred_catalog,
                 target_executor=target_executor,
                 benchmark_executor=benchmark_executor,
             )
@@ -119,6 +146,20 @@ class TuneEngine:
                 )
             self.recorder.record(context, record)
             self.recorder.record_scoreboard(context, state.scoreboard)
+        provisional_keys = {
+            record.hypothesis.parameter_key
+            for record in state.history
+            if record.status is HypothesisStatus.PROMISING
+            and record.hypothesis.parameter_key in state.active_changes
+        }
+        if provisional_keys:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"Active changes include {len(provisional_keys)} provisional "
+                    f"(unverified) parameter(s): {', '.join(sorted(provisional_keys))}"
+                ),
+            )
         self.logger.stage_end("tune")
         return state
 
@@ -129,6 +170,7 @@ class TuneEngine:
         phase: TunePhase,
         iteration_number: int,
         candidates: tuple[CandidateParameter, ...],
+        deferred_candidates: tuple[CandidateParameter, ...],
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
     ) -> tuple[TuneIterationRecord, HypothesisRecord]:
@@ -140,6 +182,7 @@ class TuneEngine:
                 phase=phase,
                 iteration_number=iteration_number,
                 candidates=candidates,
+                deferred_candidates=deferred_candidates,
                 history=tuple(state.history),
                 active_parameter_keys=tuple(sorted(state.active_changes)),
                 best_parameter_values=(
@@ -263,7 +306,9 @@ class TuneEngine:
                 benchmark_executor=benchmark_executor,
             )
             self._log_benchmark(benchmark_result)
-            evaluation_result = self.result_evaluator.evaluate(context, benchmark_result)
+            evaluation_result = self.result_evaluator.evaluate(
+                context, benchmark_result, phase=phase
+            )
             if evaluation_result.decision is EvaluationDecision.ACCEPT:
                 attribution_verification = self.attribution_verifier.verify(
                     context=context,
@@ -304,27 +349,43 @@ class TuneEngine:
                         "retaining change as active configuration."
                     ),
                 )
+            elif status is HypothesisStatus.PROMISING:
+                state.active_changes[hypothesis.parameter_key] = applied_change
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Decision: promising (wide sweep directional signal); "
+                        f"tuning_layer={candidate.tuning_layer.value} "
+                        f"parameter={hypothesis.parameter_key}; "
+                        "retaining change without attribution verification."
+                    ),
+                )
+            elif (
+                status is HypothesisStatus.INCONCLUSIVE
+                and attribution_verification is not None
+                and not attribution_verification.verified
+            ):
+                self.rollback_coordinator.rollback(applied_change, target_executor)
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Decision revised: attribution unverified; "
+                        f"tuning_layer={candidate.tuning_layer.value} "
+                        f"parameter={hypothesis.parameter_key} not retained; "
+                        "rolled back."
+                    ),
+                )
             else:
-                if attribution_verification is None or attribution_verification.verified:
-                    self.rollback_coordinator.rollback(applied_change, target_executor)
-                    self.logger.stage_detail(
-                        "tune",
-                        (
-                            "Rollback: "
-                            f"tuning_layer={candidate.tuning_layer.value} "
-                            f"parameter={hypothesis.parameter_key} "
-                            f"reason={evaluation_result.decision.value}"
-                        ),
-                    )
-                else:
-                    self.logger.stage_detail(
-                        "tune",
-                        (
-                            "Decision revised: attribution unverified; "
-                            f"tuning_layer={candidate.tuning_layer.value} "
-                            f"parameter={hypothesis.parameter_key} not retained."
-                        ),
-                    )
+                self.rollback_coordinator.rollback(applied_change, target_executor)
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Rollback: "
+                        f"tuning_layer={candidate.tuning_layer.value} "
+                        f"parameter={hypothesis.parameter_key} "
+                        f"reason={evaluation_result.decision.value}"
+                    ),
+                )
 
         completed_at = datetime.now(UTC)
         duration_seconds = perf_counter() - started_timer
@@ -366,6 +427,8 @@ class TuneEngine:
     def _resolve_status(self, evaluation_result: EvaluationResult) -> HypothesisStatus:
         if evaluation_result.decision is EvaluationDecision.ACCEPT:
             return HypothesisStatus.ACCEPTED
+        if evaluation_result.decision is EvaluationDecision.PROMISING:
+            return HypothesisStatus.PROMISING
         if evaluation_result.decision is EvaluationDecision.REJECT:
             return HypothesisStatus.REJECTED
         return HypothesisStatus.INCONCLUSIVE

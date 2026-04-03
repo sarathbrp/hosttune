@@ -1,7 +1,10 @@
 import json
+from dataclasses import replace
+from typing import cast
 
 import pytest
 
+from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.interfaces.execution_logger import DebugExecutionLogger, VerboseExecutionLogger
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.hypothesis_generator import (
@@ -11,6 +14,7 @@ from tune.application.hypothesis_generator import (
 )
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
+    CandidateAvailability,
     HypothesisRecord,
     HypothesisStatus,
     ModelCompletion,
@@ -19,8 +23,8 @@ from tune.domain.hypothesis_models import (
 )
 from tune.domain.tuning_layer import TuningLayer
 
-from tests.tune.test_candidate_catalog_builder import build_tune_context
-from tests.tune.test_candidate_catalog_builder import FakeExecutor
+from tests.onboard.test_service_definition_validator import build_valid_definition
+from tests.tune.test_candidate_catalog_builder import FakeExecutor, build_tune_context
 
 
 class FakeModelClient:
@@ -28,7 +32,8 @@ class FakeModelClient:
         self._response = response
 
     def complete(self, prompt: str) -> ModelCompletion:
-        assert "Allowed candidates:" in prompt
+        assert "Selectable candidates (this phase):" in prompt
+        assert "Deferred candidates" in prompt
         assert "Preflight summary:" in prompt
         assert "Service contract summary:" in prompt
         assert "Baseline summary:" in prompt
@@ -36,7 +41,6 @@ class FakeModelClient:
         assert "current=112" in prompt
         assert "forbidden=" not in prompt
         assert "priority=high" in prompt
-        assert "1.1M RPS baseline achieved at 56 workers" in prompt
         assert "runtime_limits=nofile_soft" in prompt
         return ModelCompletion(
             content=json.dumps(self._response),
@@ -59,16 +63,52 @@ class CaptureDebugLogger(DebugExecutionLogger):
 
 def build_hypothesis_context() -> HypothesisContext:
     context = build_tune_context()
-    candidates = CandidateCatalogBuilder().build(context, FakeExecutor())
+    built = CandidateCatalogBuilder().build(context, FakeExecutor())
+    deferred = tuple(c for c in built if c.availability is CandidateAvailability.DEFERRED)
+    active_only = tuple(c for c in built if c.availability is CandidateAvailability.ACTIVE)
     return HypothesisContext(
         tune_context=context,
         phase=TunePhase.WIDE_SWEEP,
         iteration_number=1,
-        candidates=candidates,
+        candidates=active_only,
+        deferred_candidates=deferred,
         history=(),
         active_parameter_keys=(),
         best_parameter_values=(),
     )
+
+
+def test_hypothesis_prompt_lists_deferred_sysctl_when_kernel_network_reboot() -> None:
+    data = build_valid_definition()
+    restart = cast(dict[str, object], data["restart"])
+    categories = cast(dict[str, object], restart["change_categories"])
+    restart = {
+        **restart,
+        "change_categories": {**categories, "kernel_network": "reboot"},
+    }
+    data = {**data, "restart": restart}
+    service = ServiceDefinitionValidator().validate(data)
+    base = build_tune_context()
+    ctx = replace(base, onboard=replace(base.onboard, service=service))
+    built = CandidateCatalogBuilder().build(ctx, FakeExecutor())
+    deferred = [c for c in built if c.availability is CandidateAvailability.DEFERRED]
+    assert deferred
+    assert any(c.parameter_key == "sysctl.net.core.somaxconn" for c in deferred)
+    active_only = tuple(c for c in built if c.availability is CandidateAvailability.ACTIVE)
+    assert not any(c.parameter_key == "sysctl.net.core.somaxconn" for c in active_only)
+    hctx = HypothesisContext(
+        tune_context=ctx,
+        phase=TunePhase.WIDE_SWEEP,
+        iteration_number=1,
+        candidates=active_only,
+        deferred_candidates=tuple(deferred),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+    prompt = HypothesisPromptBuilder().build(hctx)
+    assert "availability=deferred" in prompt
+    assert "sysctl.net.core.somaxconn" in prompt
 
 
 def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
@@ -224,6 +264,7 @@ def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:
         phase=TunePhase.WIDE_SWEEP,
         iteration_number=2,
         candidates=base_context.candidates,
+        deferred_candidates=base_context.deferred_candidates,
         history=history,
         active_parameter_keys=(),
         best_parameter_values=(),

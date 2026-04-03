@@ -1,9 +1,17 @@
+from dataclasses import replace
+from typing import cast
+
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
-from preflight.domain.models import EngagementPolicy
+from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from tune.application.phase_controller import PhaseController
 from tune.application.result_evaluator import ResultEvaluator
-from tune.domain.evaluation_models import EvaluationDecision, EvaluationResult, WorkloadEvaluation
+from tune.domain.evaluation_models import (
+    EvaluationDecision,
+    EvaluationResult,
+    WorkloadEvaluation,
+)
 from tune.domain.hypothesis_models import (
+    CandidateAvailability,
     CandidateParameter,
     CandidateSource,
     HypothesisRecord,
@@ -12,8 +20,10 @@ from tune.domain.hypothesis_models import (
     TuningHypothesis,
 )
 from tune.domain.iteration_record import TuneIterationRecord
+from tune.domain.tune_context import TuneContext
 from tune.domain.tune_state import BestKnownConfiguration, TuneState
 
+from tests.onboard.test_service_definition_validator import build_valid_definition
 from tests.tune.test_candidate_catalog_builder import FakeExecutor, build_tune_context
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tests.tune.test_benchmark_executor import build_validation_result
@@ -468,6 +478,68 @@ def test_tune_state_updates_scoreboard_from_iteration() -> None:
     assert workload_score.win_count == 1
 
 
+def test_tune_state_does_not_update_best_configuration_on_promising_decision() -> None:
+    context = build_tune_context()
+    benchmark_result = build_benchmark_result(
+        homepage_rps=1037.0,
+        small_rps=1000.0,
+        stable=True,
+    )
+    evaluation_result = ResultEvaluator().evaluate(
+        context, benchmark_result, phase=TunePhase.WIDE_SWEEP
+    )
+    assert evaluation_result.decision is EvaluationDecision.PROMISING
+
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="runtime.prlimit.nofile_soft",
+        parameter_name="nofile_soft",
+        domain="runtime",
+        tuning_layer=TuningLayer.RUNTIME,
+        proposed_value="8192",
+        source=CandidateSource.RUNTIME_PRLIMIT,
+        apply_mode=ApplyMode.RELOAD,
+        rationale="test",
+    )
+    applied_change = AppliedChange(
+        hypothesis=hypothesis,
+        target_path="pid=1:nofile",
+        previous_value="4096",
+        applied_value="8192",
+        apply_mode=ApplyMode.RELOAD,
+        apply_command="prlimit --pid 1 --nofile=8192:1048576",
+        rollback_command="prlimit --pid 1 --nofile=4096:1048576",
+    )
+    state = TuneState.initialize(3)
+    state.active_changes[hypothesis.parameter_key] = applied_change
+    record = TuneIterationRecord(
+        iteration_number=1,
+        phase=TunePhase.WIDE_SWEEP,
+        hypothesis=hypothesis,
+        applied_change=applied_change,
+        validation_result=build_validation_result(),
+        benchmark_result=benchmark_result,
+        evaluation_result=evaluation_result,
+        attribution_verification=None,
+        active_parameter_keys=(hypothesis.parameter_key,),
+        started_at_utc="2026-04-03T00:00:00+00:00",
+        completed_at_utc="2026-04-03T00:01:00+00:00",
+        duration_seconds=1.0,
+    )
+    history_record = HypothesisRecord(
+        iteration_number=1,
+        phase=TunePhase.WIDE_SWEEP,
+        hypothesis=hypothesis,
+        status=HypothesisStatus.PROMISING,
+        evaluation_summary=evaluation_result.summary,
+    )
+    state.record_iteration(record, history_record)
+    assert state.best_configuration is None
+    assert (
+        state.scoreboard.parameter_scores[hypothesis.parameter_key].promising_count == 1
+    )
+
+
 def _measured_iteration_record(
     *,
     iteration_number: int,
@@ -584,3 +656,53 @@ def test_phase_controller_convergence_not_before_best_stable_when_best_exists() 
     assert controller.should_stop(state, candidates) is False
     state.iterations_since_best_update = 2
     assert controller.should_stop(state, candidates) is True
+
+
+def _catalog_with_kernel_network_reboot_policy() -> tuple[TuneContext, tuple[CandidateParameter, ...]]:
+    data = build_valid_definition()
+    restart = cast(dict[str, object], data["restart"])
+    categories = cast(dict[str, object], restart["change_categories"])
+    data = {
+        **data,
+        "restart": {
+            **restart,
+            "change_categories": {**categories, "kernel_network": "reboot"},
+        },
+    }
+    service = ServiceDefinitionValidator().validate(data)
+    base = build_tune_context()
+    ctx = replace(base, onboard=replace(base.onboard, service=service))
+    return ctx, CandidateCatalogBuilder().build(ctx, FakeExecutor())
+
+
+def test_phase_controller_reboot_batch_returns_deferred_when_allow_reboot() -> None:
+    _, candidates = _catalog_with_kernel_network_reboot_policy()
+    state = TuneState.initialize(10)
+    state.current_phase = TunePhase.REBOOT_BATCH
+    got = PhaseController().filter_candidates(
+        TunePhase.REBOOT_BATCH, state, candidates, allow_reboot=True
+    )
+    assert got
+    assert all(c.availability is CandidateAvailability.DEFERRED for c in got)
+    assert (
+        PhaseController().filter_candidates(
+            TunePhase.REBOOT_BATCH, state, candidates, allow_reboot=False
+        )
+        == ()
+    )
+
+
+def test_phase_controller_reboot_batch_never_self_advances() -> None:
+    _, candidates = _catalog_with_kernel_network_reboot_policy()
+    state = TuneState.initialize(10)
+    state.current_phase = TunePhase.REBOOT_BATCH
+    phase = PhaseController().determine_phase(state, candidates)
+    assert phase is TunePhase.REBOOT_BATCH
+
+
+def test_phase_controller_wide_sweep_never_selects_deferred_candidates() -> None:
+    _, candidates = _catalog_with_kernel_network_reboot_policy()
+    state = TuneState.initialize(50)
+    filtered = PhaseController().filter_candidates(TunePhase.WIDE_SWEEP, state, candidates)
+    assert filtered
+    assert all(c.availability is CandidateAvailability.ACTIVE for c in filtered)

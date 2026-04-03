@@ -94,6 +94,10 @@ Step 1 establishes the foundation only:
 Step 1 must not mix in tuning logic, benchmark loops, or LLM policy decisions.
 Step 1 may run a benchmark baseline, but it must not yet implement autonomous tuning iteration.
 
+## Known architectural debt
+
+- **Per-parameter kernel_network apply cost:** Sysctls still share one `change_categories.kernel_network` mode; **deferred vs active** is derived from that single value. Finer YAML (per knob or subcategories) remains future work.
+
 ## Implementation Bias
 
 - Keep modules small.

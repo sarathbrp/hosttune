@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
 from preflight.domain.models import CommandExecutor
 from tune.application.apply_coordinator import PrlimitApplier
-from tune.domain.hypothesis_models import CandidateParameter, CandidateSource
+from tune.domain.hypothesis_models import (
+    CandidateAvailability,
+    CandidateParameter,
+    CandidateSource,
+)
 from tune.domain.tune_context import TuneContext
 from tune.domain.tuning_layer import resolve_tuning_layer
 
@@ -95,9 +99,20 @@ class CandidateCatalogBuilder:
         for sysctl_entry in context.onboard.service.tunable_surface.relevant_sysctls:
             sysctl_name = sysctl_entry.name
             apply_mode = self._resolve_sysctl_apply_mode(context)
-            if apply_mode is ApplyMode.REBOOT:
-                continue
             pkey = f"sysctl.{sysctl_name}"
+            if apply_mode is ApplyMode.REBOOT:
+                availability = CandidateAvailability.DEFERRED
+                hint = (
+                    f"Relevant sysctl for {context.onboard.service_name}; "
+                    "policy marks kernel_network as reboot — deferred to reboot_batch phase "
+                    "when engagement allows reboot."
+                )
+            else:
+                availability = CandidateAvailability.ACTIVE
+                hint = (
+                    f"Relevant sysctl for service {context.onboard.service_name} "
+                    "and platform capability map"
+                )
             candidates.append(
                 CandidateParameter(
                     parameter_key=pkey,
@@ -112,11 +127,9 @@ class CandidateCatalogBuilder:
                     forbidden_values=(),
                     min_value=None,
                     max_value=None,
-                    rationale_hint=(
-                        f"Relevant sysctl for service {context.onboard.service_name} "
-                        "and platform capability map"
-                    ),
+                    rationale_hint=hint,
                     current_value=self._read_sysctl_current_value(sysctl_name, executor),
+                    availability=availability,
                 )
             )
         return candidates

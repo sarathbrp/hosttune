@@ -20,7 +20,7 @@ from preflight.domain.models import (
 )
 from snapshot.domain.models import SnapshotResult
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
-from tune.domain.hypothesis_models import CandidateSource
+from tune.domain.hypothesis_models import CandidateAvailability, CandidateSource
 from tune.domain.tune_context import TuneContext
 from tune.domain.tuning_layer import TuningLayer, tuning_layer_for_parameter_key
 
@@ -195,3 +195,28 @@ def test_candidate_catalog_applies_yaml_tuning_layer_overrides() -> None:
     assert rx_ring.tuning_layer is TuningLayer.RUNTIME
     assert tuning_layer_for_parameter_key(somaxconn.parameter_key) is TuningLayer.KERNEL
     assert tuning_layer_for_parameter_key(rx_ring.parameter_key) is TuningLayer.NETWORK
+
+
+def test_catalog_marks_sysctl_deferred_when_kernel_network_is_reboot() -> None:
+    data = build_valid_definition()
+    restart = cast(dict[str, object], data["restart"])
+    categories = cast(dict[str, object], restart["change_categories"])
+    data = {
+        **data,
+        "restart": {
+            **restart,
+            "change_categories": {**categories, "kernel_network": "reboot"},
+        },
+    }
+    service = ServiceDefinitionValidator().validate(data)
+    base = build_tune_context()
+    context = replace(base, onboard=replace(base.onboard, service=service))
+    candidates = CandidateCatalogBuilder().build(context, FakeExecutor())
+    somaxconn = next(c for c in candidates if c.parameter_key == "sysctl.net.core.somaxconn")
+    assert somaxconn.availability is CandidateAvailability.DEFERRED
+    assert somaxconn.apply_mode.value == "reboot"
+    assert all(
+        c.availability is CandidateAvailability.ACTIVE
+        for c in candidates
+        if c.parameter_key.startswith("service.directive.")
+    )

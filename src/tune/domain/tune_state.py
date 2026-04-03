@@ -96,6 +96,8 @@ class TuneState:
         evaluation_result: EvaluationResult,
         record: TuneIterationRecord,
     ) -> None:
+        if evaluation_result.decision is not EvaluationDecision.ACCEPT:
+            return
         if not evaluation_result.workload_evaluations:
             return
         score = sum(item.relative_change for item in evaluation_result.workload_evaluations) / len(
@@ -204,6 +206,8 @@ class TuneState:
     ) -> None:
         if decision is EvaluationDecision.ACCEPT:
             score.accepted_count += 1
+        elif decision is EvaluationDecision.PROMISING:
+            score.promising_count += 1
         elif decision is EvaluationDecision.REJECT:
             score.rejected_count += 1
         else:

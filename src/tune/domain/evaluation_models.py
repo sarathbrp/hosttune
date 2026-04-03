@@ -8,6 +8,7 @@ from tune.domain.benchmark_models import TuneBenchmarkResult
 
 class EvaluationDecision(StrEnum):
     ACCEPT = "accept"
+    PROMISING = "promising"
     REJECT = "reject"
     INCONCLUSIVE = "inconclusive"
 
