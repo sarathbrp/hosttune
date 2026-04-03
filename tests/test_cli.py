@@ -251,6 +251,88 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
     assert "Target: 10.1.90.178" in output
 
 
+def test_main_returns_clean_error_for_tune_failure(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("target:\n  mode: local\n", encoding="utf-8")
+    fake_definition = ServiceDefinitionValidator().validate(build_valid_definition())
+
+    @dataclass
+    class FakeInstance:
+        config_loader: object
+        preflight: DiscoverySnapshot | None = None
+        onboard: OnboardResult | None = None
+        snapshot: SnapshotResult | None = None
+        baseline: BaselineResult | None = None
+
+        def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
+            self.preflight = build_snapshot()
+            return self.preflight
+
+        def load_onboard(self, _config_path: Path) -> OnboardResult:
+            self.onboard = OnboardResult(
+                service_name="nginx",
+                service=fake_definition,
+                compatibility=CompatibilityReport(compatible=True, findings=()),
+            )
+            return self.onboard
+
+        def load_snapshot(self, _config_path: Path) -> SnapshotResult:
+            self.snapshot = SnapshotResult(
+                service_name="nginx",
+                snapshot_directory="/var/tmp/hosttune/snapshots/nginx",
+                captured_paths=("/etc/nginx/nginx.conf",),
+                runtime_state_output="nginx -T",
+                process_state={"pid_file": "1234"},
+                restore_sequence=("systemctl restart nginx",),
+            )
+            return self.snapshot
+
+        def load_baseline(self, _config_path: Path) -> BaselineResult:
+            self.baseline = build_baseline()
+            return self.baseline
+
+        def run_tune(self, _config_path: Path, _tune_engine: object) -> TuneState:
+            raise ValueError("Pre-tune health gate failed: health_probe: status=500")
+
+    fake_config_loader = type(
+        "FakeConfigLoader",
+        (),
+        {
+            "load": lambda _self, _path: LoadedConfig(
+                target=LocalTargetConfig(),
+                policy=build_snapshot().policy,
+                service_name="nginx",
+                benchmark_config=BenchmarkConfig(
+                    runner_target=LocalTargetConfig(),
+                    contestant_name="hosttune",
+                    script_path="/root/hackathon-tools/benchmark.sh",
+                    results_directory="/root/hackathon-results",
+                    workloads=("homepage",),
+                    compare_script_path="/root/hackathon-tools/compare-results.sh",
+                ),
+            )
+        },
+    )()
+    monkeypatch.setattr(
+        cli,
+        "build_instance",
+        lambda verbose=False, debug=False: FakeInstance(config_loader=fake_config_loader),
+    )
+    monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None: object())
+    monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
+
+    exit_code = cli.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "Error: Pre-tune health gate failed: health_probe: status=500" in captured.err
+
+
 def test_main_defaults_to_config_yaml_and_accepts_short_verbose(
     monkeypatch,
     capsys,

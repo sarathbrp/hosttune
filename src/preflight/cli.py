@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from baseline.application.baseline_runner import BaselineRunner
@@ -201,16 +202,20 @@ def main() -> int:
     args = parser.parse_args()
 
     instance = build_instance(verbose=args.verbose or args.debug, debug=args.debug)
-    loaded_config = instance.config_loader.load(args.config)
-    preflight = instance.load_preflight(args.config)
-    onboard = instance.load_onboard(args.config)
-    snapshot = instance.load_snapshot(args.config)
-    baseline = None
-    tune = None
-    if loaded_config.benchmark_config is not None:
-        baseline = instance.load_baseline(args.config)
-        tune_logger = getattr(instance, "logger", None)
-        tune = instance.run_tune(args.config, build_tune_engine(tune_logger))
+    try:
+        loaded_config = instance.config_loader.load(args.config)
+        preflight = instance.load_preflight(args.config)
+        onboard = instance.load_onboard(args.config)
+        snapshot = instance.load_snapshot(args.config)
+        baseline = None
+        tune = None
+        if loaded_config.benchmark_config is not None:
+            baseline = instance.load_baseline(args.config)
+            tune_logger = getattr(instance, "logger", None)
+            tune = instance.run_tune(args.config, build_tune_engine(tune_logger))
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     print(
         ConsoleReporter().render_runtime(
             preflight=preflight,
