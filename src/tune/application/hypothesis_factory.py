@@ -16,10 +16,12 @@ def build_langgraph_hypothesis_generator(
     logger: ExecutionLogger | None = None,
 ) -> LlmHypothesisGenerator:
     config = ModelEndpointConfigLoader().load(env_path)
+    execution_logger = logger or NullExecutionLogger()
     return LlmHypothesisGenerator(
         model_client=LangGraphHypothesisClient(
             config=config,
             prompt_builder=HypothesisPromptBuilder(),
+            logger=execution_logger,
         ),
-        logger=logger or NullExecutionLogger(),
+        logger=execution_logger,
     )
