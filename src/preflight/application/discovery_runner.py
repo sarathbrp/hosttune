@@ -2,20 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from preflight.domain.capability_builder import CapabilityMapBuilder
 from preflight.domain.models import (
     BenchmarkRunner,
     CommandExecutor,
     DiscoverySnapshot,
-    CpuInfo,
     EngagementPolicy,
-    KernelInfo,
-    MemoryInfo,
-    NetworkInfo,
-    PlatformInfo,
-    StorageInfo,
     TargetConfig,
 )
-from preflight.domain.capability_builder import CapabilityMapBuilder
 from preflight.infrastructure.probes.cpu_probe import CpuProbe
 from preflight.infrastructure.probes.kernel_probe import KernelProbe
 from preflight.infrastructure.probes.memory_probe import MemoryProbe

@@ -9,12 +9,11 @@ from preflight.domain.models import (
     CommandResult,
     CpuInfo,
     DiscoverySnapshot,
-    EngagementPolicy,
     KernelInfo,
     LocalTargetConfig,
     MemoryInfo,
-    PlatformInfo,
     NetworkInfo,
+    PlatformInfo,
     SshTargetConfig,
     StorageInfo,
 )
@@ -135,7 +134,9 @@ def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
     assert '"hostname": "node-a"' in output
 
 
-def test_main_builds_benchmark_runner_when_command_present(monkeypatch, capsys, tmp_path: Path) -> None:
+def test_main_builds_benchmark_runner_when_command_present(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         """

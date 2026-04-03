@@ -9,8 +9,7 @@ from preflight.infrastructure.executors.base import BaseCommandExecutor
 class LocalCommandExecutor(BaseCommandExecutor):
     def run(self, command: str) -> CommandResult:
         completed = subprocess.run(
-            command,
-            shell=True,
+            ["/bin/sh", "-lc", command],
             check=False,
             capture_output=True,
             text=True,

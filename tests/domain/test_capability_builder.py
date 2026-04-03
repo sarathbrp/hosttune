@@ -1,5 +1,12 @@
 from preflight.domain.capability_builder import CapabilityMapBuilder
-from preflight.domain.models import CpuInfo, KernelInfo, MemoryInfo, NetworkInfo, PlatformInfo, StorageInfo
+from preflight.domain.models import (
+    CpuInfo,
+    KernelInfo,
+    MemoryInfo,
+    NetworkInfo,
+    PlatformInfo,
+    StorageInfo,
+)
 
 
 def test_capability_builder_marks_bare_metal_numa_as_available() -> None:

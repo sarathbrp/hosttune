@@ -6,7 +6,12 @@ from typing import Any, cast
 
 import yaml
 
-from preflight.domain.models import EngagementPolicy, LocalTargetConfig, SshTargetConfig, TargetConfig
+from preflight.domain.models import (
+    EngagementPolicy,
+    LocalTargetConfig,
+    SshTargetConfig,
+    TargetConfig,
+)
 
 
 @dataclass(frozen=True)

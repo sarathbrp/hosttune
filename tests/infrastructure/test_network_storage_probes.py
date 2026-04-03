@@ -53,7 +53,9 @@ def test_storage_probe_collects_storage_info() -> None:
             "lsblk -ndo PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -n 1": CommandResult(
                 "device", 0, "sda", ""
             ),
-            "cat /sys/block/sda/queue/rotational 2>/dev/null || true": CommandResult("rot", 0, "0", ""),
+            "cat /sys/block/sda/queue/rotational 2>/dev/null || true": CommandResult(
+                "rot", 0, "0", ""
+            ),
             "cat /sys/block/sda/queue/scheduler 2>/dev/null || true": CommandResult(
                 "sched", 0, "[mq-deadline] none", ""
             ),

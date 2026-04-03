@@ -20,6 +20,10 @@ class StorageProbe(BaseProbe):
         device_name = device.stdout or "unknown"
         return self.parser.parse(
             device_name=device,
-            rotational=executor.run(f"cat /sys/block/{device_name}/queue/rotational 2>/dev/null || true"),
-            scheduler=executor.run(f"cat /sys/block/{device_name}/queue/scheduler 2>/dev/null || true"),
+            rotational=executor.run(
+                f"cat /sys/block/{device_name}/queue/rotational 2>/dev/null || true"
+            ),
+            scheduler=executor.run(
+                f"cat /sys/block/{device_name}/queue/scheduler 2>/dev/null || true"
+            ),
         )

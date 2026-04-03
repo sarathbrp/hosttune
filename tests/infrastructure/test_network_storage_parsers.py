@@ -39,3 +39,32 @@ def test_storage_parser_extracts_device_capabilities() -> None:
 
     assert storage.device_type == "nvme"
     assert storage.scheduler_meaningful is False
+
+
+def test_storage_parser_detects_virtio_devices() -> None:
+    storage = StorageParser().parse(
+        device_name=CommandResult("device", 0, "vda", ""),
+        rotational=CommandResult("rot", 0, "0", ""),
+        scheduler=CommandResult("sched", 0, "[mq-deadline] none", ""),
+    )
+
+    assert storage.device_type == "virtio"
+    assert storage.scheduler_meaningful is True
+
+
+def test_storage_parser_detects_rotational_and_unknown_devices() -> None:
+    rotational = StorageParser().parse(
+        device_name=CommandResult("device", 0, "sdb", ""),
+        rotational=CommandResult("rot", 0, "1", ""),
+        scheduler=CommandResult("sched", 0, "mq-deadline [bfq]", ""),
+    )
+    unknown = StorageParser().parse(
+        device_name=CommandResult("device", 0, "dm-0", ""),
+        rotational=CommandResult("rot", 0, "x", ""),
+        scheduler=CommandResult("sched", 0, "", ""),
+    )
+
+    assert rotational.device_type == "rotational"
+    assert rotational.scheduler_meaningful is True
+    assert unknown.device_type == "unknown"
+    assert unknown.scheduler_meaningful is False

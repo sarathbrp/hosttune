@@ -1,0 +1,4 @@
+title = "preflight-gitleaks"
+
+[extend]
+useDefault = true

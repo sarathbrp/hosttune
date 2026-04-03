@@ -5,7 +5,12 @@ from pathlib import Path
 
 from preflight.application.discovery_runner import DiscoveryRunner
 from preflight.domain.capability_builder import CapabilityMapBuilder
-from preflight.domain.models import BenchmarkResult, CommandExecutor, LocalTargetConfig, SshTargetConfig
+from preflight.domain.models import (
+    BenchmarkResult,
+    CommandExecutor,
+    LocalTargetConfig,
+    SshTargetConfig,
+)
 from preflight.infrastructure.config_loader import ConfigLoader
 from preflight.infrastructure.executors.local_executor import LocalCommandExecutor
 from preflight.infrastructure.executors.ssh_executor import SshCommandExecutor
@@ -47,7 +52,9 @@ def build_executor(target: LocalTargetConfig | SshTargetConfig) -> CommandExecut
 
 
 def build_discovery_runner(benchmark_command: str | None) -> DiscoveryRunner:
-    benchmark_runner = ShellBenchmarkRunner(benchmark_command) if benchmark_command is not None else None
+    benchmark_runner = (
+        ShellBenchmarkRunner(benchmark_command) if benchmark_command is not None else None
+    )
     return DiscoveryRunner(
         platform_probe=PlatformProbe(parser=PlatformParser()),
         cpu_probe=CpuProbe(parser=CpuParser()),
@@ -61,7 +68,9 @@ def build_discovery_runner(benchmark_command: str | None) -> DiscoveryRunner:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run step1 discovery and optional baseline benchmark.")
+    parser = argparse.ArgumentParser(
+        description="Run step1 discovery and optional baseline benchmark."
+    )
     parser.add_argument("config", type=Path, help="Path to the YAML configuration file.")
     args = parser.parse_args()
 

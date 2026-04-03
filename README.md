@@ -76,6 +76,29 @@ target:
 - Benchmark execution should be represented by a typed contract and normalized result.
 - `main.py` should remain the repository-level entrypoint used to wire later steps together.
 
+## Development Hooks
+
+The repository uses `pre-commit` for local quality and secret scanning.
+
+Install and enable it with:
+
+```bash
+python -m pip install -e ".[dev]"
+pre-commit install
+```
+
+Run all hooks on demand with:
+
+```bash
+pre-commit run --all-files
+```
+
+Configured hooks include:
+
+- `ruff`
+- `ruff-format`
+- `gitleaks`
+
 ## Exit Criteria
 
 - A user can run discovery on localhost from a config file.

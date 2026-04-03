@@ -29,7 +29,10 @@ class CapabilityMapBuilder:
             CapabilityFlag(
                 name="numa_tuning",
                 available=cpu.numa_nodes > 1 and platform.virtualization_type == "none",
-                detail=f"numa_nodes={cpu.numa_nodes}, virtualization={platform.virtualization_type}",
+                detail=(
+                    f"numa_nodes={cpu.numa_nodes}, "
+                    f"virtualization={platform.virtualization_type}"
+                ),
             ),
             CapabilityFlag(
                 name="cpu_topology_tuning",
@@ -63,7 +66,10 @@ class CapabilityMapBuilder:
             CapabilityFlag(
                 name="network_ring_buffer_tuning",
                 available=network.ring_buffer_tuning_supported
-                and (network.rx_ring_max > network.rx_ring_current or network.tx_ring_max > network.tx_ring_current),
+                and (
+                    network.rx_ring_max > network.rx_ring_current
+                    or network.tx_ring_max > network.tx_ring_current
+                ),
                 detail=(
                     f"interface={network.interface_name}, driver={network.driver_name}, "
                     f"rx={network.rx_ring_current}/{network.rx_ring_max}, "
@@ -73,7 +79,10 @@ class CapabilityMapBuilder:
             CapabilityFlag(
                 name="network_queue_tuning",
                 available=network.combined_queues > 0 and not platform.is_container,
-                detail=f"interface={network.interface_name}, combined_queues={network.combined_queues}",
+                detail=(
+                    f"interface={network.interface_name}, "
+                    f"combined_queues={network.combined_queues}"
+                ),
             ),
             CapabilityFlag(
                 name="storage_scheduler_tuning",

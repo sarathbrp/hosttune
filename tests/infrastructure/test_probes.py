@@ -24,7 +24,9 @@ def test_platform_probe_collects_platform_info() -> None:
     executor = FakeExecutor(
         {
             "hostname": CommandResult("hostname", 0, "node-a", ""),
-            ". /etc/os-release && printf '%s' \"$PRETTY_NAME\"": CommandResult("os", 0, "RHEL 9.4", ""),
+            ". /etc/os-release && printf '%s' \"$PRETTY_NAME\"": CommandResult(
+                "os", 0, "RHEL 9.4", ""
+            ),
             "uname -r": CommandResult("uname", 0, "5.14.0", ""),
             "systemd-detect-virt || true": CommandResult("virt", 0, "kvm", ""),
             "test -f /.dockerenv && printf 'container'": CommandResult("container", 1, "", ""),
@@ -72,7 +74,9 @@ def test_memory_probe_collects_memory_info() -> None:
     probe = MemoryProbe(parser=MemoryParser())
     executor = FakeExecutor(
         {
-            "cat /proc/meminfo": CommandResult("meminfo", 0, "MemTotal: 1024 kB\nSwapTotal: 0 kB", ""),
+            "cat /proc/meminfo": CommandResult(
+                "meminfo", 0, "MemTotal: 1024 kB\nSwapTotal: 0 kB", ""
+            ),
             "cat /proc/sys/vm/nr_hugepages": CommandResult("hugepages", 0, "4", ""),
             "cat /sys/kernel/mm/transparent_hugepage/enabled": CommandResult(
                 "thp", 0, "always [madvise] never", ""
