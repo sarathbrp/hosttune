@@ -17,6 +17,7 @@ from tune.domain.hypothesis_models import (
     ModelUsage,
     TunePhase,
 )
+from tune.domain.tuning_layer import TuningLayer
 
 from tests.tune.test_candidate_catalog_builder import build_tune_context
 from tests.tune.test_candidate_catalog_builder import FakeExecutor
@@ -33,7 +34,10 @@ class FakeModelClient:
         assert "Baseline summary:" in prompt
         assert "Current tune state:" in prompt
         assert "current=112" in prompt
+        assert "forbidden=" not in prompt
+        assert "priority=high" in prompt
         assert "1.1M RPS baseline achieved at 56 workers" in prompt
+        assert "runtime_limits=nofile_soft" in prompt
         return ModelCompletion(
             content=json.dumps(self._response),
             usage=ModelUsage(
@@ -85,6 +89,7 @@ def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
     assert hypothesis.parameter_key == "service.directive.worker_processes"
     assert hypothesis.proposed_value == "56"
     assert hypothesis.phase == TunePhase.WIDE_SWEEP
+    assert hypothesis.tuning_layer is TuningLayer.SERVICE
     assert hypothesis.model_usage is not None
     assert hypothesis.model_usage.input_tokens == 120
 
@@ -162,6 +167,26 @@ def test_llm_hypothesis_generator_rejects_noop_value() -> None:
 
     with pytest.raises(ValueError, match="no-op value"):
         generator.generate(context)
+
+
+def test_llm_hypothesis_generator_passes_forbidden_value_to_pre_apply_gate() -> None:
+    """Forbidden values are not shown in the prompt; PreApplyValidator rejects them."""
+    context = build_hypothesis_context()
+    generator = LlmHypothesisGenerator(
+        model_client=FakeModelClient(
+            {
+                "parameter_key": "service.directive.sendfile",
+                "proposed_value": "off",
+                "rationale": "Try a known-bad setting.",
+            }
+        ),
+        prompt_builder=HypothesisPromptBuilder(),
+    )
+
+    hypothesis = generator.generate(context)
+
+    assert hypothesis.parameter_key == "service.directive.sendfile"
+    assert hypothesis.proposed_value == "off"
 
 
 def test_llm_hypothesis_generator_accepts_numeric_proposed_value() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Protocol
@@ -8,15 +8,21 @@ from typing import Protocol
 from preflight.domain.models import CommandExecutor
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.application.apply_coordinator import ApplyCoordinator
+from tune.application.attribution_verifier import AttributionVerifier
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.health_validator import HealthValidator
 from tune.application.phase_controller import PhaseController
+from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
 from tune.application.tune_recorder import TuneRecorder
 from tune.domain.benchmark_models import TuneBenchmarkResult
-from tune.domain.evaluation_models import EvaluationDecision, EvaluationResult
+from tune.domain.evaluation_models import (
+    AttributionVerificationResult,
+    EvaluationDecision,
+    EvaluationResult,
+)
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateParameter,
@@ -42,8 +48,10 @@ class TuneEngine:
     phase_controller: PhaseController
     hypothesis_generator: SupportsHypothesisGeneration
     apply_coordinator: ApplyCoordinator
+    pre_apply_validator: PreApplyValidator
     health_validator: HealthValidator
     benchmark_executor: TuneBenchmarkExecutor
+    attribution_verifier: AttributionVerifier
     result_evaluator: ResultEvaluator
     rollback_coordinator: RollbackCoordinator
     recorder: TuneRecorder
@@ -68,7 +76,7 @@ class TuneEngine:
             )
             raise ValueError(f"Pre-tune health gate failed: {detail}")
         self.logger.stage_detail("tune", "Pre-tune health gate passed.")
-        while not self.phase_controller.should_stop(state):
+        while not self.phase_controller.should_stop(state, all_candidates):
             previous_phase = state.current_phase
             phase = self.phase_controller.determine_phase(state, all_candidates)
             if phase is not previous_phase:
@@ -141,12 +149,76 @@ class TuneEngine:
                 ),
             )
         )
-        self._log_hypothesis(hypothesis, state)
-        applied_change = self.apply_coordinator.apply(context, hypothesis, target_executor)
+        candidate = self._find_candidate(candidates, hypothesis.parameter_key)
+        self._log_hypothesis(hypothesis, candidate, state)
+        pre_apply_validation = self.pre_apply_validator.validate(candidate, hypothesis)
+        if not pre_apply_validation.allowed:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    "Pre-apply rejection: "
+                    f"tuning_layer={candidate.tuning_layer.value} "
+                    f"parameter={hypothesis.parameter_key} "
+                    f"reason={pre_apply_validation.reason}"
+                ),
+            )
+            completed_at = datetime.now(UTC)
+            duration_seconds = perf_counter() - started_timer
+            record = TuneIterationRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=hypothesis,
+                applied_change=None,
+                validation_result=None,
+                benchmark_result=None,
+                evaluation_result=None,
+                attribution_verification=None,
+                active_parameter_keys=tuple(sorted(state.active_changes)),
+                started_at_utc=started_at.isoformat(),
+                completed_at_utc=completed_at.isoformat(),
+                duration_seconds=duration_seconds,
+            )
+            history_record = HypothesisRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=hypothesis,
+                status=HypothesisStatus.REJECTED_PRE_APPLY,
+                evaluation_summary=pre_apply_validation.reason,
+            )
+            return record, history_record
+        try:
+            applied_change = self.apply_coordinator.apply(context, hypothesis, target_executor)
+        except ValueError as exc:
+            completed_at = datetime.now(UTC)
+            duration_seconds = perf_counter() - started_timer
+            self.logger.stage_detail("tune", f"Apply failed: {exc}")
+            record = TuneIterationRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=hypothesis,
+                applied_change=None,
+                validation_result=None,
+                benchmark_result=None,
+                evaluation_result=None,
+                attribution_verification=None,
+                active_parameter_keys=tuple(sorted(state.active_changes)),
+                started_at_utc=started_at.isoformat(),
+                completed_at_utc=completed_at.isoformat(),
+                duration_seconds=duration_seconds,
+            )
+            history_record = HypothesisRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=hypothesis,
+                status=HypothesisStatus.FAILED_VALIDATION,
+                evaluation_summary=f"apply failed: {exc}",
+            )
+            return record, history_record
         self.logger.stage_detail(
             "tune",
             (
                 "Apply: "
+                f"tuning_layer={candidate.tuning_layer.value} "
                 f"parameter={hypothesis.parameter_key} "
                 f"previous={applied_change.previous_value} "
                 f"applied={applied_change.applied_value} "
@@ -158,6 +230,7 @@ class TuneEngine:
 
         benchmark_result = None
         evaluation_result = None
+        attribution_verification = None
         if not validation_result.healthy:
             failed_checks = (
                 ", ".join(
@@ -174,7 +247,12 @@ class TuneEngine:
             self.rollback_coordinator.rollback(applied_change, target_executor)
             self.logger.stage_detail(
                 "tune",
-                f"Rollback: parameter={hypothesis.parameter_key} reason=validation_failed",
+                (
+                    "Rollback: "
+                    f"tuning_layer={candidate.tuning_layer.value} "
+                    f"parameter={hypothesis.parameter_key} "
+                    "reason=validation_failed"
+                ),
             )
             status = HypothesisStatus.FAILED_VALIDATION
         else:
@@ -186,24 +264,67 @@ class TuneEngine:
             )
             self._log_benchmark(benchmark_result)
             evaluation_result = self.result_evaluator.evaluate(context, benchmark_result)
+            if evaluation_result.decision is EvaluationDecision.ACCEPT:
+                attribution_verification = self.attribution_verifier.verify(
+                    context=context,
+                    iteration_number=iteration_number,
+                    applied_change=applied_change,
+                    accepted_benchmark_result=benchmark_result,
+                    target_executor=target_executor,
+                    benchmark_runner_executor=benchmark_executor,
+                )
+                self._log_attribution_verification(attribution_verification)
+                if attribution_verification.verified:
+                    evaluation_result = replace(
+                        evaluation_result,
+                        attribution_verified=True,
+                        attribution_summary=attribution_verification.summary,
+                    )
+                else:
+                    evaluation_result = replace(
+                        evaluation_result,
+                        decision=EvaluationDecision.INCONCLUSIVE,
+                        summary=(
+                            f"{evaluation_result.summary}; "
+                            f"attribution_unverified={attribution_verification.summary}"
+                        ),
+                        attribution_verified=False,
+                        attribution_summary=attribution_verification.summary,
+                    )
             self._log_evaluation(evaluation_result)
             status = self._resolve_status(evaluation_result)
             if status is HypothesisStatus.ACCEPTED:
                 state.active_changes[hypothesis.parameter_key] = applied_change
                 self.logger.stage_detail(
                     "tune",
-                    "Decision: accepted; retaining change as active configuration.",
-                )
-            else:
-                self.rollback_coordinator.rollback(applied_change, target_executor)
-                self.logger.stage_detail(
-                    "tune",
                     (
-                        "Rollback: "
-                        f"parameter={hypothesis.parameter_key} "
-                        f"reason={evaluation_result.decision.value}"
+                        "Decision: accepted; attribution verified; "
+                        f"tuning_layer={candidate.tuning_layer.value} "
+                        f"parameter={hypothesis.parameter_key}; "
+                        "retaining change as active configuration."
                     ),
                 )
+            else:
+                if attribution_verification is None or attribution_verification.verified:
+                    self.rollback_coordinator.rollback(applied_change, target_executor)
+                    self.logger.stage_detail(
+                        "tune",
+                        (
+                            "Rollback: "
+                            f"tuning_layer={candidate.tuning_layer.value} "
+                            f"parameter={hypothesis.parameter_key} "
+                            f"reason={evaluation_result.decision.value}"
+                        ),
+                    )
+                else:
+                    self.logger.stage_detail(
+                        "tune",
+                        (
+                            "Decision revised: attribution unverified; "
+                            f"tuning_layer={candidate.tuning_layer.value} "
+                            f"parameter={hypothesis.parameter_key} not retained."
+                        ),
+                    )
 
         completed_at = datetime.now(UTC)
         duration_seconds = perf_counter() - started_timer
@@ -216,6 +337,7 @@ class TuneEngine:
             validation_result=validation_result,
             benchmark_result=benchmark_result,
             evaluation_result=evaluation_result,
+            attribution_verification=attribution_verification,
             active_parameter_keys=active_parameter_keys,
             started_at_utc=started_at.isoformat(),
             completed_at_utc=completed_at.isoformat(),
@@ -230,6 +352,17 @@ class TuneEngine:
         )
         return record, history_record
 
+    def _find_candidate(
+        self,
+        candidates: tuple[CandidateParameter, ...],
+        parameter_key: str,
+    ) -> CandidateParameter:
+        for candidate in candidates:
+            if candidate.parameter_key == parameter_key:
+                return candidate
+        msg = f"No candidate found for hypothesis parameter: {parameter_key}"
+        raise ValueError(msg)
+
     def _resolve_status(self, evaluation_result: EvaluationResult) -> HypothesisStatus:
         if evaluation_result.decision is EvaluationDecision.ACCEPT:
             return HypothesisStatus.ACCEPTED
@@ -240,12 +373,16 @@ class TuneEngine:
     def _log_hypothesis(
         self,
         hypothesis: TuningHypothesis,
+        candidate: CandidateParameter,
         state: TuneState,
     ) -> None:
         self.logger.stage_detail(
             "tune",
             (
                 "Hypothesis: "
+                f"phase={hypothesis.phase.value} "
+                f"tuning_layer={candidate.tuning_layer.value} "
+                f"domain={hypothesis.domain} "
                 f"parameter={hypothesis.parameter_key} "
                 f"value={hypothesis.proposed_value} "
                 f"mode={hypothesis.apply_mode.value} "
@@ -281,6 +418,19 @@ class TuneEngine:
                     f"cumulative_total={cumulative_total}"
                 ),
             )
+
+    def _log_attribution_verification(
+        self,
+        verification_result: AttributionVerificationResult,
+    ) -> None:
+        self.logger.stage_detail(
+            "tune",
+            (
+                "Attribution verification: "
+                f"verified={verification_result.verified} "
+                f"summary={verification_result.summary}"
+            ),
+        )
 
     def _log_validation(self, validation_result: ValidationResult) -> None:
         passed_checks = sum(1 for check in validation_result.checks if check.passed)

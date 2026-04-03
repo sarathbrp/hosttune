@@ -7,6 +7,7 @@ from tune.application.result_evaluator import ResultEvaluator
 from tune.application.tune_recorder import TuneRecorder
 from tune.domain.apply_models import AppliedChange
 from tune.domain.hypothesis_models import CandidateSource, TunePhase, TuningHypothesis
+from tune.domain.tuning_layer import tuning_layer_for_parameter_key
 from tune.domain.scoreboard_models import (
     DomainImpactScore,
     ParameterImpactScore,
@@ -40,6 +41,7 @@ def test_tune_recorder_writes_jsonl_iteration_record(tmp_path) -> None:  # type:
         parameter_key="sysctl.net.core.somaxconn",
         parameter_name="net.core.somaxconn",
         domain="kernel_sysctl",
+        tuning_layer=tuning_layer_for_parameter_key("sysctl.net.core.somaxconn"),
         proposed_value="65535",
         source=CandidateSource.SERVICE_SYSCTL,
         apply_mode=ApplyMode.RELOAD,
@@ -71,6 +73,7 @@ def test_tune_recorder_writes_jsonl_iteration_record(tmp_path) -> None:  # type:
         validation_result=validation_result,
         benchmark_result=benchmark_result,
         evaluation_result=evaluation_result,
+        attribution_verification=None,
         active_parameter_keys=("sysctl.net.core.somaxconn",),
         started_at_utc=started_at.isoformat(),
         completed_at_utc=completed_at.isoformat(),

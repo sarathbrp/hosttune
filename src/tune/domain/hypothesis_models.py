@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from onboard.domain.models import ApplyMode, DirectiveValueType
+from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+from tune.domain.tuning_layer import TuningLayer
 
 
 class TunePhase(StrEnum):
+    """Tune loop phases. See phase controller for TuningLayer usage."""
+
     WIDE_SWEEP = "wide_sweep"
     DOMAIN_FOCUS = "domain_focus"
     INTERACTION = "interaction"
@@ -19,6 +22,7 @@ class CandidateSource(StrEnum):
     SERVICE_DIRECTIVE = "service_directive"
     SERVICE_SYSCTL = "service_sysctl"
     PLATFORM_CAPABILITY = "platform_capability"
+    RUNTIME_PRLIMIT = "runtime_prlimit"
 
 
 class HypothesisStatus(StrEnum):
@@ -30,6 +34,7 @@ class HypothesisStatus(StrEnum):
     ACCEPTED = "accepted"
     INCONCLUSIVE = "inconclusive"
     ROLLED_BACK = "rolled_back"
+    REJECTED_PRE_APPLY = "rejected_pre_apply"
 
 
 @dataclass(frozen=True)
@@ -50,11 +55,14 @@ class ModelCompletion:
 class CandidateParameter:
     parameter_key: str
     domain: str
+    tuning_layer: TuningLayer
     parameter_name: str
     source: CandidateSource
     value_type: DirectiveValueType
     apply_mode: ApplyMode
+    priority_tier: PriorityTier
     allowed_values: tuple[str, ...]
+    forbidden_values: tuple[str, ...]
     min_value: int | None
     max_value: int | None
     rationale_hint: str
@@ -67,6 +75,7 @@ class TuningHypothesis:
     parameter_key: str
     parameter_name: str
     domain: str
+    tuning_layer: TuningLayer
     proposed_value: str
     source: CandidateSource
     apply_mode: ApplyMode

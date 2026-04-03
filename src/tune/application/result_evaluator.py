@@ -51,6 +51,8 @@ class ResultEvaluator:
             drift_detected=drift_detected,
             workload_evaluations=workload_evaluations,
             missing_guardrails=missing_guardrails,
+            attribution_verified=None,
+            attribution_summary=None,
         )
 
     def _evaluate_workload(

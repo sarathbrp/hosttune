@@ -3,16 +3,24 @@ from dataclasses import replace
 from preflight.domain.models import CommandResult
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from preflight.interfaces.execution_logger import ExecutionLogger
-from tune.application.apply_coordinator import ApplyCoordinator, NginxDirectiveApplier, SysctlApplier
+from tune.application.apply_coordinator import (
+    ApplyCoordinator,
+    NetworkRingApplier,
+    NginxDirectiveApplier,
+    PrlimitApplier,
+    SysctlApplier,
+)
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.health_validator import HealthValidator
 from tune.application.hypothesis_generator import DeterministicHypothesisGenerator
 from tune.application.phase_controller import PhaseController
+from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
 from tune.application.tune_engine import TuneEngine
 from tune.application.tune_recorder import TuneRecorder
+from tune.domain.evaluation_models import AttributionVerificationResult
 from tune.domain.hypothesis_models import (
     CandidateSource,
     HypothesisStatus,
@@ -61,6 +69,17 @@ class TargetExecutorDouble:
             if command.endswith("/etc/nginx/nginx.conf worker_processes 112"):
                 self.directive_value = "112"
             return CommandResult(command=command, exit_code=0, stdout="", stderr="")
+        if command.startswith("cat "):
+            return CommandResult(command=command, exit_code=0, stdout="12345\n", stderr="")
+        if "awk " in command and "/proc/" in command and "limits" in command:
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="8192 1048576\n",
+                stderr="",
+            )
+        if command.startswith("prlimit "):
+            return CommandResult(command=command, exit_code=0, stdout="", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
@@ -86,6 +105,7 @@ class ModelBackedHypothesisGeneratorDouble:
             parameter_key=candidate.parameter_key,
             parameter_name=candidate.parameter_name,
             domain=candidate.domain,
+            tuning_layer=candidate.tuning_layer,
             proposed_value="56",
             source=CandidateSource.SERVICE_DIRECTIVE,
             apply_mode=candidate.apply_mode,
@@ -142,6 +162,30 @@ class GatePassFailIterationValidator:
                 ValidationCheck(name="health_probe", passed=False, detail="status=500 body_match=True"),
                 ValidationCheck(name="effective_value", passed=True, detail="ok"),
             ),
+        )
+
+
+class VerifiedAttributionVerifier:
+    def verify(  # type: ignore[no-untyped-def]
+        self,
+        context,
+        iteration_number,
+        applied_change,
+        accepted_benchmark_result,
+        target_executor,
+        benchmark_runner_executor,
+    ) -> AttributionVerificationResult:
+        _ = context
+        _ = iteration_number
+        _ = applied_change
+        _ = accepted_benchmark_result
+        _ = target_executor
+        _ = benchmark_runner_executor
+        return AttributionVerificationResult(
+            verified=True,
+            summary="average_drop=0.1000; threshold=0.0500; verified=True",
+            reverted_benchmark_result=None,
+            average_drop=0.1,
         )
 
 
@@ -215,9 +259,13 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
         apply_coordinator=ApplyCoordinator(
             service_directive_applier=NginxDirectiveApplier(),
             sysctl_applier=SysctlApplier(),
+            network_ring_applier=NetworkRingApplier(),
+            runtime_limit_applier=PrlimitApplier(),
         ),
+        pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
         benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+        attribution_verifier=VerifiedAttributionVerifier(),
         result_evaluator=ResultEvaluator(),
         rollback_coordinator=RollbackCoordinator(),
         recorder=TuneRecorder(),
@@ -232,6 +280,7 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
     assert state.history[0].status is HypothesisStatus.ACCEPTED
     assert "tune_iterations" in context.artifacts.stage_files  # type: ignore[union-attr]
     assert any("Hypothesis:" in message for message in logger.messages)
+    assert any("tuning_layer=" in message for message in logger.messages)
     assert any("Apply:" in message for message in logger.messages)
     assert any("Validate:" in message for message in logger.messages)
     assert any("Benchmark:" in message for message in logger.messages)
@@ -308,9 +357,13 @@ def test_tune_engine_logs_model_token_summary(tmp_path) -> None:  # type: ignore
         apply_coordinator=ApplyCoordinator(
             service_directive_applier=NginxDirectiveApplier(),
             sysctl_applier=SysctlApplier(),
+            network_ring_applier=NetworkRingApplier(),
+            runtime_limit_applier=PrlimitApplier(),
         ),
+        pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
         benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+        attribution_verifier=VerifiedAttributionVerifier(),
         result_evaluator=ResultEvaluator(),
         rollback_coordinator=RollbackCoordinator(),
         recorder=TuneRecorder(),
@@ -366,9 +419,13 @@ def test_tune_engine_logs_benchmark_skipped_reason(tmp_path) -> None:  # type: i
         apply_coordinator=ApplyCoordinator(
             service_directive_applier=NginxDirectiveApplier(),
             sysctl_applier=SysctlApplier(),
+            network_ring_applier=NetworkRingApplier(),
+            runtime_limit_applier=PrlimitApplier(),
         ),
+        pre_apply_validator=PreApplyValidator(),
         health_validator=GatePassFailIterationValidator(),
         benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+        attribution_verifier=VerifiedAttributionVerifier(),
         result_evaluator=ResultEvaluator(),
         rollback_coordinator=RollbackCoordinator(),
         recorder=TuneRecorder(),
@@ -410,9 +467,13 @@ def test_tune_engine_fails_fast_when_pre_tune_health_gate_fails(
             apply_coordinator=ApplyCoordinator(
                 service_directive_applier=NginxDirectiveApplier(),
                 sysctl_applier=SysctlApplier(),
+                network_ring_applier=NetworkRingApplier(),
+                runtime_limit_applier=PrlimitApplier(),
             ),
+            pre_apply_validator=PreApplyValidator(),
             health_validator=FailingHealthValidator(),
             benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+            attribution_verifier=VerifiedAttributionVerifier(),
             result_evaluator=ResultEvaluator(),
             rollback_coordinator=RollbackCoordinator(),
             recorder=TuneRecorder(),
@@ -446,3 +507,86 @@ def test_tune_engine_fails_fast_when_pre_tune_health_gate_fails(
 
     assert "Pre-tune health gate failed" in message
     assert any("Pre-tune health gate failed" in msg for msg in logger.messages)
+
+
+def test_tune_engine_rejects_forbidden_value_before_apply(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    base_context = build_tune_context()
+    context = replace(
+        base_context,
+        preflight=replace(
+            base_context.preflight,
+            policy=replace(base_context.preflight.policy, max_iterations=1),
+        ),
+        artifacts=RuntimeArtifacts(
+            session_id="abc123def456",
+            session_directory=tmp_path / "artifacts" / "abc123def456",
+        ),
+    )
+    context.artifacts.session_directory.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+    target_executor = TargetExecutorDouble()
+    logger = CaptureLogger()
+
+    class ForbiddenValueGenerator:
+        def generate(self, context):  # type: ignore[no-untyped-def]
+            candidate = next(
+                item
+                for item in context.candidates
+                if item.parameter_key == "service.directive.worker_processes"
+            )
+            return TuningHypothesis(
+                phase=TunePhase.WIDE_SWEEP,
+                parameter_key=candidate.parameter_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value="1",
+                source=CandidateSource.SERVICE_DIRECTIVE,
+                apply_mode=candidate.apply_mode,
+                rationale="Propose forbidden value.",
+            )
+
+    state = TuneEngine(
+        candidate_catalog_builder=CandidateCatalogBuilder(),
+        phase_controller=PhaseController(),
+        hypothesis_generator=ForbiddenValueGenerator(),
+        apply_coordinator=ApplyCoordinator(
+            service_directive_applier=NginxDirectiveApplier(),
+            sysctl_applier=SysctlApplier(),
+            network_ring_applier=NetworkRingApplier(),
+            runtime_limit_applier=PrlimitApplier(),
+        ),
+        pre_apply_validator=PreApplyValidator(),
+        health_validator=HealthValidator(),
+        benchmark_executor=TuneBenchmarkExecutor(run_count=1, sleeper=lambda _seconds: None),
+        attribution_verifier=VerifiedAttributionVerifier(),
+        result_evaluator=ResultEvaluator(),
+        rollback_coordinator=RollbackCoordinator(),
+        recorder=TuneRecorder(),
+        logger=logger,
+    ).run(
+        context=context,
+        target_executor=target_executor,
+        benchmark_executor=BenchmarkExecutorDouble(
+            [
+                {
+                    "homepage": {
+                        "results": {
+                            "requests": {"per_sec": 1200.0, "total": 12000},
+                            "latency": {"avg": "2.0ms"},
+                        }
+                    },
+                    "small": {
+                        "results": {
+                            "requests": {"per_sec": 1000.0, "total": 10000},
+                            "latency": {"avg": "1.5ms"},
+                        }
+                    },
+                }
+            ]
+        ),
+    )
+
+    assert state.history[0].status is HypothesisStatus.REJECTED_PRE_APPLY
+    assert state.iteration_records[0].applied_change is None
+    assert not any(command.startswith("python3 -c ") for command in target_executor.commands)
+    assert any("Pre-apply rejection:" in message for message in logger.messages)

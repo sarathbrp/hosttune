@@ -27,9 +27,11 @@ class HypothesisPromptBuilder:
             (
                 f"- key={candidate.parameter_key}; "
                 f"domain={candidate.domain}; "
+                f"tuning_layer={candidate.tuning_layer.value}; "
                 f"parameter={candidate.parameter_name}; "
                 f"source={candidate.source.value}; "
                 f"apply_mode={candidate.apply_mode.value}; "
+                f"priority={candidate.priority_tier.value}; "
                 f"value_type={candidate.value_type.value}; "
                 f"min={candidate.min_value}; "
                 f"max={candidate.max_value}; "
@@ -72,7 +74,13 @@ class HypothesisPromptBuilder:
         allowed_directives = ", ".join(
             sorted(tune_context.onboard.service.tunable_surface.allowed_directives)
         )
-        relevant_sysctls = ", ".join(tune_context.onboard.service.tunable_surface.relevant_sysctls)
+        relevant_sysctls = ", ".join(
+            f"{entry.name}({entry.priority_tier.value})"
+            for entry in tune_context.onboard.service.tunable_surface.relevant_sysctls
+        )
+        runtime_limit_names = ", ".join(
+            sorted(tune_context.onboard.service.tunable_surface.runtime_limits)
+        )
         guardrails = ", ".join(tune_context.onboard.service.benchmark_hints.guardrail_metrics)
         interference = ", ".join(tune_context.onboard.service.benchmark_hints.interference_sources)
         sections = [
@@ -110,6 +118,7 @@ class HypothesisPromptBuilder:
             f"- service={tune_context.onboard.service_name}",
             f"- allowed_directives={allowed_directives or 'none'}",
             f"- relevant_sysctls={relevant_sysctls or 'none'}",
+            f"- runtime_limits={runtime_limit_names or 'none'}",
             f"- health_probe={tune_context.onboard.service.health_check.probe_type.value}",
             f"- primary_metric={tune_context.onboard.service.benchmark_hints.primary_metric}",
             f"- guardrails={guardrails or 'none'}",
@@ -170,6 +179,7 @@ class LlmHypothesisGenerator:
             parameter_key=candidate.parameter_key,
             parameter_name=candidate.parameter_name,
             domain=candidate.domain,
+            tuning_layer=candidate.tuning_layer,
             proposed_value=proposed_value,
             source=candidate.source,
             apply_mode=candidate.apply_mode,
@@ -248,6 +258,7 @@ class DeterministicHypothesisGenerator:
                 parameter_key=candidate.parameter_key,
                 parameter_name=candidate.parameter_name,
                 domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
                 proposed_value=proposed_value,
                 source=candidate.source,
                 apply_mode=candidate.apply_mode,
@@ -262,10 +273,27 @@ class DeterministicHypothesisGenerator:
 
     def _default_value(self, candidate: CandidateParameter) -> str:
         if candidate.allowed_values:
-            return candidate.allowed_values[0]
+            for allowed_value in candidate.allowed_values:
+                if allowed_value not in candidate.forbidden_values:
+                    return allowed_value
+            msg = f"No allowed values remain for {candidate.parameter_key}"
+            raise ValueError(msg)
         if candidate.min_value is not None and candidate.max_value is not None:
             midpoint = (candidate.min_value + candidate.max_value) // 2
-            return str(midpoint)
+            if str(midpoint) not in candidate.forbidden_values:
+                return str(midpoint)
+            for numeric_value in range(midpoint + 1, candidate.max_value + 1):
+                if str(numeric_value) not in candidate.forbidden_values:
+                    return str(numeric_value)
+            for numeric_value in range(midpoint - 1, candidate.min_value - 1, -1):
+                if str(numeric_value) not in candidate.forbidden_values:
+                    return str(numeric_value)
+            msg = f"No safe integer values remain for {candidate.parameter_key}"
+            raise ValueError(msg)
         if candidate.min_value is not None:
-            return str(candidate.min_value)
+            for numeric_value in range(candidate.min_value, candidate.min_value + 1000):
+                if str(numeric_value) not in candidate.forbidden_values:
+                    return str(numeric_value)
+            msg = f"No safe values remain for {candidate.parameter_key}"
+            raise ValueError(msg)
         return "1"

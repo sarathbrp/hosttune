@@ -62,6 +62,7 @@ def test_capability_builder_marks_bare_metal_numa_as_available() -> None:
     assert flags["numa_tuning"].available is True
     assert flags["kernel_sysctl_tuning"].available is True
     assert flags["network_ring_buffer_tuning"].available is True
+    assert flags["runtime_prlimit_tuning"].available is True
     assert flags["storage_scheduler_tuning"].available is True
 
 
@@ -119,4 +120,5 @@ def test_capability_builder_restricts_container_tuning() -> None:
     assert flags["hugepages_tuning"].available is False
     assert flags["kernel_sysctl_tuning"].available is False
     assert flags["network_ring_buffer_tuning"].available is False
+    assert flags["runtime_prlimit_tuning"].available is False
     assert flags["storage_scheduler_tuning"].available is False

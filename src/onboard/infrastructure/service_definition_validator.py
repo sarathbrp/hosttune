@@ -7,6 +7,7 @@ from onboard.domain.models import (
     ConfigFormat,
     DirectiveConstraint,
     DirectiveValueType,
+    PriorityTier,
     ProbeType,
     ProcessState,
     ReloadContract,
@@ -18,7 +19,10 @@ from onboard.domain.models import (
     ServiceRestartContract,
     ServiceSnapshotContract,
     ServiceTunableSurface,
+    SysctlTunable,
 )
+
+_VALID_TUNING_LAYER_STRINGS = frozenset({"kernel", "network", "service", "runtime"})
 
 
 class ServiceDefinitionValidator:
@@ -119,6 +123,12 @@ class ServiceDefinitionValidator:
 
     def _parse_tunable_surface(self, data: dict[str, Any]) -> ServiceTunableSurface:
         directives = cast(dict[str, Any], data.get("allowed_directives", {}))
+        ring_tier_raw = data.get("network_ring_priority_tier", "high")
+        if not isinstance(ring_tier_raw, str):
+            msg = "Expected string for 'network_ring_priority_tier'"
+            raise ValueError(msg)
+        ring_layer_raw = data.get("network_ring_tuning_layer")
+        runtime_limits_raw = cast(dict[str, Any], data.get("runtime_limits", {}))
         return ServiceTunableSurface(
             allowed_directives={
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
@@ -126,17 +136,73 @@ class ServiceDefinitionValidator:
             },
             forbidden_directives=self._str_tuple(data.get("forbidden_directives", [])),
             interdependencies=self._str_tuple(data.get("interdependencies", [])),
-            relevant_sysctls=self._str_tuple(data.get("relevant_sysctls", [])),
+            relevant_sysctls=self._parse_relevant_sysctls(data.get("relevant_sysctls", [])),
+            network_ring_priority_tier=PriorityTier(ring_tier_raw),
+            runtime_limits={
+                name: self._parse_directive_constraint(cast(dict[str, Any], value))
+                for name, value in runtime_limits_raw.items()
+            },
+            network_ring_tuning_layer=self._optional_tuning_layer_string(ring_layer_raw),
         )
+
+    def _parse_relevant_sysctls(self, value: object) -> tuple[SysctlTunable, ...]:
+        if value is None or value == []:
+            return ()
+        if not isinstance(value, list):
+            msg = "Expected list for 'relevant_sysctls'"
+            raise ValueError(msg)
+        entries: list[SysctlTunable] = []
+        for index, item in enumerate(value):
+            if isinstance(item, str):
+                if item == "":
+                    msg = f"Empty sysctl name at relevant_sysctls[{index}]"
+                    raise ValueError(msg)
+                entries.append(SysctlTunable(name=item, priority_tier=PriorityTier.HIGH))
+                continue
+            if isinstance(item, dict):
+                item_dict = cast(dict[str, Any], item)
+                name = self._require_str(item_dict, "name")
+                tier = PriorityTier(self._require_str(item_dict, "priority_tier"))
+                entries.append(
+                    SysctlTunable(
+                        name=name,
+                        priority_tier=tier,
+                        tuning_layer=self._optional_tuning_layer_string(
+                            item_dict.get("tuning_layer")
+                        ),
+                    )
+                )
+                continue
+            msg = (
+                f"Each relevant_sysctls entry must be a string or object with "
+                f"name and priority_tier; invalid at index {index}"
+            )
+            raise ValueError(msg)
+        return tuple(entries)
 
     def _parse_directive_constraint(self, data: dict[str, Any]) -> DirectiveConstraint:
         return DirectiveConstraint(
             value_type=DirectiveValueType(self._require_str(data, "value_type")),
             apply_mode=ApplyMode(self._require_str(data, "apply_mode")),
+            priority_tier=PriorityTier(self._require_str(data, "priority_tier")),
             min_value=self._optional_int(data.get("min_value")),
             max_value=self._optional_int(data.get("max_value")),
             allowed_values=self._str_tuple(data.get("allowed_values", [])),
+            forbidden_values=self._str_tuple(data.get("forbidden_values", [])),
+            tuning_layer=self._optional_tuning_layer_string(data.get("tuning_layer")),
         )
+
+    def _optional_tuning_layer_string(self, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or value == "":
+            msg = "Expected non-empty string or null for 'tuning_layer'"
+            raise ValueError(msg)
+        if value not in _VALID_TUNING_LAYER_STRINGS:
+            allowed = ", ".join(sorted(_VALID_TUNING_LAYER_STRINGS))
+            msg = f"Invalid tuning_layer {value!r}; expected one of: {allowed}"
+            raise ValueError(msg)
+        return value
 
     def _parse_benchmark_hints(self, data: dict[str, Any]) -> ServiceBenchmarkHints:
         return ServiceBenchmarkHints(

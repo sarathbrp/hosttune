@@ -50,6 +50,7 @@ restart:
     service_config: reload
     worker_model: restart
     kernel_network: reboot
+    runtime_limits: reload
   drain_policy: best_effort
   dependency_chain: []
   post_restart_validation: health_check
@@ -58,25 +59,43 @@ tunable_surface:
   allowed_directives:
     worker_processes:
       value_type: integer
+      priority_tier: high
       min_value: 1
       max_value: 112
       apply_mode: reload
+      forbidden_values:
+        - "1"
     worker_connections:
       value_type: integer
+      priority_tier: high
       min_value: 128
       max_value: 65535
       apply_mode: reload
+      forbidden_values:
+        - "128"
+    worker_rlimit_nofile:
+      value_type: integer
+      priority_tier: medium
+      min_value: 65535
+      max_value: 1048576
+      apply_mode: reload
+      forbidden_values: []
     keepalive_timeout:
       value_type: integer
+      priority_tier: low
       min_value: 1
       max_value: 300
       apply_mode: reload
+      forbidden_values: []
     sendfile:
       value_type: enum
+      priority_tier: medium
       allowed_values:
         - "on"
         - "off"
       apply_mode: reload
+      forbidden_values:
+        - "off"
   forbidden_directives:
     - master_process
     - daemon
@@ -84,9 +103,22 @@ tunable_surface:
     - worker_processes -> verify CPU topology and NUMA layout
     - worker_connections -> verify file descriptor limits
   relevant_sysctls:
-    - net.core.somaxconn
-    - net.ipv4.ip_local_port_range
-    - net.core.netdev_max_backlog
+    - name: net.core.somaxconn
+      priority_tier: high
+    - name: net.core.netdev_max_backlog
+      priority_tier: high
+    - name: net.ipv4.ip_local_port_range
+      priority_tier: medium
+  network_ring_priority_tier: medium
+  runtime_limits:
+    nofile_soft:
+      value_type: integer
+      priority_tier: high
+      min_value: 1024
+      max_value: 2097152
+      apply_mode: reload
+      allowed_values: []
+      forbidden_values: []
 
 benchmark_hints:
   primary_metric: requests_per_second

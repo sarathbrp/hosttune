@@ -172,6 +172,38 @@ class HealthValidator:
                 detail=detail,
             )
 
+        if applied_change.hypothesis.parameter_key.startswith("network.ring."):
+            interface_name, ring_name = applied_change.target_path.split(":", maxsplit=1)
+            command = (
+                f"ethtool -g {shlex.quote(interface_name)} | "
+                'awk \'BEGIN{section=""} '
+                '/Current hardware settings:/{section="current"; next} '
+                '/Pre-set maximums:/{section="max"; next} '
+                f'section=="current" && $1=="{ring_name}:" {{print $2; exit}}\''
+            )
+            result = executor.run(command)
+            observed = result.stdout.strip()
+            passed = result.exit_code == 0 and observed == applied_change.applied_value
+            detail = f"observed={observed or 'unknown'}"
+            return ValidationCheck(
+                name="effective_value",
+                passed=passed,
+                detail=detail,
+            )
+
+        if applied_change.hypothesis.parameter_key.startswith("runtime.prlimit."):
+            pid = applied_change.target_path.split("=", maxsplit=1)[1].split(":")[0]
+            command = f"awk '/^Max open files/ {{print $4}}' /proc/{shlex.quote(pid)}/limits"
+            result = executor.run(command)
+            observed = result.stdout.strip()
+            passed = result.exit_code == 0 and observed == applied_change.applied_value
+            detail = f"observed={observed or 'unknown'}"
+            return ValidationCheck(
+                name="effective_value",
+                passed=passed,
+                detail=detail,
+            )
+
         return ValidationCheck(
             name="effective_value",
             passed=False,

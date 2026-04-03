@@ -29,8 +29,9 @@ class TuneBenchmarkExecutor:
         self,
         context: TuneContext,
         iteration_number: int,
-        validation_result: ValidationResult,
+        validation_result: ValidationResult | None,
         benchmark_executor: CommandExecutor,
+        label: str = "",
     ) -> TuneBenchmarkResult:
         benchmark_target = context.baseline.benchmark_target
         benchmark_command = ""
@@ -39,7 +40,9 @@ class TuneBenchmarkExecutor:
         }
 
         for run_index in range(1, self.run_count + 1):
-            contestant_name = self._build_contestant_name(context, iteration_number, run_index)
+            contestant_name = self._build_contestant_name(
+                context, iteration_number, run_index, label
+            )
             benchmark_command = self._build_benchmark_command(
                 context=context,
                 benchmark_target=benchmark_target,
@@ -197,12 +200,14 @@ class TuneBenchmarkExecutor:
         context: TuneContext,
         iteration_number: int,
         run_index: int,
+        label: str = "",
     ) -> str:
         session_id = "nosession"
         if context.artifacts is not None:
             session_id = context.artifacts.session_id
         base_name = context.benchmark_config.contestant_name
-        return f"{base_name}_{session_id}_iter{iteration_number:03d}_run{run_index:02d}"
+        suffix = f"_{label}" if label else ""
+        return f"{base_name}_{session_id}_iter{iteration_number:03d}_run{run_index:02d}{suffix}"
 
     def _build_run_summary(
         self,

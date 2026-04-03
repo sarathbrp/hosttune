@@ -45,15 +45,19 @@ from preflight.interfaces.execution_logger import (
 from snapshot.application.snapshot_runner import SnapshotRunner
 from tune.application.apply_coordinator import (
     ApplyCoordinator,
+    NetworkRingApplier,
     NginxDirectiveApplier,
+    PrlimitApplier,
     SysctlApplier,
 )
+from tune.application.attribution_verifier import AttributionVerifier
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.health_validator import HealthValidator
 from tune.application.hypothesis_factory import build_langgraph_hypothesis_generator
 from tune.application.hypothesis_generator import DeterministicHypothesisGenerator
 from tune.application.phase_controller import PhaseController
+from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
 from tune.application.tune_engine import TuneEngine
@@ -167,9 +171,16 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
         apply_coordinator=ApplyCoordinator(
             service_directive_applier=NginxDirectiveApplier(),
             sysctl_applier=SysctlApplier(),
+            network_ring_applier=NetworkRingApplier(),
+            runtime_limit_applier=PrlimitApplier(),
         ),
+        pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
         benchmark_executor=TuneBenchmarkExecutor(logger=execution_logger),
+        attribution_verifier=AttributionVerifier(
+            benchmark_executor=TuneBenchmarkExecutor(logger=execution_logger),
+            health_validator=HealthValidator(),
+        ),
         result_evaluator=ResultEvaluator(),
         rollback_coordinator=RollbackCoordinator(),
         recorder=TuneRecorder(),

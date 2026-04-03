@@ -5,6 +5,7 @@ from preflight.domain.models import CommandResult
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
 from tune.domain.apply_models import AppliedChange
 from tune.domain.hypothesis_models import CandidateSource, TunePhase, TuningHypothesis
+from tune.domain.tuning_layer import tuning_layer_for_parameter_key
 from tune.domain.validation_models import ValidationCheck, ValidationResult
 
 from tests.tune.test_candidate_catalog_builder import build_tune_context
@@ -48,6 +49,7 @@ def build_validation_result() -> ValidationResult:
         parameter_key="sysctl.net.core.somaxconn",
         parameter_name="net.core.somaxconn",
         domain="kernel_sysctl",
+        tuning_layer=tuning_layer_for_parameter_key("sysctl.net.core.somaxconn"),
         proposed_value="65535",
         source=CandidateSource.SERVICE_SYSCTL,
         apply_mode=ApplyMode.RELOAD,

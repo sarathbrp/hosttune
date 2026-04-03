@@ -26,7 +26,7 @@ class BenchmarkWorkloadSummary:
 
 @dataclass(frozen=True)
 class TuneBenchmarkResult:
-    validation_result: ValidationResult
+    validation_result: ValidationResult | None
     benchmark_command: str
     run_count: int
     stable: bool

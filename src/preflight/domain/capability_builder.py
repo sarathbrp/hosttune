@@ -64,6 +64,11 @@ class CapabilityMapBuilder:
                 detail=f"selinux_mode={kernel.selinux_mode}, tuned_profile={kernel.tuned_profile}",
             ),
             CapabilityFlag(
+                name="runtime_prlimit_tuning",
+                available=not platform.is_container,
+                detail="prlimit NOFILE soft limit when service snapshot defines pid_file",
+            ),
+            CapabilityFlag(
                 name="network_ring_buffer_tuning",
                 available=network.ring_buffer_tuning_supported
                 and (

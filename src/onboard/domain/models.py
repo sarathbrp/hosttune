@@ -30,6 +30,12 @@ class DirectiveValueType(StrEnum):
     STRING = "string"
 
 
+class PriorityTier(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class FindingSeverity(StrEnum):
     ERROR = "error"
     WARNING = "warning"
@@ -103,9 +109,22 @@ class ServiceRestartContract:
 class DirectiveConstraint:
     value_type: DirectiveValueType
     apply_mode: ApplyMode
+    priority_tier: PriorityTier
     min_value: int | None
     max_value: int | None
     allowed_values: tuple[str, ...]
+    forbidden_values: tuple[str, ...]
+    # Optional YAML override; values are TuningLayer strings (kernel|network|service|runtime).
+    tuning_layer: str | None = None
+
+
+@dataclass(frozen=True)
+class SysctlTunable:
+    """Kernel sysctl knob listed under tunable_surface (priority drives Wide Sweep ordering)."""
+
+    name: str
+    priority_tier: PriorityTier
+    tuning_layer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -113,7 +132,12 @@ class ServiceTunableSurface:
     allowed_directives: dict[str, DirectiveConstraint]
     forbidden_directives: tuple[str, ...]
     interdependencies: tuple[str, ...]
-    relevant_sysctls: tuple[str, ...]
+    relevant_sysctls: tuple[SysctlTunable, ...]
+    network_ring_priority_tier: PriorityTier
+    # Process-level limits (prlimit); YAML keys map to runtime.prlimit.<name> in the catalog.
+    runtime_limits: dict[str, DirectiveConstraint]
+    # Optional YAML override for network.ring.* catalog entries (rx/tx).
+    network_ring_tuning_layer: str | None = None
 
 
 @dataclass(frozen=True)

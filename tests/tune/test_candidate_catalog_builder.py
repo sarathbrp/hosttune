@@ -1,5 +1,8 @@
+from dataclasses import replace
+from typing import cast
+
 from baseline.domain.models import BaselineResult, BenchmarkConfig, WorkloadBenchmarkResult
-from onboard.domain.models import CompatibilityReport, OnboardResult
+from onboard.domain.models import CompatibilityReport, OnboardResult, PriorityTier
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.domain.models import (
     CapabilityFlag,
@@ -19,6 +22,7 @@ from snapshot.domain.models import SnapshotResult
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.domain.hypothesis_models import CandidateSource
 from tune.domain.tune_context import TuneContext
+from tune.domain.tuning_layer import TuningLayer, tuning_layer_for_parameter_key
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
 
@@ -34,6 +38,20 @@ class FakeExecutor:
             )
         if command.startswith("sysctl -n"):
             return CommandResult(command=command, exit_code=0, stdout="4096", stderr="")
+        if command.startswith("cat "):
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="12345\n",
+                stderr="",
+            )
+        if "awk " in command and "/proc/" in command and "limits" in command:
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="8192 1048576\n",
+                stderr="",
+            )
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
@@ -58,7 +76,9 @@ def build_tune_context() -> TuneContext:
         capability_map=CapabilityMap(
             flags=(
                 CapabilityFlag("kernel_sysctl_tuning", True, "supported"),
+                CapabilityFlag("network_ring_buffer_tuning", True, "supported"),
                 CapabilityFlag("network_queue_tuning", True, "supported"),
+                CapabilityFlag("runtime_prlimit_tuning", True, "supported"),
             )
         ),
     )
@@ -112,13 +132,66 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
     candidate_keys = {candidate.parameter_key for candidate in candidates}
     assert "service.directive.worker_processes" in candidate_keys
     assert "sysctl.net.core.somaxconn" in candidate_keys
+    assert "sysctl.net.ipv4.ip_local_port_range" in candidate_keys
+    assert "network.ring.rx" in candidate_keys
+    assert "runtime.prlimit.nofile_soft" in candidate_keys
+    prlimit_nofile = next(
+        candidate
+        for candidate in candidates
+        if candidate.parameter_key == "runtime.prlimit.nofile_soft"
+    )
+    assert prlimit_nofile.tuning_layer is TuningLayer.RUNTIME
+    assert prlimit_nofile.source is CandidateSource.RUNTIME_PRLIMIT
+    assert prlimit_nofile.current_value == "8192"
+    assert "service.directive.worker_rlimit_nofile" in candidate_keys
     assert any(
         candidate.source == CandidateSource.SERVICE_DIRECTIVE for candidate in candidates
     )
     assert any(candidate.source == CandidateSource.SERVICE_SYSCTL for candidate in candidates)
+    assert candidates[0].priority_tier is PriorityTier.HIGH
     worker_processes = next(
         candidate
         for candidate in candidates
         if candidate.parameter_key == "service.directive.worker_processes"
     )
     assert worker_processes.current_value == "112"
+    assert worker_processes.priority_tier is PriorityTier.HIGH
+    worker_rlimit = next(
+        candidate
+        for candidate in candidates
+        if candidate.parameter_key == "service.directive.worker_rlimit_nofile"
+    )
+    assert worker_rlimit.domain == "runtime"
+    port_range = next(
+        candidate
+        for candidate in candidates
+        if candidate.parameter_key == "sysctl.net.ipv4.ip_local_port_range"
+    )
+    assert port_range.priority_tier is PriorityTier.MEDIUM
+    rx_ring = next(candidate for candidate in candidates if candidate.parameter_key == "network.ring.rx")
+    assert rx_ring.priority_tier is PriorityTier.MEDIUM
+
+
+def test_candidate_catalog_applies_yaml_tuning_layer_overrides() -> None:
+    data = build_valid_definition()
+    surface = cast(dict[str, object], data["tunable_surface"])
+    data = {
+        **data,
+        "tunable_surface": {
+            **surface,
+            "relevant_sysctls": [
+                {"name": "net.core.somaxconn", "priority_tier": "high", "tuning_layer": "service"},
+            ],
+            "network_ring_tuning_layer": "runtime",
+        },
+    }
+    service = ServiceDefinitionValidator().validate(data)
+    base = build_tune_context()
+    context = replace(base, onboard=replace(base.onboard, service=service))
+    candidates = CandidateCatalogBuilder().build(context, FakeExecutor())
+    somaxconn = next(c for c in candidates if c.parameter_key == "sysctl.net.core.somaxconn")
+    assert somaxconn.tuning_layer is TuningLayer.SERVICE
+    rx_ring = next(c for c in candidates if c.parameter_key == "network.ring.rx")
+    assert rx_ring.tuning_layer is TuningLayer.RUNTIME
+    assert tuning_layer_for_parameter_key(somaxconn.parameter_key) is TuningLayer.KERNEL
+    assert tuning_layer_for_parameter_key(rx_ring.parameter_key) is TuningLayer.NETWORK

@@ -32,3 +32,13 @@ class EvaluationResult:
     drift_detected: bool
     workload_evaluations: tuple[WorkloadEvaluation, ...]
     missing_guardrails: tuple[str, ...]
+    attribution_verified: bool | None = None
+    attribution_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class AttributionVerificationResult:
+    verified: bool
+    summary: str
+    reverted_benchmark_result: TuneBenchmarkResult | None
+    average_drop: float

@@ -31,6 +31,8 @@ class TuneState:
     iteration_records: list[TuneIterationRecord] = field(default_factory=list)
     active_changes: dict[str, AppliedChange] = field(default_factory=dict)
     best_configuration: BestKnownConfiguration | None = None
+    # Counts completed iterations since best_configuration last improved (0 while no best).
+    iterations_since_best_update: int = 0
     drift_detected: bool = False
     scoreboard: TuneScoreboard = field(default_factory=TuneScoreboard)
 
@@ -77,6 +79,7 @@ class TuneState:
         record: TuneIterationRecord,
         history_record: HypothesisRecord,
     ) -> None:
+        previous_best = self.best_configuration
         self.total_iterations += 1
         self.phase_iterations[record.phase] += 1
         self.remaining_budget[record.phase] = max(0, self.remaining_budget[record.phase] - 1)
@@ -86,6 +89,7 @@ class TuneState:
             self.drift_detected = self.drift_detected or record.evaluation_result.drift_detected
             self._update_best_configuration(record.evaluation_result, record)
             self._update_scoreboard(record)
+        self._refresh_iterations_since_best_update(previous_best)
 
     def _update_best_configuration(
         self,
@@ -107,6 +111,24 @@ class TuneState:
             parameter_values=parameter_values,
             iteration_number=record.iteration_number,
         )
+
+    def _refresh_iterations_since_best_update(
+        self,
+        previous_best: BestKnownConfiguration | None,
+    ) -> None:
+        if self.best_configuration is None:
+            self.iterations_since_best_update = 0
+            return
+        if previous_best is None:
+            self.iterations_since_best_update = 0
+            return
+        if self.best_configuration.iteration_number != previous_best.iteration_number:
+            self.iterations_since_best_update = 0
+            return
+        if self.best_configuration.score > previous_best.score + 1e-12:
+            self.iterations_since_best_update = 0
+            return
+        self.iterations_since_best_update += 1
 
     def _update_scoreboard(self, record: TuneIterationRecord) -> None:
         evaluation_result = record.evaluation_result
