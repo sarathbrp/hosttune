@@ -42,10 +42,9 @@ from preflight.infrastructure.probes.storage_probe import StorageProbe
 from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.console_reporter import ConsoleReporter
 from preflight.interfaces.execution_logger import (
-    DebugExecutionLogger,
+    ColorExecutionLogger,
     ExecutionLogger,
     NullExecutionLogger,
-    VerboseExecutionLogger,
 )
 from snapshot.application.snapshot_runner import SnapshotRunner
 from tune.application.apply_coordinator import (
@@ -114,12 +113,14 @@ def build_discovery_runner(
     )
 
 
-def build_instance(verbose: bool = False, debug: bool = False) -> HostTuneInstance:
+def build_instance(
+    verbose: bool = False,
+    debug: bool = False,
+    color: bool = True,
+) -> HostTuneInstance:
     logger: ExecutionLogger
-    if debug:
-        logger = DebugExecutionLogger()
-    elif verbose:
-        logger = VerboseExecutionLogger()
+    if debug or verbose:
+        logger = ColorExecutionLogger(debug=debug, color=color)
     else:
         logger = NullExecutionLogger()
     return HostTuneInstance(
@@ -219,6 +220,11 @@ def main() -> int:
         help="Print internal debug logs including exact commands.",
     )
     parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable ANSI colour output (default: auto-detect from terminal).",
+    )
+    parser.add_argument(
         "config",
         nargs="?",
         default=Path("config.yaml"),
@@ -227,7 +233,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    instance = build_instance(verbose=args.verbose or args.debug, debug=args.debug)
+    instance = build_instance(
+        verbose=args.verbose or args.debug,
+        debug=args.debug,
+        color=not args.no_color,
+    )
     try:
         loaded_config = instance.config_loader.load(args.config)
         preflight = instance.load_preflight(args.config)

@@ -159,13 +159,13 @@ def test_build_baseline_runner_uses_benchmark_config() -> None:
 def test_build_instance_verbose_enables_logger() -> None:
     instance = cli.build_instance(verbose=True)
 
-    assert instance.logger.__class__.__name__ == "VerboseExecutionLogger"
+    assert instance.logger.__class__.__name__ == "ColorExecutionLogger"
 
 
 def test_build_instance_debug_enables_debug_logger() -> None:
     instance = cli.build_instance(debug=True)
 
-    assert instance.logger.__class__.__name__ == "DebugExecutionLogger"
+    assert instance.logger.__class__.__name__ == "ColorExecutionLogger"
 
 
 def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> None:
@@ -241,7 +241,7 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
     monkeypatch.setattr(
         cli,
         "build_instance",
-        lambda verbose=False, debug=False: FakeInstance(config_loader=fake_config_loader),
+        lambda verbose=False, debug=False, color=True: FakeInstance(config_loader=fake_config_loader),
     )
     monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None: object())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
@@ -330,7 +330,7 @@ def test_main_returns_clean_error_for_tune_failure(
     monkeypatch.setattr(
         cli,
         "build_instance",
-        lambda verbose=False, debug=False: FakeInstance(config_loader=fake_config_loader),
+        lambda verbose=False, debug=False, color=True: FakeInstance(config_loader=fake_config_loader),
     )
     monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None: object())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
@@ -391,7 +391,7 @@ def test_main_defaults_to_config_yaml_and_accepts_short_verbose(
 
     called: dict[str, object] = {}
 
-    def fake_build_instance(verbose: bool = False, debug: bool = False) -> FakeInstance:
+    def fake_build_instance(verbose: bool = False, debug: bool = False, color: bool = True) -> FakeInstance:
         called["verbose"] = verbose
         called["debug"] = debug
         return FakeInstance()
@@ -453,7 +453,7 @@ def test_main_debug_enables_debug_instance(monkeypatch, capsys, tmp_path: Path) 
 
     called: dict[str, object] = {}
 
-    def fake_build_instance(verbose: bool = False, debug: bool = False) -> FakeInstance:
+    def fake_build_instance(verbose: bool = False, debug: bool = False, color: bool = True) -> FakeInstance:
         called["verbose"] = verbose
         called["debug"] = debug
         return FakeInstance()
