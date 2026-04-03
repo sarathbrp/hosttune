@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from baseline.domain.models import BaselineResult, BenchmarkConfig, WorkloadBenchmarkResult
@@ -19,6 +20,7 @@ from preflight.domain.models import (
     StorageInfo,
 )
 from preflight.infrastructure.config_loader import ConfigLoader, LoadedConfig
+from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from snapshot.domain.models import SnapshotResult
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
@@ -115,7 +117,8 @@ class FakeConfigLoader(ConfigLoader):
         )
 
 
-def test_instance_stores_preflight_snapshot() -> None:
+def test_instance_stores_preflight_snapshot(tmp_path: Path) -> None:
+    artifact_store = RuntimeArtifactStore(base_directory=tmp_path / "artifacts")
     instance = HostTuneInstance(
         config_loader=FakeConfigLoader(),
         discovery_runner_factory=lambda benchmark_command: FakeRunner(),
@@ -123,6 +126,7 @@ def test_instance_stores_preflight_snapshot() -> None:
         snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
         baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
         executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        artifact_store=artifact_store,
     )
 
     snapshot = instance.load_preflight(Path("config.yaml"))
@@ -131,9 +135,11 @@ def test_instance_stores_preflight_snapshot() -> None:
     assert instance.preflight is not None
     assert instance.preflight.cpu.logical_cores == 16
     assert instance.preflight.storage.device_name == "sda"
+    assert instance.artifacts is not None
+    assert "preflight" in instance.artifacts.stage_files
 
 
-def test_instance_stores_onboard_result() -> None:
+def test_instance_stores_onboard_result(tmp_path: Path) -> None:
     class FakeOnboardRunner:
         def run(self, service_name, preflight, executor):  # type: ignore[no-untyped-def]
             definition = ServiceDefinitionValidator().validate(build_valid_definition())
@@ -152,6 +158,7 @@ def test_instance_stores_onboard_result() -> None:
         snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
         baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
         executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
     )
 
     instance.load_preflight(Path("config.yaml"))
@@ -162,7 +169,7 @@ def test_instance_stores_onboard_result() -> None:
     assert instance.onboard.service_name == "nginx"
 
 
-def test_instance_stores_snapshot_and_baseline_results() -> None:
+def test_instance_stores_snapshot_and_baseline_results(tmp_path: Path) -> None:
     class FakeSnapshotRunner:
         def run(self, service, executor):  # type: ignore[no-untyped-def]
             _ = service
@@ -207,6 +214,7 @@ def test_instance_stores_snapshot_and_baseline_results() -> None:
         snapshot_runner_factory=lambda: FakeSnapshotRunner(),
         baseline_runner_factory=lambda benchmark_config: FakeBaselineRunner(),
         executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
     )
 
     instance.load_preflight(Path("config.yaml"))
@@ -218,3 +226,33 @@ def test_instance_stores_snapshot_and_baseline_results() -> None:
     assert instance.baseline is baseline_result
     assert instance.snapshot is not None
     assert instance.baseline is not None
+
+
+def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
+    artifact_store = RuntimeArtifactStore(base_directory=tmp_path / "artifacts")
+    instance = HostTuneInstance(
+        config_loader=FakeConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        artifact_store=artifact_store,
+    )
+
+    instance.load_preflight(Path("config.yaml"))
+    instance.load_onboard(Path("config.yaml"))
+
+    assert instance.artifacts is not None
+    preflight_file = instance.artifacts.stage_files["preflight"]
+    onboard_file = instance.artifacts.stage_files["onboard"]
+
+    preflight_record = json.loads(preflight_file.read_text(encoding="utf-8").splitlines()[0])
+    onboard_record = json.loads(onboard_file.read_text(encoding="utf-8").splitlines()[0])
+
+    assert preflight_file.name == f"preflight_{instance.artifacts.session_id}.jsonl"
+    assert onboard_file.name == f"onboard_{instance.artifacts.session_id}.jsonl"
+    assert preflight_record["stage"] == "preflight"
+    assert preflight_record["payload"]["platform_summary"] == "bare_metal_linux"
+    assert onboard_record["stage"] == "onboard"
+    assert onboard_record["payload"]["service_name"] == "nginx"

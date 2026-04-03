@@ -18,6 +18,9 @@ class ExecutionLogger:
     def stage_end(self, name: str) -> None:
         """Log that a stage has completed."""
 
+    def artifact_written(self, stage: str, path: str) -> None:
+        """Log that a stage artifact was written."""
+
 
 class NullExecutionLogger(ExecutionLogger):
     pass
@@ -38,6 +41,9 @@ class VerboseExecutionLogger(ExecutionLogger):
 
     def stage_end(self, name: str) -> None:
         self._write(f"--- {name.upper()} complete ---")
+
+    def artifact_written(self, stage: str, path: str) -> None:
+        self._write(f"[{stage}] artifact -> {path}")
 
     def _write(self, message: str) -> None:
         self.stream.write(f"{message}\n")

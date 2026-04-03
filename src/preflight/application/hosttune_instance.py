@@ -15,8 +15,10 @@ from preflight.domain.models import (
     LocalTargetConfig,
     SshTargetConfig,
 )
+from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from preflight.infrastructure.config_loader import ConfigLoader, LoadedConfig
 from preflight.infrastructure.executors.logging_executor import LoggingCommandExecutor
+from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from snapshot.application.snapshot_runner import SnapshotRunner
 from snapshot.domain.models import SnapshotResult
@@ -36,18 +38,22 @@ class HostTuneInstance:
     snapshot_runner_factory: SnapshotRunnerFactory
     baseline_runner_factory: BaselineRunnerFactory
     executor_factory: ExecutorFactory
+    artifact_store: RuntimeArtifactStore
     logger: ExecutionLogger = NullExecutionLogger()
     preflight: DiscoverySnapshot | None = None
     onboard: OnboardResult | None = None
     snapshot: SnapshotResult | None = None
     baseline: BaselineResult | None = None
+    artifacts: RuntimeArtifacts | None = None
 
     def load_preflight(self, config_path: Path) -> DiscoverySnapshot:
         loaded_config = self.config_loader.load(config_path)
+        self._ensure_artifacts()
         self.logger.stage_start("preflight")
         snapshot = self._run_preflight(loaded_config)
         self.logger.stage_end("preflight")
         self.preflight = snapshot
+        self._persist_stage_result("preflight", snapshot)
         return snapshot
 
     def load_onboard(self, config_path: Path) -> OnboardResult:
@@ -65,6 +71,7 @@ class HostTuneInstance:
         )
         self.logger.stage_end("onboard")
         self.onboard = result
+        self._persist_stage_result("onboard", result)
         return result
 
     def load_snapshot(self, config_path: Path) -> SnapshotResult:
@@ -78,6 +85,7 @@ class HostTuneInstance:
         result = runner.run(self.onboard.service, executor)
         self.logger.stage_end("snapshot")
         self.snapshot = result
+        self._persist_stage_result("snapshot", result)
         return result
 
     def load_baseline(self, config_path: Path) -> BaselineResult:
@@ -97,6 +105,7 @@ class HostTuneInstance:
         result = runner.run(self.onboard.service, benchmark_executor, loaded_config.target)
         self.logger.stage_end("baseline")
         self.baseline = result
+        self._persist_stage_result("baseline", result)
         return result
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
@@ -119,3 +128,13 @@ class HostTuneInstance:
             logger=self.logger,
             stage_name=stage_name,
         )
+
+    def _ensure_artifacts(self) -> RuntimeArtifacts:
+        if self.artifacts is None:
+            self.artifacts = self.artifact_store.create_session()
+        return self.artifacts
+
+    def _persist_stage_result(self, stage_name: str, payload: object) -> None:
+        artifacts = self._ensure_artifacts()
+        file_path = self.artifact_store.write_stage_result(artifacts, stage_name, payload)
+        self.logger.artifact_written(stage_name, str(file_path))

@@ -33,6 +33,7 @@ from preflight.infrastructure.probes.memory_probe import MemoryProbe
 from preflight.infrastructure.probes.network_probe import NetworkProbe
 from preflight.infrastructure.probes.platform_probe import PlatformProbe
 from preflight.infrastructure.probes.storage_probe import StorageProbe
+from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.console_reporter import ConsoleReporter
 from preflight.interfaces.execution_logger import (
     ExecutionLogger,
@@ -97,6 +98,7 @@ def build_instance(verbose: bool = False) -> HostTuneInstance:
             logger,
         ),
         executor_factory=build_executor,
+        artifact_store=RuntimeArtifactStore(),
         logger=logger,
     )
 
