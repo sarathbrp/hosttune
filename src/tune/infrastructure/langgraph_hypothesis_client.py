@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import operator
 from dataclasses import dataclass, field
-from typing import Annotated, TypedDict
+from typing import TypedDict
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.domain.hypothesis_context import HypothesisContext
@@ -20,8 +19,10 @@ class HypothesisGraphState(TypedDict):
     rhel_prompt: str
     full_prompt: str
     context: HypothesisContext
-    # Expert recommendations appended in parallel (reducer: list concatenation)
-    expert_recommendations: Annotated[list[str], operator.add]
+    # Named fields (not a reducer list) so agent labels are always deterministic
+    # regardless of parallel execution order.
+    service_agent_response: str
+    rhel_expert_response: str
     # Final synthesizer output
     response: str
     usage: ModelUsage | None
@@ -51,7 +52,8 @@ class LangGraphHypothesisClient:
                 "rhel_prompt": rhel_prompt,
                 "full_prompt": full_prompt,
                 "context": context,
-                "expert_recommendations": [],
+                "service_agent_response": "",
+                "rhel_expert_response": "",
                 "response": "",
                 "usage": None,
             }
@@ -113,7 +115,7 @@ class LangGraphHypothesisClient:
             content = f"ERROR: service_agent failed: {exc}"
         self._log_response("service_agent", content)
         self._save_agent_artifact(context, "service_agent", prompt, content)
-        return {"expert_recommendations": [content]}
+        return {"service_agent_response": content}
 
     def _rhel_expert_node(self, state: HypothesisGraphState) -> dict[str, object]:
         """RHEL system tuning expert — reasons over kernel/network candidates."""
@@ -134,19 +136,15 @@ class LangGraphHypothesisClient:
             content = f"ERROR: rhel_expert failed: {exc}"
         self._log_response("rhel_expert", content)
         self._save_agent_artifact(context, "rhel_expert", prompt, content)
-        return {"expert_recommendations": [content]}
+        return {"rhel_expert_response": content}
 
     def _synthesizer_node(self, state: HypothesisGraphState) -> dict[str, object]:
         """Synthesizer — combines expert recommendations into one final hypothesis array."""
         from tune.application.hypothesis_prompt_layer import format_synthesizer_prompt
 
         context = state["context"]
-        recommendations = state["expert_recommendations"]
-        if len(recommendations) != 2:
-            _log.warning(
-                "Synthesizer expected 2 expert recommendations, got %d",
-                len(recommendations),
-            )
+        # Named fields guarantee correct labeling regardless of parallel execution order.
+        recommendations = [state["service_agent_response"], state["rhel_expert_response"]]
         planner_prompt = format_synthesizer_prompt(
             context=context,
             expert_recommendations=recommendations,

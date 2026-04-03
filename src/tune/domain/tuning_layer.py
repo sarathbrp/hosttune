@@ -5,8 +5,10 @@ from enum import StrEnum
 _SERVICE_DIRECTIVE_PREFIX = "service.directive."
 _SYSCTL_PREFIX = "sysctl."
 _NETWORK_RING_PREFIX = "network.ring."
+_NETWORK_QUEUE_PREFIX = "network.queue."
 _RUNTIME_PRLIMIT_PREFIX = "runtime.prlimit."
 _SYSTEMD_UNIT_PREFIX = "systemd.unit."
+_PLATFORM_PREFIX = "platform."
 
 _RUNTIME_DIRECTIVES = frozenset({"worker_rlimit_nofile"})
 
@@ -18,6 +20,7 @@ class TuningLayer(StrEnum):
     NETWORK = "network"
     SERVICE = "service"
     RUNTIME = "runtime"
+    PLATFORM = "platform"  # Host hardware and OS-level (NIC queues, CPU governor, IRQ)
 
 
 def tuning_layer_for_parameter_key(parameter_key: str) -> TuningLayer:
@@ -26,7 +29,9 @@ def tuning_layer_for_parameter_key(parameter_key: str) -> TuningLayer:
 
     Rules:
     - sysctl.* → KERNEL
-    - network.ring.* → NETWORK
+    - network.ring.* → NETWORK (ethtool -G ring buffers)
+    - network.queue.* → NETWORK (ethtool -L queue count)
+    - platform.* → PLATFORM (host hardware: CPU governor, IRQ affinity)
     - runtime.prlimit.* → RUNTIME (process limits via prlimit)
     - systemd.unit.* → RUNTIME (systemd unit LimitNOFILE / LimitNPROC via set-property)
     - service.directive.worker_rlimit_nofile → RUNTIME (fd / process limits surface)
@@ -36,6 +41,10 @@ def tuning_layer_for_parameter_key(parameter_key: str) -> TuningLayer:
         return TuningLayer.KERNEL
     if parameter_key.startswith(_NETWORK_RING_PREFIX):
         return TuningLayer.NETWORK
+    if parameter_key.startswith(_NETWORK_QUEUE_PREFIX):
+        return TuningLayer.NETWORK
+    if parameter_key.startswith(_PLATFORM_PREFIX):
+        return TuningLayer.PLATFORM
     if parameter_key.startswith(_RUNTIME_PRLIMIT_PREFIX):
         return TuningLayer.RUNTIME
     if parameter_key.startswith(_SYSTEMD_UNIT_PREFIX):

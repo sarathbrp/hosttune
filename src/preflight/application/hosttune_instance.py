@@ -49,6 +49,7 @@ class HostTuneInstance:
     executor_factory: ExecutorFactory
     artifact_store: RuntimeArtifactStore
     logger: ExecutionLogger = NullExecutionLogger()
+    host_profile_loader: object | None = None  # HostProfileLoader — avoids circular import
     preflight: DiscoverySnapshot | None = None
     onboard: OnboardResult | None = None
     snapshot: SnapshotResult | None = None
@@ -56,6 +57,7 @@ class HostTuneInstance:
     tune: TuneState | None = None
     benchmark_config: BenchmarkConfig | None = None
     artifacts: RuntimeArtifacts | None = None
+    host_profile: object | None = None  # HostProfile once loaded
 
     def load_preflight(self, config_path: Path) -> DiscoverySnapshot:
         loaded_config = self.config_loader.load(config_path)
@@ -66,6 +68,19 @@ class HostTuneInstance:
         self.preflight = snapshot
         self._persist_stage_result("preflight", snapshot)
         return snapshot
+
+    def load_host_profile(self, config_path: Path) -> object | None:
+        """Load host profile by name from config.yaml (optional stage)."""
+        loaded_config = self.config_loader.load(config_path)
+        name = loaded_config.host_profile_name
+        if name is None or self.host_profile_loader is None:
+            return None
+        self.logger.stage_start("host_profile")
+        profile = self.host_profile_loader.load(name)  # type: ignore[union-attr]
+        self.logger.stage_end("host_profile")
+        self.host_profile = profile
+        self._persist_stage_result("host_profile", profile)
+        return profile
 
     def load_onboard(self, config_path: Path) -> OnboardResult:
         if self.preflight is None:
@@ -145,6 +160,7 @@ class HostTuneInstance:
             baseline=self.baseline,
             benchmark_config=self.benchmark_config,
             artifacts=self.artifacts,
+            host_profile=self.host_profile,  # type: ignore[arg-type]
         )
 
     def run_tune(

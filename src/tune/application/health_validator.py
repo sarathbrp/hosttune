@@ -10,6 +10,16 @@ from tune.domain.tune_context import TuneContext
 from tune.domain.validation_models import ValidationCheck, ValidationResult
 
 
+def _normalize_sysctl_value(value: str) -> str:
+    """Normalize kernel sysctl values for comparison.
+
+    The kernel may return multi-field values (e.g. ip_local_port_range) with
+    tabs or multiple spaces between fields. Normalize to single-space separated
+    so '1024\t65535' and '1024 65535' compare as equal.
+    """
+    return " ".join(value.split())
+
+
 def _systemd_unit_limit_observation_matches(observed: str, expected_applied: str) -> bool:
     obs = observed.strip()
     exp = expected_applied.strip()
@@ -167,7 +177,12 @@ class HealthValidator:
             command = f"sysctl -n {shlex.quote(applied_change.target_path)}"
             result = executor.run(command)
             observed = result.stdout.strip()
-            passed = result.exit_code == 0 and observed == applied_change.applied_value
+            # Normalize whitespace: kernel may return tabs/multiple spaces between
+            # fields (e.g. ip_local_port_range returns "1024\t65535").
+            passed = result.exit_code == 0 and (
+                _normalize_sysctl_value(observed)
+                == _normalize_sysctl_value(applied_change.applied_value)
+            )
             detail = f"observed={observed or 'unknown'}"
             return ValidationCheck(
                 name="effective_value",
@@ -232,6 +247,36 @@ class HealthValidator:
                 observed,
                 applied_change.applied_value,
             )
+            detail = f"observed={observed or 'unknown'}"
+            return ValidationCheck(
+                name="effective_value",
+                passed=passed,
+                detail=detail,
+            )
+
+        if applied_change.hypothesis.parameter_key.startswith("network.queue."):
+            iface = applied_change.target_path.split(":", maxsplit=1)[0]
+            command = (
+                f"ethtool -l {shlex.quote(iface)} 2>/dev/null | "
+                "awk '/Current hardware settings/{found=1} "
+                "found && /Combined/{print $2; exit}'"
+            )
+            result = executor.run(command)
+            observed = result.stdout.strip()
+            passed = result.exit_code == 0 and observed == applied_change.applied_value
+            detail = f"observed={observed or 'unknown'}"
+            return ValidationCheck(
+                name="effective_value",
+                passed=passed,
+                detail=detail,
+            )
+
+        if applied_change.hypothesis.parameter_key.startswith("platform.cpu_governor."):
+            result = executor.run(
+                "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor " "2>/dev/null"
+            )
+            observed = result.stdout.strip()
+            passed = result.exit_code == 0 and observed == applied_change.applied_value
             detail = f"observed={observed or 'unknown'}"
             return ValidationCheck(
                 name="effective_value",

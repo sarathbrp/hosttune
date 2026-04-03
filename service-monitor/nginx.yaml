@@ -63,6 +63,22 @@ restart:
 
 tunable_surface:
   allowed_directives:
+    access_log:
+      value_type: enum
+      priority_tier: high
+      allowed_values:
+        - "off"
+        - "/var/log/nginx/access.log"
+        - "/var/log/nginx/access.log main"
+      apply_mode: reload
+      forbidden_values: []
+    keepalive_requests:
+      value_type: integer
+      priority_tier: high
+      min_value: 100
+      max_value: 100000
+      apply_mode: reload
+      forbidden_values: []
     worker_processes:
       value_type: integer
       priority_tier: high
@@ -81,8 +97,8 @@ tunable_surface:
         - "128"
     worker_rlimit_nofile:
       value_type: integer
-      priority_tier: medium
-      min_value: 65535
+      priority_tier: high
+      min_value: 1024
       max_value: 1048576
       apply_mode: reload
       forbidden_values: []

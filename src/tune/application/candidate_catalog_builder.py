@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 from dataclasses import dataclass
 
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
@@ -42,6 +43,7 @@ class CandidateCatalogBuilder:
         candidates.extend(self._build_network_ring_candidates(context, executor))
         candidates.extend(self._build_runtime_prlimit_candidates(context, executor))
         candidates.extend(self._build_systemd_unit_limit_candidates(context, executor))
+        candidates.extend(self._build_host_profile_candidates(context, executor))
         return tuple(
             sorted(
                 candidates,
@@ -358,3 +360,122 @@ class CandidateCatalogBuilder:
             PriorityTier.LOW: 2,
         }
         return order[tier]
+
+    def _build_host_profile_candidates(
+        self,
+        context: TuneContext,
+        executor: CommandExecutor | None,
+    ) -> list[CandidateParameter]:
+        """Generate candidates from the optional host profile."""
+        if context.host_profile is None:
+            return []
+        surface = context.host_profile.tunable_surface
+        existing_keys = set()  # deduplicate against service-level sysctl candidates
+        candidates: list[CandidateParameter] = []
+
+        # ── NIC queue expansion ──────────────────────────────────────────────
+        if surface.network_queues is not None:
+            nq = surface.network_queues
+            pkey = "network.queue.combined"
+            current_queues = context.preflight.network.combined_queues
+            # Resolve max: 0 means "use logical_cores"
+            hardware_max = nq.max_combined or context.preflight.cpu.logical_cores
+            if hardware_max > current_queues:
+                current_val: str | None = str(current_queues) if executor else None
+                if executor:
+                    iface = shlex.quote(context.preflight.network.interface_name)
+                    result = executor.run(
+                        f"ethtool -l {iface} 2>/dev/null | "
+                        "awk '/Current hardware settings/{found=1} "
+                        "found && /Combined/{print $2; exit}'"
+                    )
+                    if result.exit_code == 0 and result.stdout.strip().isdigit():
+                        current_val = result.stdout.strip()
+                candidates.append(
+                    CandidateParameter(
+                        parameter_key=pkey,
+                        domain="network",
+                        tuning_layer=resolve_tuning_layer(pkey, None),
+                        parameter_name="combined",
+                        source=CandidateSource.HOST_NIC_QUEUE,
+                        value_type=DirectiveValueType.INTEGER,
+                        apply_mode=nq.apply_mode,
+                        priority_tier=nq.priority_tier,
+                        allowed_values=(),
+                        forbidden_values=(),
+                        min_value=nq.min_combined,
+                        max_value=hardware_max,
+                        rationale_hint=(
+                            f"NIC has {hardware_max} max combined queues; "
+                            f"currently {current_queues} — expand to parallelize packet processing"
+                        ),
+                        current_value=current_val,
+                    )
+                )
+
+        # ── CPU governor ─────────────────────────────────────────────────────
+        if surface.cpu_governor is not None:
+            cg = surface.cpu_governor
+            pkey = "platform.cpu_governor.scaling_governor"
+            current_gov: str | None = None
+            if executor:
+                result = executor.run(
+                    "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null"
+                )
+                value = result.stdout.strip()
+                current_gov = value if result.exit_code == 0 and value else None
+            candidates.append(
+                CandidateParameter(
+                    parameter_key=pkey,
+                    domain="platform",
+                    tuning_layer=resolve_tuning_layer(pkey, None),
+                    parameter_name="scaling_governor",
+                    source=CandidateSource.HOST_CPU_GOVERNOR,
+                    value_type=DirectiveValueType.ENUM,
+                    apply_mode=cg.apply_mode,
+                    priority_tier=cg.priority_tier,
+                    allowed_values=cg.allowed_governors,
+                    forbidden_values=cg.forbidden_governors,
+                    min_value=None,
+                    max_value=None,
+                    rationale_hint=(
+                        f"CPU governor controls frequency scaling; "
+                        f"preferred={cg.preferred_governor}"
+                    ),
+                    current_value=current_gov,
+                )
+            )
+
+        # ── Host-level sysctls (deduplicate against service sysctl candidates) ──
+        service_sysctl_keys = {
+            f"sysctl.{entry.name}"
+            for entry in context.onboard.service.tunable_surface.relevant_sysctls
+        }
+        for entry in surface.host_sysctls:
+            pkey = f"sysctl.{entry.name}"
+            if pkey in service_sysctl_keys or pkey in existing_keys:
+                continue  # already in catalog from service YAML
+            existing_keys.add(pkey)
+            current_val = read_sysctl_catalog_current(
+                entry.name, executor, context.preflight.kernel.sysctl_profile
+            )
+            candidates.append(
+                CandidateParameter(
+                    parameter_key=pkey,
+                    domain="kernel_sysctl",
+                    tuning_layer=resolve_tuning_layer(pkey, None),
+                    parameter_name=entry.name,
+                    source=CandidateSource.HOST_SYSCTL,
+                    value_type=DirectiveValueType.STRING,
+                    apply_mode=self._resolve_sysctl_apply_mode(context),
+                    priority_tier=entry.priority_tier,
+                    allowed_values=(),
+                    forbidden_values=(),
+                    min_value=None,
+                    max_value=None,
+                    rationale_hint=entry.rationale_hint,
+                    current_value=current_val,
+                )
+            )
+
+        return candidates

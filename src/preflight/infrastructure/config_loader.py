@@ -21,6 +21,7 @@ class LoadedConfig:
     policy: EngagementPolicy
     service_name: str
     benchmark_config: BenchmarkConfig | None
+    host_profile_name: str | None = None
 
 
 class ConfigLoader:
@@ -45,11 +46,18 @@ class ConfigLoader:
             raise ValueError(msg)
         benchmark_config = self._load_benchmark(cast(dict[str, Any], benchmark))
 
+        host_profile_section = content.get("host_profile") or {}
+        host_profile_name: str | None = None
+        if isinstance(host_profile_section, dict):
+            raw_name = host_profile_section.get("name")
+            host_profile_name = str(raw_name) if isinstance(raw_name, str) and raw_name else None
+
         return LoadedConfig(
             target=target,
             policy=policy,
             service_name=service_name,
             benchmark_config=benchmark_config,
+            host_profile_name=host_profile_name,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

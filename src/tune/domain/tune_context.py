@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from baseline.domain.models import BaselineResult, BenchmarkConfig
 from onboard.domain.models import OnboardResult
 from preflight.domain.models import DiscoverySnapshot
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from snapshot.domain.models import SnapshotResult
+
+if TYPE_CHECKING:
+    from host_profile.domain.models import HostProfile
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,7 @@ class TuneContext:
     baseline: BaselineResult
     benchmark_config: BenchmarkConfig
     artifacts: RuntimeArtifacts | None
+    host_profile: HostProfile | None = None  # optional; loaded from host-profiles/ by name
 
     @property
     def effective_variance_threshold(self) -> float:

@@ -24,6 +24,9 @@ class CandidateSource(StrEnum):
     PLATFORM_CAPABILITY = "platform_capability"
     RUNTIME_PRLIMIT = "runtime_prlimit"
     SYSTEMD_UNIT_LIMIT = "systemd_unit_limit"
+    HOST_NIC_QUEUE = "host_nic_queue"  # ethtool -L combined N from host profile
+    HOST_CPU_GOVERNOR = "host_cpu_governor"  # cpupower frequency-set -g from host profile
+    HOST_SYSCTL = "host_sysctl"  # host-level sysctl from host profile
 
 
 class CandidateAvailability(StrEnum):

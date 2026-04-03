@@ -77,6 +77,8 @@ class ApplyCoordinator:
     network_ring_applier: ChangeApplier
     runtime_limit_applier: ChangeApplier
     systemd_unit_limit_applier: ChangeApplier
+    nic_queue_applier: ChangeApplier | None = None
+    cpu_governor_applier: ChangeApplier | None = None
 
     def apply(
         self,
@@ -90,6 +92,16 @@ class ApplyCoordinator:
             return self.sysctl_applier.apply(context, hypothesis, executor)
         if hypothesis.parameter_key.startswith("network.ring."):
             return self.network_ring_applier.apply(context, hypothesis, executor)
+        if hypothesis.parameter_key.startswith("network.queue."):
+            if self.nic_queue_applier is None:
+                msg = "NIC queue candidate proposed but nic_queue_applier not configured."
+                raise ValueError(msg)
+            return self.nic_queue_applier.apply(context, hypothesis, executor)
+        if hypothesis.parameter_key.startswith("platform.cpu_governor."):
+            if self.cpu_governor_applier is None:
+                msg = "CPU governor candidate proposed but cpu_governor_applier not configured."
+                raise ValueError(msg)
+            return self.cpu_governor_applier.apply(context, hypothesis, executor)
         if hypothesis.parameter_key.startswith("runtime.prlimit."):
             return self.runtime_limit_applier.apply(context, hypothesis, executor)
         if hypothesis.parameter_key.startswith("systemd.unit."):
@@ -454,3 +466,96 @@ class SystemdUnitLimitApplier:
             apply_command=apply_command,
             rollback_command=rollback_command,
         )
+
+
+@dataclass
+class NicQueueApplier:
+    """Expand or shrink NIC combined queue count via ethtool -L."""
+
+    def apply(
+        self,
+        context: TuneContext,
+        hypothesis: TuningHypothesis,
+        executor: CommandExecutor,
+    ) -> AppliedChange:
+        iface = shlex.quote(context.preflight.network.interface_name)
+        current = self._read_current_combined(executor, iface)
+        new_value = hypothesis.proposed_value.strip()
+        apply_command = f"ethtool -L {iface} combined {shlex.quote(new_value)}"
+        apply_result = executor.run(apply_command)
+        if apply_result.exit_code != 0:
+            msg = (
+                f"Failed to set NIC queue count to {new_value}: "
+                f"{apply_result.stderr or apply_result.stdout}"
+            )
+            raise ValueError(msg)
+        rollback_command = f"ethtool -L {iface} combined {shlex.quote(current)}"
+        return AppliedChange(
+            hypothesis=hypothesis,
+            target_path=f"{context.preflight.network.interface_name}:combined_queues",
+            previous_value=current,
+            applied_value=new_value,
+            apply_mode=hypothesis.apply_mode,
+            apply_command=apply_command,
+            rollback_command=rollback_command,
+        )
+
+    def _read_current_combined(self, executor: CommandExecutor, iface: str) -> str:
+        cmd = (
+            f"ethtool -l {iface} 2>/dev/null | "
+            "awk '/Current hardware settings/{found=1} found && /Combined/{print $2; exit}'"
+        )
+        result = executor.run(cmd)
+        value = result.stdout.strip()
+        if not value.isdigit():
+            msg = (
+                f"Failed to read current NIC combined queue count for {iface}: "
+                f"ethtool -l returned {result.stdout!r}"
+            )
+            raise ValueError(msg)
+        return value
+
+
+@dataclass
+class CpuGovernorApplier:
+    """Set CPU frequency scaling governor via cpupower frequency-set -g."""
+
+    def apply(
+        self,
+        context: TuneContext,
+        hypothesis: TuningHypothesis,
+        executor: CommandExecutor,
+    ) -> AppliedChange:
+        current = self._read_current_governor(executor)
+        new_governor = hypothesis.proposed_value.strip()
+        apply_command = f"cpupower frequency-set -g {shlex.quote(new_governor)}"
+        apply_result = executor.run(apply_command)
+        if apply_result.exit_code != 0:
+            msg = (
+                f"Failed to set CPU governor to {new_governor!r}: "
+                f"{apply_result.stderr or apply_result.stdout}"
+            )
+            raise ValueError(msg)
+        rollback_command = f"cpupower frequency-set -g {shlex.quote(current)}"
+        return AppliedChange(
+            hypothesis=hypothesis,
+            target_path="cpu:scaling_governor",
+            previous_value=current,
+            applied_value=new_governor,
+            apply_mode=hypothesis.apply_mode,
+            apply_command=apply_command,
+            rollback_command=rollback_command,
+        )
+
+    def _read_current_governor(self, executor: CommandExecutor) -> str:
+        result = executor.run(
+            "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null"
+        )
+        value = result.stdout.strip()
+        if result.exit_code != 0 or not value:
+            msg = (
+                "Failed to read current CPU governor: "
+                f"exit={result.exit_code} stdout={result.stdout!r}"
+            )
+            raise ValueError(msg)
+        return value

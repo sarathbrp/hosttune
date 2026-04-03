@@ -6,6 +6,7 @@ from pathlib import Path
 
 from baseline.application.baseline_runner import BaselineRunner
 from baseline.domain.models import BenchmarkConfig
+from host_profile.infrastructure.host_profile_loader import HostProfileLoader
 from onboard.application.onboard_runner import OnboardRunner
 from onboard.infrastructure.service_compatibility_evaluator import ServiceCompatibilityEvaluator
 from onboard.infrastructure.service_definition_loader import ServiceDefinitionLoader
@@ -49,8 +50,10 @@ from preflight.interfaces.execution_logger import (
 from snapshot.application.snapshot_runner import SnapshotRunner
 from tune.application.apply_coordinator import (
     ApplyCoordinator,
+    CpuGovernorApplier,
     NetworkRingApplier,
     NginxDirectiveApplier,
+    NicQueueApplier,
     PrlimitApplier,
     SysctlApplier,
     SystemdUnitLimitApplier,
@@ -134,6 +137,7 @@ def build_instance(verbose: bool = False, debug: bool = False) -> HostTuneInstan
         executor_factory=build_executor,
         artifact_store=RuntimeArtifactStore(),
         logger=logger,
+        host_profile_loader=HostProfileLoader(),
     )
 
 
@@ -182,6 +186,8 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
             systemd_unit_limit_applier=SystemdUnitLimitApplier(),
+            nic_queue_applier=NicQueueApplier(),
+            cpu_governor_applier=CpuGovernorApplier(),
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
@@ -225,6 +231,7 @@ def main() -> int:
     try:
         loaded_config = instance.config_loader.load(args.config)
         preflight = instance.load_preflight(args.config)
+        instance.load_host_profile(args.config)
         onboard = instance.load_onboard(args.config)
         snapshot = instance.load_snapshot(args.config)
         baseline = None

@@ -172,7 +172,7 @@ def format_limit_baseline_lines(candidates: tuple[CandidateParameter, ...]) -> l
 
 
 _SERVICE_LAYERS = frozenset({TuningLayer.SERVICE, TuningLayer.RUNTIME})
-_RHEL_LAYERS = frozenset({TuningLayer.KERNEL, TuningLayer.NETWORK})
+_RHEL_LAYERS = frozenset({TuningLayer.KERNEL, TuningLayer.NETWORK, TuningLayer.PLATFORM})
 _TELEMETRY_MAX_SECTION = 420
 
 _PHASE_OBJECTIVES: dict[TunePhase, str] = {
@@ -196,6 +196,38 @@ def _format_history_lines(history: tuple[HypothesisRecord, ...]) -> list[str]:
         )
         for r in history
     ] or ["- none"]
+
+
+def format_host_profile_digest_lines(context: HypothesisContext) -> list[str]:
+    """Compact host profile summary for the rhel_expert prompt."""
+    host_profile = context.tune_context.host_profile
+    if host_profile is None:
+        return ["- host_profile=(not configured)"]
+    identity = host_profile.identity
+    surface = host_profile.tunable_surface
+    variant = identity.variant or "bare-metal"
+    lines: list[str] = [
+        f"- host_profile={identity.name} "
+        f"(platform={identity.platform} {identity.version}, variant={variant})",
+    ]
+    if surface.network_queues is not None:
+        nq = surface.network_queues
+        lines.append(
+            f"- host_network_queues: min={nq.min_combined} "
+            f"max={'ncpus' if nq.max_combined == 0 else nq.max_combined}; "
+            f"irq_affinity={nq.allow_irq_affinity}"
+        )
+    else:
+        lines.append("- host_network_queues: not applicable (VM variant)")
+    if surface.cpu_governor is not None:
+        cg = surface.cpu_governor
+        lines.append(
+            f"- host_cpu_governor: preferred={cg.preferred_governor}; "
+            f"allowed={list(cg.allowed_governors)}"
+        )
+    host_sysctl_names = [s.name for s in surface.host_sysctls]
+    lines.append(f"- host_sysctls: {host_sysctl_names or 'none'}")
+    return lines
 
 
 def format_service_expert_prompt(context: HypothesisContext) -> str:
@@ -266,6 +298,8 @@ def format_rhel_expert_prompt(context: HypothesisContext) -> str:
         f"Iteration: {context.iteration_number}",
         "Host facts (your domain):",
         *format_preflight_digest_lines(tune_context.preflight),
+        "Host profile (platform-level tunables):",
+        *format_host_profile_digest_lines(context),
         "Available tunable surfaces (capability flags):",
         *(capability_lines or ["- none"]),
         "Last benchmark runtime telemetry (ss -s, softnet_stat, ethtool -S; truncated):",
@@ -291,11 +325,11 @@ def format_synthesizer_prompt(
     deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
     best_config = ", ".join(f"{k}={v}" for k, v in context.best_parameter_values) or "none"
     active_changes = ", ".join(context.active_parameter_keys) or "none"
+    # expert_recommendations is ordered [service_agent_response, rhel_expert_response]
+    # because the client now uses named state fields — labels are always deterministic.
+    labels = ["service_agent", "rhel_expert"]
     labeled_recommendations = [
-        f"[{label}]: {rec}"
-        for label, rec in zip(
-            ["service_agent", "rhel_expert"], expert_recommendations, strict=False
-        )
+        f"[{label}]: {rec}" for label, rec in zip(labels, expert_recommendations, strict=True)
     ]
     sections = [
         "You are the parameter synthesizer for HostTune.",

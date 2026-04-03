@@ -7,6 +7,7 @@ from typing import Protocol
 
 from preflight.domain.models import CommandExecutor
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
+from snapshot.domain.models import SnapshotResult
 from tune.application.apply_coordinator import ApplyCoordinator
 from tune.application.attribution_verifier import AttributionVerifier
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
@@ -43,6 +44,30 @@ from tune.domain.validation_models import ValidationResult
 class SupportsHypothesisGeneration(Protocol):
     def generate(self, context: HypothesisContext) -> tuple[TuningHypothesis, ...]:
         """Generate one or more validated tuning hypotheses (one per domain)."""
+
+
+def _refresh_snapshot_runtime_state(
+    context: TuneContext,
+    executor: CommandExecutor,
+) -> SnapshotResult:
+    """Re-run runtime_state_command so the LLM sees the current live config."""
+    from dataclasses import replace as dc_replace
+
+    cmd = context.onboard.service.snapshot.runtime_state_command
+    if cmd is None:
+        return context.snapshot
+    result = executor.run(cmd)
+    if result.exit_code != 0:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Snapshot refresh failed (exit=%d, cmd=%r): %s; using stale snapshot",
+            result.exit_code,
+            cmd,
+            result.stderr.strip() or result.stdout.strip(),
+        )
+        return context.snapshot
+    return dc_replace(context.snapshot, runtime_state_output=result.stdout)
 
 
 def _last_benchmark_runtime_telemetry_digest(
@@ -101,6 +126,12 @@ class TuneEngine:
                 f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
             )
         while not self.phase_controller.should_stop(state, all_candidates):
+            # Rebuild catalog each iteration so current_values reflect applied changes.
+            # Without this, the no-op check compares against stale startup values.
+            all_candidates = self.candidate_catalog_builder.build(context, target_executor)
+            deferred_catalog = tuple(
+                c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
+            )
             previous_phase = state.current_phase
             phase = self.phase_controller.determine_phase(state, all_candidates)
             if phase is not previous_phase:
@@ -191,9 +222,13 @@ class TuneEngine:
     ) -> tuple[TuneIterationRecord, HypothesisRecord]:
         started_at = datetime.now(UTC)
         started_timer = perf_counter()
+        # Refresh runtime_state (e.g. nginx -T) so the LLM sees the live config,
+        # not the stale snapshot captured before tuning started.
+        live_snapshot = _refresh_snapshot_runtime_state(context, target_executor)
+        live_context = replace(context, snapshot=live_snapshot)
         hypotheses = self.hypothesis_generator.generate(
             HypothesisContext(
-                tune_context=context,
+                tune_context=live_context,
                 phase=phase,
                 iteration_number=iteration_number,
                 candidates=candidates,
