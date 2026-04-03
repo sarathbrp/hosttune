@@ -121,6 +121,7 @@ def test_runner_builds_snapshot() -> None:
 
     snapshot = runner.run(executor=executor, target=LocalTargetConfig(), policy=policy)
 
+    assert snapshot.platform_summary == "bare_metal_linux"
     assert snapshot.platform.hostname == "node-a"
     assert snapshot.platform.operating_system == "RHEL"
     assert snapshot.platform.kernel_version == "5.14.0"

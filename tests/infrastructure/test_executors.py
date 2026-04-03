@@ -10,8 +10,7 @@ from preflight.infrastructure.executors.ssh_executor import SshCommandExecutor
 
 def test_local_executor_wraps_subprocess_result(monkeypatch) -> None:
     def fake_run(*args, **kwargs) -> CompletedProcess[str]:
-        assert args[0] == "hostname"
-        assert kwargs["shell"] is True
+        assert args[0] == ["/bin/sh", "-lc", "hostname"]
         return CompletedProcess(args="hostname", returncode=0, stdout="node-a\n", stderr="")
 
     monkeypatch.setattr("subprocess.run", fake_run)

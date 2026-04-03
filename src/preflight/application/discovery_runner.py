@@ -8,6 +8,7 @@ from preflight.domain.models import (
     CommandExecutor,
     DiscoverySnapshot,
     EngagementPolicy,
+    PlatformInfo,
     TargetConfig,
 )
 from preflight.infrastructure.probes.cpu_probe import CpuProbe
@@ -56,6 +57,7 @@ class DiscoveryRunner:
         return DiscoverySnapshot(
             target=target,
             policy=policy,
+            platform_summary=self._build_platform_summary(platform),
             platform=platform,
             cpu=cpu,
             memory=memory,
@@ -66,3 +68,12 @@ class DiscoveryRunner:
             benchmark_result=benchmark_result,
             raw_probe_results=None,
         )
+
+    def _build_platform_summary(self, platform: PlatformInfo) -> str:
+        if platform.is_container:
+            return "containerized_linux"
+        if platform.virtualization_type not in {"", "none", "unknown"}:
+            return f"virtual_machine:{platform.virtualization_type}"
+        if platform.operating_system == "unknown":
+            return "non_linux_or_unsupported_platform"
+        return "bare_metal_linux"

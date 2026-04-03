@@ -124,6 +124,7 @@ class StorageInfo:
 class DiscoverySnapshot:
     target: TargetConfig
     policy: EngagementPolicy
+    platform_summary: str
     platform: PlatformInfo
     cpu: CpuInfo
     memory: MemoryInfo

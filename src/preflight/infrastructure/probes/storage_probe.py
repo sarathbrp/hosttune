@@ -16,7 +16,17 @@ class StorageProbe(BaseProbe):
         return "storage"
 
     def collect(self, executor: CommandExecutor) -> StorageInfo:
-        device = executor.run("lsblk -ndo PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -n 1")
+        device = executor.run(
+            "root_source=$(findmnt -n -o SOURCE /); "
+            'root_real=$(realpath "$root_source" 2>/dev/null || printf \'%s\' "$root_source"); '
+            'resolved_disk=$(lsblk -sno NAME,TYPE "$root_real" 2>/dev/null | '
+            "awk '$2==\"disk\" {print $1; exit}'); "
+            'if [ -n "$resolved_disk" ]; then '
+            "printf '%s' \"$resolved_disk\"; "
+            "else "
+            'basename "$root_real"; '
+            "fi"
+        )
         device_name = device.stdout or "unknown"
         return self.parser.parse(
             device_name=device,

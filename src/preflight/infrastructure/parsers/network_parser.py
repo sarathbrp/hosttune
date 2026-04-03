@@ -68,8 +68,16 @@ class NetworkParser:
         return parsed
 
     def _extract_combined_queues(self, output: str) -> int:
+        section = ""
         for line in output.splitlines():
-            if line.lower().startswith("combined:"):
+            normalized = line.strip()
+            if normalized == "Pre-set maximums:":
+                section = "max"
+                continue
+            if normalized == "Current hardware settings:":
+                section = "current"
+                continue
+            if section == "current" and normalized.lower().startswith("combined:"):
                 return self._safe_int(line.split(":", maxsplit=1)[1].strip())
         return 0
 

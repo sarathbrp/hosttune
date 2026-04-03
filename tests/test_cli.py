@@ -74,6 +74,7 @@ def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
             return DiscoverySnapshot(
                 target=target,
                 policy=policy,
+                platform_summary="bare_metal_linux",
                 platform=PlatformInfo(
                     hostname="node-a",
                     operating_system="RHEL",
@@ -131,6 +132,7 @@ def test_main_renders_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
     output = capsys.readouterr().out
 
     assert exit_code == 0
+    assert '"platform_summary": "bare_metal_linux"' in output
     assert '"hostname": "node-a"' in output
 
 
@@ -157,6 +159,7 @@ benchmark:
             return DiscoverySnapshot(
                 target=target,
                 policy=policy,
+                platform_summary="bare_metal_linux",
                 platform=PlatformInfo(
                     hostname="node-a",
                     operating_system="RHEL",

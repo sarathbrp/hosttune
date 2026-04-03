@@ -25,6 +25,7 @@ def test_console_reporter_serializes_snapshot() -> None:
             max_iterations=3,
             benchmark_stability_threshold=0.1,
         ),
+        platform_summary="bare_metal_linux",
         platform=PlatformInfo(
             hostname="node-a",
             operating_system="RHEL",
@@ -74,5 +75,6 @@ def test_console_reporter_serializes_snapshot() -> None:
 
     rendered = ConsoleReporter().render(snapshot)
 
+    assert '"platform_summary": "bare_metal_linux"' in rendered
     assert '"hostname": "node-a"' in rendered
     assert '"irq_affinity"' in rendered

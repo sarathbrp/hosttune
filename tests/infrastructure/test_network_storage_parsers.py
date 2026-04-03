@@ -22,7 +22,19 @@ def test_network_parser_extracts_ring_and_queue_state() -> None:
             ),
             "",
         ),
-        queue_info=CommandResult("queue", 0, "Combined: 8", ""),
+        queue_info=CommandResult(
+            "queue",
+            0,
+            "\n".join(
+                [
+                    "Pre-set maximums:",
+                    "Combined: 74",
+                    "Current hardware settings:",
+                    "Combined: 8",
+                ]
+            ),
+            "",
+        ),
     )
 
     assert network.driver_name == "ixgbe"
@@ -39,6 +51,17 @@ def test_storage_parser_extracts_device_capabilities() -> None:
 
     assert storage.device_type == "nvme"
     assert storage.scheduler_meaningful is False
+
+
+def test_storage_parser_detects_device_mapper_backing_disk() -> None:
+    storage = StorageParser().parse(
+        device_name=CommandResult("device", 0, "sda", ""),
+        rotational=CommandResult("rot", 0, "0", ""),
+        scheduler=CommandResult("sched", 0, "none [mq-deadline] kyber bfq", ""),
+    )
+
+    assert storage.device_name == "sda"
+    assert storage.device_type == "ssd"
 
 
 def test_storage_parser_detects_virtio_devices() -> None:
