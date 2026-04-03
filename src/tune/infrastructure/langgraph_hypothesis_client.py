@@ -106,8 +106,11 @@ class LangGraphHypothesisClient:
                 caller="service_agent",
                 system=(
                     "You are the service configuration expert for HostTune. "
-                    "Return strict JSON with keys: "
-                    "parameter_key, proposed_value, rationale, confidence."
+                    "Your domain: nginx directives (worker_processes, worker_connections, "
+                    "worker_rlimit_nofile, access_log, keepalive_requests, sendfile), "
+                    "fd limits (prlimit nofile_soft), and systemd unit limits. "
+                    "Prioritize access_log off and worker_rlimit_nofile when present. "
+                    "Return strict JSON: parameter_key, proposed_value, rationale, confidence."
                 ),
                 prompt=prompt,
             )
@@ -127,8 +130,14 @@ class LangGraphHypothesisClient:
                 caller="rhel_expert",
                 system=(
                     "You are the RHEL system tuning expert for HostTune. "
-                    "Return strict JSON with keys: "
-                    "parameter_key, proposed_value, rationale, confidence."
+                    "Your domain: kernel sysctls, NIC rings (network.ring.*), "
+                    "NIC queue count (network.queue.combined via ethtool -L), "
+                    "CPU governor (platform.cpu_governor.scaling_governor via cpupower), "
+                    "IRQ affinity, cgroup, and storage schedulers. "
+                    "network.queue.combined is high-impact when current < max: "
+                    "expanding from 8 to 56+ queues on a 112-core server "
+                    "can multiply packet throughput. "
+                    "Return strict JSON: parameter_key, proposed_value, rationale, confidence."
                 ),
                 prompt=prompt,
             )

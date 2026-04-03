@@ -241,8 +241,11 @@ def format_service_expert_prompt(context: HypothesisContext) -> str:
     deferred_lines = [format_candidate_line_for_llm(c) for c in service_deferred]
     sections = [
         "You are the service configuration expert for HostTune.",
-        "Your domain: service-level and runtime parameters "
-        "(application directives, fd limits, process limits, keepalive settings).",
+        "Your domain: service-level and runtime parameters — "
+        "nginx directives (worker_processes, worker_connections, worker_rlimit_nofile, "
+        "access_log, keepalive_requests, keepalive_timeout, sendfile), "
+        "fd limits (prlimit nofile_soft), and systemd unit limits (LimitNOFILE, LimitNPROC). "
+        "Note: access_log off eliminates per-request disk writes at high RPS.",
         "Select ONE candidate from the service/runtime list below.",
         "Return strict JSON: "
         '{"parameter_key": "...", "proposed_value": "...", "rationale": "...", '
@@ -288,8 +291,11 @@ def format_rhel_expert_prompt(context: HypothesisContext) -> str:
     )
     sections = [
         "You are the RHEL system tuning expert for HostTune.",
-        "Your domain: kernel parameters, network stack, IRQ affinity, cgroup, and storage.",
-        "Select ONE candidate from the kernel/network list below.",
+        "Your domain: kernel sysctls, network stack (rings, queue count via ethtool -L), "
+        "CPU governor (cpupower frequency-set -g), IRQ affinity, cgroup, and storage. "
+        "network.queue.combined and platform.cpu_governor.scaling_governor "
+        "are high-impact platform candidates when a host profile is configured.",
+        "Select ONE candidate from the kernel/network/platform list below.",
         "Return strict JSON: "
         '{"parameter_key": "...", "proposed_value": "...", "rationale": "...", '
         '"confidence": "high|medium|low"}',
@@ -336,8 +342,10 @@ def format_synthesizer_prompt(
         "Two domain experts (service_agent and rhel_expert) have independently recommended "
         "tuning actions from their respective domains.",
         "Your job: synthesize their recommendations into the final list of parameters to apply.",
-        "Apply BOTH when they are from different tuning layers "
-        "(e.g. service directive + kernel sysctl) — orthogonal changes combine safely.",
+        "Apply BOTH when they are from different tuning layers — "
+        "e.g. service directive (access_log off) + kernel sysctl, "
+        "or NIC queue expansion (network.queue.combined) + nginx worker_connections. "
+        "Orthogonal changes across layers combine safely in one iteration.",
         "Apply only ONE if: both experts picked the same layer, one returned null/error, "
         "or there is a resource conflict between them.",
         "All parameter_key values MUST appear in the selectable candidates list below.",
