@@ -1,4 +1,5 @@
 import json
+import time
 
 from onboard.domain.models import ApplyMode
 from preflight.domain.models import CommandResult
@@ -29,6 +30,35 @@ class BenchmarkExecutorDouble:
                     stderr="",
                 )
         return CommandResult(command=command, exit_code=1, stdout="", stderr="missing payload")
+
+
+class SlowBenchmarkExecutorDouble(BenchmarkExecutorDouble):
+    """Delays the benchmark command so the telemetry thread can take multiple samples."""
+
+    def run(self, command: str) -> CommandResult:
+        if "benchmark.sh" in command:
+            time.sleep(0.2)
+            return CommandResult(command=command, exit_code=0, stdout="ok", stderr="")
+        return super().run(command)
+
+
+class TelemetryExecutorDouble:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def run(self, command: str) -> CommandResult:
+        self.commands.append(command)
+        if command == "ss -s":
+            return CommandResult(command=command, exit_code=0, stdout="TCP: 1\n", stderr="")
+        if command == "cat /proc/net/softnet_stat":
+            return CommandResult(
+                command=command, exit_code=0, stdout="0 0 0 0 0 0 0 0 0 0 0\n", stderr=""
+            )
+        if command.startswith("ethtool -S "):
+            return CommandResult(
+                command=command, exit_code=0, stdout="rx_packets: 1\n", stderr=""
+            )
+        return CommandResult(command=command, exit_code=1, stdout="", stderr="unexpected cmd")
 
 
 class FailingBenchmarkExecutorDouble:
@@ -255,6 +285,93 @@ def test_tune_benchmark_executor_respects_cooling_period() -> None:
     )
 
     assert sleep_calls == [30, 30]
+
+
+def test_tune_benchmark_executor_collects_runtime_telemetry_when_executor_provided() -> None:
+    context = build_tune_context()
+    executor = SlowBenchmarkExecutorDouble(
+        [
+            {
+                "homepage": {
+                    "results": {
+                        "requests": {"per_sec": 1040.0, "total": 10400},
+                        "latency": {"avg": "2.0ms"},
+                    }
+                },
+                "small": {
+                    "results": {
+                        "requests": {"per_sec": 918.0, "total": 9180},
+                        "latency": {"avg": "1.5ms"},
+                    }
+                },
+            },
+        ]
+    )
+    telemetry_executor = TelemetryExecutorDouble()
+    result = TuneBenchmarkExecutor(
+        run_count=1,
+        sleeper=lambda _seconds: None,
+        telemetry_sample_interval_seconds=0.05,
+    ).run(
+        context=context,
+        iteration_number=1,
+        validation_result=build_validation_result(),
+        benchmark_executor=executor,
+        telemetry_executor=telemetry_executor,
+    )
+    assert len(result.runtime_telemetry) >= 2
+    assert any(cmd == "ss -s" for cmd in telemetry_executor.commands)
+    assert any("ethtool -S" in cmd for cmd in telemetry_executor.commands)
+    assert result.runtime_telemetry[0].ss_s.strip()
+
+
+class FailingTelemetryExecutorDouble:
+    """Telemetry executor where all commands fail with non-zero exit codes."""
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def run(self, command: str) -> CommandResult:
+        self.commands.append(command)
+        return CommandResult(command=command, exit_code=1, stdout="", stderr="probe failed")
+
+
+def test_tune_benchmark_executor_succeeds_when_telemetry_probes_fail() -> None:
+    context = build_tune_context()
+    executor = SlowBenchmarkExecutorDouble(
+        [
+            {
+                "homepage": {
+                    "results": {
+                        "requests": {"per_sec": 1040.0, "total": 10400},
+                        "latency": {"avg": "2.0ms"},
+                    }
+                },
+                "small": {
+                    "results": {
+                        "requests": {"per_sec": 918.0, "total": 9180},
+                        "latency": {"avg": "1.5ms"},
+                    }
+                },
+            },
+        ]
+    )
+    telemetry_executor = FailingTelemetryExecutorDouble()
+    result = TuneBenchmarkExecutor(
+        run_count=1,
+        sleeper=lambda _seconds: None,
+        telemetry_sample_interval_seconds=0.05,
+    ).run(
+        context=context,
+        iteration_number=1,
+        validation_result=build_validation_result(),
+        benchmark_executor=executor,
+        telemetry_executor=telemetry_executor,
+    )
+    assert result.stable is True
+    assert result.workload_summaries[0].median_requests_per_second == 1040.0
+    assert len(result.runtime_telemetry) >= 1
+    assert all(sample.errors for sample in result.runtime_telemetry)
 
 
 def test_tune_benchmark_executor_surfaces_exit_code_and_output() -> None:

@@ -6,6 +6,17 @@ from tune.domain.validation_models import ValidationResult
 
 
 @dataclass(frozen=True)
+class BenchmarkTelemetrySample:
+    """One snapshot of host networking/socket counters taken while load is running."""
+
+    sequence: int
+    ss_s: str
+    softnet_stat: str
+    ethtool_s: str
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class BenchmarkSample:
     run_index: int
     requests_per_second: float
@@ -32,3 +43,4 @@ class TuneBenchmarkResult:
     stable: bool
     variance_threshold: float
     workload_summaries: tuple[BenchmarkWorkloadSummary, ...]
+    runtime_telemetry: tuple[BenchmarkTelemetrySample, ...] = ()

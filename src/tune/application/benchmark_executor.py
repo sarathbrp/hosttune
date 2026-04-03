@@ -8,10 +8,15 @@ from statistics import median
 from time import sleep
 from typing import Any, cast
 
-from preflight.domain.models import CommandExecutor
+from preflight.domain.models import CommandExecutor, CommandResult
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
+from tune.application.benchmark_runtime_telemetry import (
+    BenchmarkRuntimeTelemetryCollector,
+    collect_telemetry_during_blocking_command,
+)
 from tune.domain.benchmark_models import (
     BenchmarkSample,
+    BenchmarkTelemetrySample,
     BenchmarkWorkloadSummary,
     TuneBenchmarkResult,
 )
@@ -24,6 +29,8 @@ class TuneBenchmarkExecutor:
     run_count: int = 1
     logger: ExecutionLogger = NullExecutionLogger()
     sleeper: Callable[[float], None] = sleep
+    # Sample target-host telemetry on this interval (seconds) while each benchmark run executes.
+    telemetry_sample_interval_seconds: float = 5.0
 
     def run(
         self,
@@ -32,12 +39,20 @@ class TuneBenchmarkExecutor:
         validation_result: ValidationResult | None,
         benchmark_executor: CommandExecutor,
         label: str = "",
+        telemetry_executor: CommandExecutor | None = None,
     ) -> TuneBenchmarkResult:
         benchmark_target = context.baseline.benchmark_target
         benchmark_command = ""
         workload_samples: dict[str, list[BenchmarkSample]] = {
             workload_name: [] for workload_name in context.benchmark_config.workloads
         }
+        telemetry_chunks: list[BenchmarkTelemetrySample] = []
+        telemetry_seq = 0
+        collector: BenchmarkRuntimeTelemetryCollector | None = None
+        if telemetry_executor is not None and self.telemetry_sample_interval_seconds > 0:
+            collector = BenchmarkRuntimeTelemetryCollector(
+                network_interface=context.preflight.network.interface_name,
+            )
 
         for run_index in range(1, self.run_count + 1):
             contestant_name = self._build_contestant_name(
@@ -55,7 +70,47 @@ class TuneBenchmarkExecutor:
                     f"{benchmark_target} as {contestant_name}"
                 ),
             )
-            run_result = benchmark_executor.run(benchmark_command)
+            run_result: CommandResult
+            if collector is not None and telemetry_executor is not None:
+                run_result_holder: list[CommandResult] = []
+
+                def run_benchmark(
+                    _cmd: str = benchmark_command,
+                    _holder: list[CommandResult] = run_result_holder,
+                ) -> None:
+                    _holder.append(benchmark_executor.run(_cmd))
+
+                def renumber_samples(
+                    samples: tuple[BenchmarkTelemetrySample, ...],
+                ) -> tuple[BenchmarkTelemetrySample, ...]:
+                    nonlocal telemetry_seq
+                    out: list[BenchmarkTelemetrySample] = []
+                    for sample in samples:
+                        out.append(
+                            BenchmarkTelemetrySample(
+                                sequence=telemetry_seq,
+                                ss_s=sample.ss_s,
+                                softnet_stat=sample.softnet_stat,
+                                ethtool_s=sample.ethtool_s,
+                                errors=sample.errors,
+                            )
+                        )
+                        telemetry_seq += 1
+                    return tuple(out)
+
+                samples = collect_telemetry_during_blocking_command(
+                    collector=collector,
+                    telemetry_executor=telemetry_executor,
+                    sample_interval_seconds=self.telemetry_sample_interval_seconds,
+                    blocking_call=run_benchmark,
+                )
+                telemetry_chunks.extend(renumber_samples(samples))
+                if not run_result_holder:
+                    msg = f"Benchmark command did not produce a result: {benchmark_command!r}"
+                    raise RuntimeError(msg)
+                run_result = run_result_holder[0]
+            else:
+                run_result = benchmark_executor.run(benchmark_command)
             if run_result.exit_code != 0:
                 msg = (
                     "Benchmark command failed "
@@ -97,6 +152,11 @@ class TuneBenchmarkExecutor:
             for workload_name, samples in workload_samples.items()
         )
         stable = all(summary.stable for summary in workload_summaries)
+        if telemetry_chunks:
+            self.logger.stage_detail(
+                "tune",
+                f"Runtime telemetry: {len(telemetry_chunks)} sample(s) during benchmark load.",
+            )
         return TuneBenchmarkResult(
             validation_result=validation_result,
             benchmark_command=benchmark_command,
@@ -104,6 +164,7 @@ class TuneBenchmarkExecutor:
             stable=stable,
             variance_threshold=context.baseline.expected_variance,
             workload_summaries=workload_summaries,
+            runtime_telemetry=tuple(telemetry_chunks),
         )
 
     def _build_benchmark_command(

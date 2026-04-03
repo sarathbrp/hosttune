@@ -10,6 +10,7 @@ from preflight.interfaces.execution_logger import ExecutionLogger, NullExecution
 from tune.application.apply_coordinator import ApplyCoordinator
 from tune.application.attribution_verifier import AttributionVerifier
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
+from tune.application.benchmark_runtime_telemetry import format_runtime_telemetry_digest
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.health_validator import HealthValidator
 from tune.application.phase_controller import PhaseController
@@ -41,6 +42,16 @@ from tune.domain.validation_models import ValidationResult
 class SupportsHypothesisGeneration(Protocol):
     def generate(self, context: HypothesisContext) -> TuningHypothesis:
         """Generate one validated tuning hypothesis."""
+
+
+def _last_benchmark_runtime_telemetry_digest(
+    iteration_records: list[TuneIterationRecord],
+) -> str:
+    for record in reversed(iteration_records):
+        benchmark = record.benchmark_result
+        if benchmark is not None and benchmark.runtime_telemetry:
+            return format_runtime_telemetry_digest(benchmark.runtime_telemetry)
+    return format_runtime_telemetry_digest(())
 
 
 @dataclass
@@ -190,6 +201,9 @@ class TuneEngine:
                     if state.best_configuration is not None
                     else ()
                 ),
+                last_benchmark_runtime_telemetry_digest=_last_benchmark_runtime_telemetry_digest(
+                    state.iteration_records
+                ),
             )
         )
         candidate = self._find_candidate(candidates, hypothesis.parameter_key)
@@ -304,6 +318,7 @@ class TuneEngine:
                 iteration_number=iteration_number,
                 validation_result=validation_result,
                 benchmark_executor=benchmark_executor,
+                telemetry_executor=target_executor,
             )
             self._log_benchmark(benchmark_result)
             evaluation_result = self.result_evaluator.evaluate(

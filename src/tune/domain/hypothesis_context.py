@@ -18,3 +18,5 @@ class HypothesisContext:
     history: tuple[HypothesisRecord, ...]
     active_parameter_keys: tuple[str, ...]
     best_parameter_values: tuple[tuple[str, str], ...]
+    # Digest from the most recent iteration with benchmark runtime telemetry.
+    last_benchmark_runtime_telemetry_digest: str = ""

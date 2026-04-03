@@ -55,6 +55,7 @@ class AttributionVerifier:
             validation_result=None,
             benchmark_executor=benchmark_runner_executor,
             label="verify",
+            telemetry_executor=target_executor,
         )
         average_drop = self._calculate_average_drop(
             accepted_benchmark_result=accepted_benchmark_result,

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
+from tune.application.benchmark_runtime_telemetry import format_runtime_telemetry_digest
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateParameter,
@@ -86,6 +87,12 @@ class HypothesisPromptBuilder:
         )
         guardrails = ", ".join(tune_context.onboard.service.benchmark_hints.guardrail_metrics)
         interference = ", ".join(tune_context.onboard.service.benchmark_hints.interference_sources)
+        telemetry_digest_trimmed = context.last_benchmark_runtime_telemetry_digest.strip()
+        telemetry_body = (
+            telemetry_digest_trimmed
+            if telemetry_digest_trimmed
+            else format_runtime_telemetry_digest(())
+        )
         sections = [
             "You are the hypothesis generator for HostTune.",
             "Select exactly one candidate parameter from the allowed list.",
@@ -132,6 +139,14 @@ class HypothesisPromptBuilder:
             f"- warmup_seconds={tune_context.baseline.warmup_seconds}",
             "Baseline workloads:",
             *(workload_lines or ["- none"]),
+            (
+                "Last benchmark runtime telemetry (captured on the target during benchmark load: "
+                "ss -s, /proc/net/softnet_stat, ethtool -S). "
+                "Use it to justify or skip domains — e.g. favor listen/accept backlog tuning "
+                "(somaxconn, backlog) only if counters show accept-queue or socket pressure; "
+                "if drops and overflow hints are zero, deprioritize that domain."
+            ),
+            telemetry_body,
             "Current tune state:",
             f"- active_changes={active_changes}",
             f"- best_config={best_config}",

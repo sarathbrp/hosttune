@@ -37,6 +37,7 @@ class FakeModelClient:
         assert "Preflight summary:" in prompt
         assert "Service contract summary:" in prompt
         assert "Baseline summary:" in prompt
+        assert "Last benchmark runtime telemetry" in prompt
         assert "Current tune state:" in prompt
         assert "current=112" in prompt
         assert "forbidden=" not in prompt

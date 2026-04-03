@@ -164,6 +164,7 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
             f"LangGraph unavailable, falling back to deterministic hypotheses: {error}",
         )
         hypothesis_generator = DeterministicHypothesisGenerator()
+    tune_benchmark_executor = TuneBenchmarkExecutor(logger=execution_logger)
     return TuneEngine(
         candidate_catalog_builder=CandidateCatalogBuilder(),
         phase_controller=PhaseController(),
@@ -176,9 +177,9 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
-        benchmark_executor=TuneBenchmarkExecutor(logger=execution_logger),
+        benchmark_executor=tune_benchmark_executor,
         attribution_verifier=AttributionVerifier(
-            benchmark_executor=TuneBenchmarkExecutor(logger=execution_logger),
+            benchmark_executor=tune_benchmark_executor,
             health_validator=HealthValidator(),
         ),
         result_evaluator=ResultEvaluator(),
