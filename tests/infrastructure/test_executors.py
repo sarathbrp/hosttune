@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from preflight.domain.models import SshTargetConfig
+from preflight.domain.models import CommandResult, SshTargetConfig
+from preflight.infrastructure.executors.logging_executor import LoggingCommandExecutor
 from preflight.infrastructure.executors.local_executor import LocalCommandExecutor
 from preflight.infrastructure.executors.ssh_executor import SshCommandExecutor
+from preflight.interfaces.execution_logger import VerboseExecutionLogger
 
 
 def test_local_executor_wraps_subprocess_result(monkeypatch) -> None:
@@ -49,3 +52,21 @@ def test_ssh_executor_builds_expected_command(monkeypatch) -> None:
     result = SshCommandExecutor(target).run("uname -r")
 
     assert result.stdout == "5.14.0"
+
+
+def test_logging_executor_logs_commands() -> None:
+    class FakeExecutor:
+        def run(self, command: str) -> CommandResult:
+            return CommandResult(command=command, exit_code=0, stdout="ok", stderr="")
+
+    stream = io.StringIO()
+    executor = LoggingCommandExecutor(
+        inner=FakeExecutor(),
+        logger=VerboseExecutionLogger(stream=stream),
+        stage_name="baseline",
+    )
+
+    result = executor.run("hostname")
+
+    assert result.stdout == "ok"
+    assert "[baseline] $ hostname" in stream.getvalue()

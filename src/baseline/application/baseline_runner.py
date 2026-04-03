@@ -12,11 +12,13 @@ from baseline.domain.models import (
 )
 from onboard.domain.models import ServiceDefinition
 from preflight.domain.models import CommandExecutor, TargetConfig
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 
 
 @dataclass
 class BaselineRunner:
     benchmark_config: BenchmarkConfig
+    logger: ExecutionLogger = NullExecutionLogger()
 
     def run(
         self,
@@ -25,16 +27,20 @@ class BaselineRunner:
         dut_target: TargetConfig,
     ) -> BaselineResult:
         benchmark_target = self._resolve_target_host(dut_target)
+        self.logger.stage_detail("baseline", f"Resolved DUT target: {benchmark_target}")
         benchmark_command = self._build_benchmark_command(benchmark_target)
+        self.logger.stage_detail("baseline", "Running benchmark workloads")
         benchmark_run = benchmark_executor.run(benchmark_command)
         if benchmark_run.exit_code != 0:
             msg = f"Benchmark command failed: {benchmark_run.stderr or benchmark_run.stdout}"
             raise ValueError(msg)
 
+        self.logger.stage_detail("baseline", "Loading workload result files")
         workload_results = tuple(
             self._load_workload_result(benchmark_executor, workload_name)
             for workload_name in self.benchmark_config.workloads
         )
+        self.logger.stage_detail("baseline", "Running baseline comparison")
         comparison_output = self._run_comparison(benchmark_executor)
         return BaselineResult(
             service_name=service.identity.service_name,
@@ -66,6 +72,7 @@ class BaselineRunner:
         benchmark_executor: CommandExecutor,
         workload_name: str,
     ) -> WorkloadBenchmarkResult:
+        self.logger.stage_detail("baseline", f"Reading workload result: {workload_name}")
         result_path = (
             f"{self.benchmark_config.results_directory}/"
             f"{self.benchmark_config.contestant_name}_{workload_name}.json"

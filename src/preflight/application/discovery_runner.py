@@ -17,6 +17,7 @@ from preflight.infrastructure.probes.memory_probe import MemoryProbe
 from preflight.infrastructure.probes.network_probe import NetworkProbe
 from preflight.infrastructure.probes.platform_probe import PlatformProbe
 from preflight.infrastructure.probes.storage_probe import StorageProbe
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 
 
 @dataclass
@@ -29,6 +30,7 @@ class DiscoveryRunner:
     storage_probe: StorageProbe
     capability_builder: CapabilityMapBuilder
     benchmark_runner: BenchmarkRunner | None = None
+    logger: ExecutionLogger = NullExecutionLogger()
 
     def run(
         self,
@@ -36,12 +38,19 @@ class DiscoveryRunner:
         target: TargetConfig,
         policy: EngagementPolicy,
     ) -> DiscoverySnapshot:
+        self.logger.stage_detail("preflight", "Collecting platform information")
         platform = self.platform_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting CPU topology")
         cpu = self.cpu_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting memory information")
         memory = self.memory_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting kernel information")
         kernel = self.kernel_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting network information")
         network = self.network_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Collecting storage information")
         storage = self.storage_probe.collect(executor)
+        self.logger.stage_detail("preflight", "Building capability map")
         capability_map = self.capability_builder.build(
             platform=platform,
             cpu=cpu,

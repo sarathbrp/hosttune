@@ -16,6 +16,8 @@ from preflight.domain.models import (
     SshTargetConfig,
 )
 from preflight.infrastructure.config_loader import ConfigLoader, LoadedConfig
+from preflight.infrastructure.executors.logging_executor import LoggingCommandExecutor
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from snapshot.application.snapshot_runner import SnapshotRunner
 from snapshot.domain.models import SnapshotResult
 
@@ -34,6 +36,7 @@ class HostTuneInstance:
     snapshot_runner_factory: SnapshotRunnerFactory
     baseline_runner_factory: BaselineRunnerFactory
     executor_factory: ExecutorFactory
+    logger: ExecutionLogger = NullExecutionLogger()
     preflight: DiscoverySnapshot | None = None
     onboard: OnboardResult | None = None
     snapshot: SnapshotResult | None = None
@@ -41,7 +44,9 @@ class HostTuneInstance:
 
     def load_preflight(self, config_path: Path) -> DiscoverySnapshot:
         loaded_config = self.config_loader.load(config_path)
+        self.logger.stage_start("preflight")
         snapshot = self._run_preflight(loaded_config)
+        self.logger.stage_end("preflight")
         self.preflight = snapshot
         return snapshot
 
@@ -50,13 +55,15 @@ class HostTuneInstance:
             msg = "Preflight must be loaded before onboard."
             raise ValueError(msg)
         loaded_config = self.config_loader.load(config_path)
-        executor = self.executor_factory(loaded_config.target)
+        self.logger.stage_start("onboard")
+        executor = self._build_stage_executor(loaded_config.target, "onboard")
         runner = self.onboard_runner_factory()
         result = runner.run(
             service_name=loaded_config.service_name,
             preflight=self.preflight,
             executor=executor,
         )
+        self.logger.stage_end("onboard")
         self.onboard = result
         return result
 
@@ -65,9 +72,11 @@ class HostTuneInstance:
             msg = "Onboard must be loaded before snapshot."
             raise ValueError(msg)
         loaded_config = self.config_loader.load(config_path)
-        executor = self.executor_factory(loaded_config.target)
+        self.logger.stage_start("snapshot")
+        executor = self._build_stage_executor(loaded_config.target, "snapshot")
         runner = self.snapshot_runner_factory()
         result = runner.run(self.onboard.service, executor)
+        self.logger.stage_end("snapshot")
         self.snapshot = result
         return result
 
@@ -79,17 +88,34 @@ class HostTuneInstance:
         if loaded_config.benchmark_config is None:
             msg = "benchmark must be configured before baseline."
             raise ValueError(msg)
-        benchmark_executor = self.executor_factory(loaded_config.benchmark_config.runner_target)
+        self.logger.stage_start("baseline")
+        benchmark_executor = self._build_stage_executor(
+            loaded_config.benchmark_config.runner_target,
+            "baseline",
+        )
         runner = self.baseline_runner_factory(loaded_config.benchmark_config)
         result = runner.run(self.onboard.service, benchmark_executor, loaded_config.target)
+        self.logger.stage_end("baseline")
         self.baseline = result
         return result
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
         runner = self.discovery_runner_factory(None)
-        executor = self.executor_factory(loaded_config.target)
+        executor = self._build_stage_executor(loaded_config.target, "preflight")
         return runner.run(
             executor=executor,
             target=loaded_config.target,
             policy=loaded_config.policy,
+        )
+
+    def _build_stage_executor(
+        self,
+        target: LocalTargetConfig | SshTargetConfig,
+        stage_name: str,
+    ) -> CommandExecutor:
+        executor = self.executor_factory(target)
+        return LoggingCommandExecutor(
+            inner=executor,
+            logger=self.logger,
+            stage_name=stage_name,
         )

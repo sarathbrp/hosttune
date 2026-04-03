@@ -4,23 +4,30 @@ from dataclasses import dataclass
 
 from onboard.domain.models import ServiceDefinition
 from preflight.domain.models import CommandExecutor
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from snapshot.domain.models import SnapshotResult
 
 
 @dataclass
 class SnapshotRunner:
+    logger: ExecutionLogger = NullExecutionLogger()
+
     def run(self, service: ServiceDefinition, executor: CommandExecutor) -> SnapshotResult:
         snapshot_directory = service.snapshot.snapshot_storage_location
+        self.logger.stage_detail("snapshot", f"Preparing snapshot directory: {snapshot_directory}")
         executor.run(f"mkdir -p {snapshot_directory}")
         captured_paths: list[str] = []
         for path in service.snapshot.files_to_snapshot:
+            self.logger.stage_detail("snapshot", f"Capturing path: {path}")
             executor.run(f"cp -a {path} {snapshot_directory}/")
             captured_paths.append(path)
 
         runtime_state_output = None
         if service.snapshot.runtime_state_command is not None:
+            self.logger.stage_detail("snapshot", "Capturing runtime state")
             runtime_state_output = executor.run(service.snapshot.runtime_state_command).stdout
 
+        self.logger.stage_detail("snapshot", "Capturing process state")
         process_state = self._capture_process_state(service, executor)
         restore_sequence = tuple(
             step.replace("{{ snapshot_dir }}", snapshot_directory)

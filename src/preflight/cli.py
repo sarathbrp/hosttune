@@ -34,6 +34,11 @@ from preflight.infrastructure.probes.network_probe import NetworkProbe
 from preflight.infrastructure.probes.platform_probe import PlatformProbe
 from preflight.infrastructure.probes.storage_probe import StorageProbe
 from preflight.interfaces.console_reporter import ConsoleReporter
+from preflight.interfaces.execution_logger import (
+    ExecutionLogger,
+    NullExecutionLogger,
+    VerboseExecutionLogger,
+)
 from snapshot.application.snapshot_runner import SnapshotRunner
 
 SERVICE_REGISTRY_PATH = Path("service-monitor")
@@ -61,7 +66,10 @@ def build_executor(target: LocalTargetConfig | SshTargetConfig) -> CommandExecut
     return SshCommandExecutor(target)
 
 
-def build_discovery_runner(_benchmark_command: str | None) -> DiscoveryRunner:
+def build_discovery_runner(
+    _benchmark_command: str | None,
+    logger: ExecutionLogger | None = None,
+) -> DiscoveryRunner:
     return DiscoveryRunner(
         platform_probe=PlatformProbe(parser=PlatformParser()),
         cpu_probe=CpuProbe(parser=CpuParser()),
@@ -70,44 +78,72 @@ def build_discovery_runner(_benchmark_command: str | None) -> DiscoveryRunner:
         network_probe=NetworkProbe(parser=NetworkParser()),
         storage_probe=StorageProbe(parser=StorageParser()),
         capability_builder=CapabilityMapBuilder(),
+        logger=logger or NullExecutionLogger(),
     )
 
 
-def build_instance() -> HostTuneInstance:
+def build_instance(verbose: bool = False) -> HostTuneInstance:
+    logger: ExecutionLogger = VerboseExecutionLogger() if verbose else NullExecutionLogger()
     return HostTuneInstance(
         config_loader=ConfigLoader(),
-        discovery_runner_factory=build_discovery_runner,
-        onboard_runner_factory=build_onboard_runner,
-        snapshot_runner_factory=build_snapshot_runner,
-        baseline_runner_factory=build_baseline_runner,
+        discovery_runner_factory=lambda benchmark_command: build_discovery_runner(
+            benchmark_command,
+            logger=logger,
+        ),
+        onboard_runner_factory=lambda: build_onboard_runner(logger),
+        snapshot_runner_factory=lambda: build_snapshot_runner(logger),
+        baseline_runner_factory=lambda benchmark_config: build_baseline_runner(
+            benchmark_config,
+            logger,
+        ),
         executor_factory=build_executor,
+        logger=logger,
     )
 
 
-def build_onboard_runner() -> OnboardRunner:
+def build_onboard_runner(logger: ExecutionLogger | None = None) -> OnboardRunner:
     return OnboardRunner(
         loader=ServiceDefinitionLoader(registry_path=SERVICE_REGISTRY_PATH),
         validator=ServiceDefinitionValidator(),
         evaluator=ServiceCompatibilityEvaluator(),
+        logger=logger or NullExecutionLogger(),
     )
 
 
-def build_snapshot_runner() -> SnapshotRunner:
-    return SnapshotRunner()
+def build_snapshot_runner(logger: ExecutionLogger | None = None) -> SnapshotRunner:
+    return SnapshotRunner(logger=logger or NullExecutionLogger())
 
 
-def build_baseline_runner(benchmark_config: BenchmarkConfig) -> BaselineRunner:
-    return BaselineRunner(benchmark_config=benchmark_config)
+def build_baseline_runner(
+    benchmark_config: BenchmarkConfig,
+    logger: ExecutionLogger | None = None,
+) -> BaselineRunner:
+    return BaselineRunner(
+        benchmark_config=benchmark_config,
+        logger=logger or NullExecutionLogger(),
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run step1 discovery and optional baseline benchmark."
     )
-    parser.add_argument("config", type=Path, help="Path to the YAML configuration file.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print detailed stage and command logs to stderr.",
+    )
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=Path("config.yaml"),
+        type=Path,
+        help="Path to the YAML configuration file. Defaults to config.yaml.",
+    )
     args = parser.parse_args()
 
-    instance = build_instance()
+    instance = build_instance(verbose=args.verbose)
     loaded_config = instance.config_loader.load(args.config)
     preflight = instance.load_preflight(args.config)
     onboard = instance.load_onboard(args.config)

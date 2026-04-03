@@ -145,6 +145,12 @@ def test_build_baseline_runner_uses_benchmark_config() -> None:
     assert runner.benchmark_config == config
 
 
+def test_build_instance_verbose_enables_logger() -> None:
+    instance = cli.build_instance(verbose=True)
+
+    assert instance.logger.__class__.__name__ == "VerboseExecutionLogger"
+
+
 def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yml"
     config_path.write_text("target:\n  mode: local\n", encoding="utf-8")
@@ -207,7 +213,7 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
     monkeypatch.setattr(
         cli,
         "build_instance",
-        lambda: FakeInstance(config_loader=fake_config_loader),
+        lambda verbose=False: FakeInstance(config_loader=fake_config_loader),
     )
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
 
@@ -220,3 +226,64 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
     assert '"snapshot"' in output
     assert '"baseline"' in output
     assert '"benchmark_target": "10.1.90.178"' in output
+
+
+def test_main_defaults_to_config_yaml_and_accepts_short_verbose(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("target:\n  mode: local\n", encoding="utf-8")
+
+    class FakeInstance:
+        def __init__(self) -> None:
+            self.config_loader = type(
+                "FakeConfigLoader",
+                (),
+                {
+                    "load": lambda _self, _path: LoadedConfig(
+                        target=LocalTargetConfig(),
+                        policy=build_snapshot().policy,
+                        service_name="nginx",
+                        benchmark_config=None,
+                    )
+                },
+            )()
+
+        def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
+            return build_snapshot()
+
+        def load_onboard(self, _config_path: Path) -> OnboardResult:
+            return OnboardResult(
+                service_name="nginx",
+                service=ServiceDefinitionValidator().validate(build_valid_definition()),
+                compatibility=CompatibilityReport(compatible=True, findings=()),
+            )
+
+        def load_snapshot(self, _config_path: Path) -> SnapshotResult:
+            return SnapshotResult(
+                service_name="nginx",
+                snapshot_directory="/var/tmp/hosttune/snapshots/nginx",
+                captured_paths=("/etc/nginx/nginx.conf",),
+                runtime_state_output=None,
+                process_state={},
+                restore_sequence=(),
+            )
+
+    called: dict[str, object] = {}
+
+    def fake_build_instance(verbose: bool = False) -> FakeInstance:
+        called["verbose"] = verbose
+        return FakeInstance()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "build_instance", fake_build_instance)
+    monkeypatch.setattr("sys.argv", ["preflight", "-v"])
+
+    exit_code = cli.main()
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert called["verbose"] is True
+    assert '"preflight"' in output
