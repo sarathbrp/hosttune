@@ -23,6 +23,7 @@ class CandidateSource(StrEnum):
     SERVICE_SYSCTL = "service_sysctl"
     PLATFORM_CAPABILITY = "platform_capability"
     RUNTIME_PRLIMIT = "runtime_prlimit"
+    SYSTEMD_UNIT_LIMIT = "systemd_unit_limit"
 
 
 class CandidateAvailability(StrEnum):

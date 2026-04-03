@@ -5,6 +5,7 @@ from tune.application.apply_coordinator import (
     NginxDirectiveApplier,
     PrlimitApplier,
     SysctlApplier,
+    SystemdUnitLimitApplier,
 )
 from tune.domain.hypothesis_models import CandidateSource, TunePhase, TuningHypothesis
 from tune.domain.tuning_layer import tuning_layer_for_parameter_key
@@ -45,6 +46,10 @@ class FakeExecutor:
                 stderr="",
             )
         if command.startswith("prlimit "):
+            return CommandResult(command=command, exit_code=0, stdout="", stderr="")
+        if "systemctl show" in command and "LimitNPROC" in command:
+            return CommandResult(command=command, exit_code=0, stdout="1000\n", stderr="")
+        if "systemctl set-property" in command:
             return CommandResult(command=command, exit_code=0, stdout="", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
@@ -119,6 +124,7 @@ def test_apply_coordinator_routes_by_parameter_prefix() -> None:
         sysctl_applier=SysctlApplier(),
         network_ring_applier=NetworkRingApplier(),
         runtime_limit_applier=PrlimitApplier(),
+        systemd_unit_limit_applier=SystemdUnitLimitApplier(),
     ).apply(context, hypothesis, executor)
 
     assert applied.hypothesis.parameter_key == "sysctl.net.core.somaxconn"
@@ -168,9 +174,62 @@ def test_apply_coordinator_routes_runtime_prlimit() -> None:
         sysctl_applier=SysctlApplier(),
         network_ring_applier=NetworkRingApplier(),
         runtime_limit_applier=PrlimitApplier(),
+        systemd_unit_limit_applier=SystemdUnitLimitApplier(),
     ).apply(context, hypothesis, executor)
 
     assert applied.hypothesis.parameter_key == "runtime.prlimit.nofile_soft"
+
+
+def test_systemd_unit_limit_applier_sets_property_and_restarts() -> None:
+    context = build_tune_context()
+    executor = FakeExecutor()
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="systemd.unit.limit_nproc",
+        parameter_name="limit_nproc",
+        domain="runtime",
+        tuning_layer=tuning_layer_for_parameter_key("systemd.unit.limit_nproc"),
+        proposed_value="8000",
+        source=CandidateSource.SYSTEMD_UNIT_LIMIT,
+        apply_mode=ApplyMode.RESTART,
+        rationale="Raise unit NPROC for worker fan-out.",
+    )
+
+    applied = SystemdUnitLimitApplier().apply(context, hypothesis, executor)
+
+    assert applied.target_path == "nginx.service:LimitNPROC"
+    assert applied.previous_value == "1000"
+    assert applied.applied_value == "8000"
+    assert "systemctl set-property" in applied.apply_command
+    assert "LimitNPROC=8000" in applied.apply_command
+    assert "systemctl daemon-reload" in applied.apply_command
+    assert "systemctl restart nginx" in applied.apply_command
+
+
+def test_apply_coordinator_routes_systemd_unit_limit() -> None:
+    context = build_tune_context()
+    executor = FakeExecutor()
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="systemd.unit.limit_nproc",
+        parameter_name="limit_nproc",
+        domain="runtime",
+        tuning_layer=tuning_layer_for_parameter_key("systemd.unit.limit_nproc"),
+        proposed_value="8000",
+        source=CandidateSource.SYSTEMD_UNIT_LIMIT,
+        apply_mode=ApplyMode.RESTART,
+        rationale="Raise NPROC.",
+    )
+
+    applied = ApplyCoordinator(
+        service_directive_applier=NginxDirectiveApplier(),
+        sysctl_applier=SysctlApplier(),
+        network_ring_applier=NetworkRingApplier(),
+        runtime_limit_applier=PrlimitApplier(),
+        systemd_unit_limit_applier=SystemdUnitLimitApplier(),
+    ).apply(context, hypothesis, executor)
+
+    assert applied.hypothesis.parameter_key == "systemd.unit.limit_nproc"
 
 
 def test_network_ring_applier_builds_apply_and_rollback() -> None:

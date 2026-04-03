@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
 from baseline.application.baseline_runner import BaselineRunner
 from baseline.domain.models import BaselineResult, BenchmarkConfig
 from onboard.application.onboard_runner import OnboardRunner
-from onboard.domain.models import OnboardResult
+from onboard.domain.models import OnboardResult, SysctlTunable
 from preflight.application.discovery_runner import DiscoveryRunner
+from preflight.domain.kernel_sysctl_profile import (
+    contract_sysctl_names_only_extra,
+    merged_sysctl_profile_key_order,
+    sysctl_profile_read_command,
+)
 from preflight.domain.models import (
     CommandExecutor,
     DiscoverySnapshot,
@@ -19,6 +24,7 @@ from preflight.domain.models import (
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from preflight.infrastructure.config_loader import ConfigLoader, LoadedConfig
 from preflight.infrastructure.executors.logging_executor import LoggingCommandExecutor
+from preflight.infrastructure.parsers.kernel_parser import KernelParser
 from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from snapshot.application.snapshot_runner import SnapshotRunner
@@ -74,6 +80,7 @@ class HostTuneInstance:
             preflight=self.preflight,
             executor=executor,
         )
+        self._enrich_preflight_sysctl_profile_with_contract(result, executor)
         self.logger.stage_end("onboard")
         self.onboard = result
         self._persist_stage_result("onboard", result)
@@ -191,6 +198,58 @@ class HostTuneInstance:
         artifacts = self._ensure_artifacts()
         file_path = self.artifact_store.write_stage_result(artifacts, stage_name, payload)
         self.logger.artifact_written(stage_name, str(file_path))
+
+    def _enrich_preflight_sysctl_profile_with_contract(
+        self,
+        onboard: OnboardResult,
+        executor: CommandExecutor,
+    ) -> None:
+        """Append service `relevant_sysctls` not in the fixed preflight list (preflight 1b)."""
+        if self.preflight is None:
+            return
+        contract_names = _unique_relevant_sysctl_names(
+            onboard.service.tunable_surface.relevant_sysctls
+        )
+        if not contract_names:
+            return
+        extra_keys = contract_sysctl_names_only_extra(contract_names)
+        profile = self.preflight.kernel.sysctl_profile
+        if not extra_keys and not profile:
+            return
+        merged_order = merged_sysctl_profile_key_order(contract_names)
+        values = dict(profile)
+        if extra_keys:
+            dump = executor.run(sysctl_profile_read_command(extra_keys))
+            if dump.exit_code != 0:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "sysctl profile enrichment failed (exit=%d): %s",
+                    dump.exit_code,
+                    dump.stderr.strip() or dump.stdout.strip(),
+                )
+                return
+            extra_pairs = KernelParser.parse_sysctl_profile_stdout(
+                dump.stdout,
+                keys=extra_keys,
+            )
+            values.update(dict(extra_pairs))
+        new_profile = tuple((key, values.get(key, "")) for key in merged_order)
+        if new_profile == self.preflight.kernel.sysctl_profile:
+            return
+        new_kernel = replace(self.preflight.kernel, sysctl_profile=new_profile)
+        self.preflight = replace(self.preflight, kernel=new_kernel)
+        self._persist_stage_result("preflight", self.preflight)
+
+
+def _unique_relevant_sysctl_names(entries: tuple[SysctlTunable, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for entry in entries:
+        if entry.name not in seen:
+            seen.add(entry.name)
+            ordered.append(entry.name)
+    return tuple(ordered)
 
 
 class TuneEngineProtocol(Protocol):

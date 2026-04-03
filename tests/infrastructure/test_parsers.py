@@ -58,7 +58,22 @@ def test_kernel_parser_extracts_permissions() -> None:
         sysctl_probe=CommandResult("sysctl", 0, "writable", ""),
         selinux_mode=CommandResult("getenforce", 0, "Permissive", ""),
         tuned_profile=CommandResult("tuned-adm", 0, "throughput-performance", ""),
+        sysctl_profile_dump=CommandResult("sh", 0, "net.core.somaxconn=128\nvm.swappiness=60\n", ""),
     )
 
     assert kernel.sysctl_writable is True
     assert kernel.selinux_mode == "Permissive"
+    assert ("net.core.somaxconn", "128") in kernel.sysctl_profile
+    assert ("vm.swappiness", "60") in kernel.sysctl_profile
+
+
+def test_kernel_parser_sysctl_profile_orders_keys_and_fills_missing() -> None:
+    from preflight.domain.kernel_sysctl_profile import PREFLIGHT_SYSCTL_KEYS
+
+    profile = KernelParser.parse_sysctl_profile_stdout(
+        "net.core.somaxconn=4096\n",
+        keys=PREFLIGHT_SYSCTL_KEYS,
+    )
+    by_name = dict(profile)
+    assert by_name["net.core.somaxconn"] == "4096"
+    assert by_name["vm.swappiness"] == ""

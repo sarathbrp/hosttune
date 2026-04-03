@@ -69,6 +69,11 @@ class CapabilityMapBuilder:
                 detail="prlimit NOFILE soft limit when service snapshot defines pid_file",
             ),
             CapabilityFlag(
+                name="systemd_unit_limit_tuning",
+                available=not platform.is_container,
+                detail="systemctl set-property LimitNOFILE/LimitNPROC on the service unit",
+            ),
+            CapabilityFlag(
                 name="network_ring_buffer_tuning",
                 available=network.ring_buffer_tuning_supported
                 and (

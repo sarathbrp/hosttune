@@ -5,7 +5,18 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
-from tune.application.benchmark_runtime_telemetry import format_runtime_telemetry_digest
+from tune.application.benchmark_runtime_telemetry import (
+    format_runtime_telemetry_digest,
+    truncate_for_prompt,
+)
+from tune.application.hypothesis_prompt_layer import (
+    format_baseline_digest_lines,
+    format_candidate_line_for_llm,
+    format_contract_digest_lines,
+    format_preflight_digest_lines,
+    hypothesis_prompt_layer_preamble,
+)
+from tune.application.snapshot_prompt_digest import format_snapshot_digest_for_prompt
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateParameter,
@@ -22,29 +33,14 @@ class HypothesisModelClient(Protocol):
 
 @dataclass
 class HypothesisPromptBuilder:
+    """Assembles curated LLM prompts from HypothesisContext."""
+
     def build(self, context: HypothesisContext) -> str:
         tune_context = context.tune_context
 
-        def _candidate_line(candidate: CandidateParameter) -> str:
-            return (
-                f"- key={candidate.parameter_key}; "
-                f"domain={candidate.domain}; "
-                f"tuning_layer={candidate.tuning_layer.value}; "
-                f"availability={candidate.availability.value}; "
-                f"parameter={candidate.parameter_name}; "
-                f"source={candidate.source.value}; "
-                f"apply_mode={candidate.apply_mode.value}; "
-                f"priority={candidate.priority_tier.value}; "
-                f"value_type={candidate.value_type.value}; "
-                f"min={candidate.min_value}; "
-                f"max={candidate.max_value}; "
-                f"allowed={candidate.allowed_values}; "
-                f"current={candidate.current_value}; "
-                f"hint={candidate.rationale_hint}"
-            )
-
-        candidate_lines = [_candidate_line(candidate) for candidate in context.candidates]
-        deferred_lines = [_candidate_line(candidate) for candidate in context.deferred_candidates]
+        candidate_lines = [format_candidate_line_for_llm(c) for c in context.candidates]
+        deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
+        _hist_eval_max = 180
         history_lines = [
             (
                 f"- iteration={record.iteration_number}; "
@@ -52,7 +48,7 @@ class HypothesisPromptBuilder:
                 f"parameter_key={record.hypothesis.parameter_key}; "
                 f"value={record.hypothesis.proposed_value}; "
                 f"status={record.status.value}; "
-                f"evaluation={record.evaluation_summary}"
+                f"evaluation={truncate_for_prompt(record.evaluation_summary or '', _hist_eval_max)}"
             )
             for record in context.history
         ]
@@ -61,37 +57,17 @@ class HypothesisPromptBuilder:
             for flag in tune_context.preflight.capability_map.flags
             if flag.available
         ]
-        workload_lines = [
-            (
-                f"- {workload.workload_name}: "
-                f"rps={workload.requests_per_second:.2f}; "
-                f"latency_ms={workload.average_latency_ms:.2f}; "
-                f"total={workload.total_requests}"
-            )
-            for workload in tune_context.baseline.workload_results
-        ]
         phase_objective = self._phase_objective(context.phase)
         best_config = (
             ", ".join(f"{key}={value}" for key, value in context.best_parameter_values) or "none"
         )
         active_changes = ", ".join(context.active_parameter_keys) or "none"
-        allowed_directives = ", ".join(
-            sorted(tune_context.onboard.service.tunable_surface.allowed_directives)
-        )
-        relevant_sysctls = ", ".join(
-            f"{entry.name}({entry.priority_tier.value})"
-            for entry in tune_context.onboard.service.tunable_surface.relevant_sysctls
-        )
-        runtime_limit_names = ", ".join(
-            sorted(tune_context.onboard.service.tunable_surface.runtime_limits)
-        )
-        guardrails = ", ".join(tune_context.onboard.service.benchmark_hints.guardrail_metrics)
-        interference = ", ".join(tune_context.onboard.service.benchmark_hints.interference_sources)
+        _telemetry_max_section = 420
         telemetry_digest_trimmed = context.last_benchmark_runtime_telemetry_digest.strip()
         telemetry_body = (
             telemetry_digest_trimmed
             if telemetry_digest_trimmed
-            else format_runtime_telemetry_digest(())
+            else format_runtime_telemetry_digest((), max_chars_per_section=_telemetry_max_section)
         )
         sections = [
             "You are the hypothesis generator for HostTune.",
@@ -99,52 +75,24 @@ class HypothesisPromptBuilder:
             "Do not invent parameters, values, or apply modes outside the candidate list.",
             "Prefer unexplored or promising regions based on prior history and current phase.",
             "Return strict JSON with keys: parameter_key, proposed_value, rationale.",
+            *hypothesis_prompt_layer_preamble(),
             f"Current phase: {context.phase.value}",
             f"Phase objective: {phase_objective}",
             f"Iteration number: {context.iteration_number}",
-            "Preflight summary:",
-            f"- platform={tune_context.preflight.platform_summary}",
-            (
-                "- cpu="
-                f"{tune_context.preflight.cpu.logical_cores} logical cores; "
-                f"numa_nodes={tune_context.preflight.cpu.numa_nodes}; "
-                f"hyperthreading={tune_context.preflight.cpu.hyperthreading_enabled}"
-            ),
-            (
-                "- memory="
-                f"swap_kib={tune_context.preflight.memory.swap_total_kib}; "
-                f"hugepages_total={tune_context.preflight.memory.hugepages_total}; "
-                f"thp={tune_context.preflight.memory.transparent_hugepages_mode}"
-            ),
-            (
-                "- network="
-                f"{tune_context.preflight.network.interface_name}; "
-                f"driver={tune_context.preflight.network.driver_name}; "
-                f"queues={tune_context.preflight.network.combined_queues}"
-            ),
+            "Preflight digest (structured discovery facts):",
+            *format_preflight_digest_lines(tune_context.preflight),
             "Available tunable surfaces:",
             *(capability_lines or ["- none"]),
-            "Service contract summary:",
-            f"- service={tune_context.onboard.service_name}",
-            f"- allowed_directives={allowed_directives or 'none'}",
-            f"- relevant_sysctls={relevant_sysctls or 'none'}",
-            f"- runtime_limits={runtime_limit_names or 'none'}",
-            f"- health_probe={tune_context.onboard.service.health_check.probe_type.value}",
-            f"- primary_metric={tune_context.onboard.service.benchmark_hints.primary_metric}",
-            f"- guardrails={guardrails or 'none'}",
-            f"- interference_sources={interference or 'none'}",
-            "Baseline summary:",
-            f"- target={tune_context.baseline.benchmark_target}",
-            f"- expected_variance={tune_context.baseline.expected_variance:.2%}",
-            f"- warmup_seconds={tune_context.baseline.warmup_seconds}",
-            "Baseline workloads:",
-            *(workload_lines or ["- none"]),
+            "Onboard service contract (summary):",
+            *format_contract_digest_lines(tune_context),
+            "Snapshot digest (effective runtime view; truncated, not full dumps):",
+            format_snapshot_digest_for_prompt(tune_context.snapshot),
+            "Baseline digest:",
+            *format_baseline_digest_lines(tune_context),
             (
-                "Last benchmark runtime telemetry (captured on the target during benchmark load: "
-                "ss -s, /proc/net/softnet_stat, ethtool -S). "
-                "Use it to justify or skip domains — e.g. favor listen/accept backlog tuning "
-                "(somaxconn, backlog) only if counters show accept-queue or socket pressure; "
-                "if drops and overflow hints are zero, deprioritize that domain."
+                "Last benchmark runtime telemetry digest (target during load: ss -s, "
+                "softnet_stat, ethtool -S; truncated per section). "
+                "Use for domain hints — e.g. backlog/sysctl tuning only if counters show pressure."
             ),
             telemetry_body,
             "Current tune state:",

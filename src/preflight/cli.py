@@ -49,6 +49,7 @@ from tune.application.apply_coordinator import (
     NginxDirectiveApplier,
     PrlimitApplier,
     SysctlApplier,
+    SystemdUnitLimitApplier,
 )
 from tune.application.attribution_verifier import AttributionVerifier
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
@@ -174,6 +175,7 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
             sysctl_applier=SysctlApplier(),
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
+            systemd_unit_limit_applier=SystemdUnitLimitApplier(),
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),

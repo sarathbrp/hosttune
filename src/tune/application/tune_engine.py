@@ -50,8 +50,11 @@ def _last_benchmark_runtime_telemetry_digest(
     for record in reversed(iteration_records):
         benchmark = record.benchmark_result
         if benchmark is not None and benchmark.runtime_telemetry:
-            return format_runtime_telemetry_digest(benchmark.runtime_telemetry)
-    return format_runtime_telemetry_digest(())
+            return format_runtime_telemetry_digest(
+                benchmark.runtime_telemetry,
+                max_chars_per_section=420,
+            )
+    return format_runtime_telemetry_digest((), max_chars_per_section=420)
 
 
 @dataclass

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from preflight.domain.kernel_sysctl_profile import sysctl_profile_read_command
 from preflight.domain.models import CommandResult
 from preflight.infrastructure.parsers.cpu_parser import CpuParser
 from preflight.infrastructure.parsers.kernel_parser import KernelParser
@@ -92,6 +93,23 @@ def test_memory_probe_collects_memory_info() -> None:
 
 def test_kernel_probe_collects_kernel_info() -> None:
     probe = KernelProbe(parser=KernelParser())
+    profile_cmd = sysctl_profile_read_command()
+    profile_out = "\n".join(
+        (
+            "net.core.somaxconn=128",
+            "net.ipv4.tcp_max_syn_backlog=128",
+            "net.core.netdev_max_backlog=300",
+            "net.core.rmem_max=87380",
+            "net.core.wmem_max=87380",
+            "net.ipv4.tcp_rmem=4096 87380 6291456",
+            "net.ipv4.tcp_wmem=4096 65536 6291456",
+            "net.ipv4.tcp_tw_reuse=0",
+            "net.ipv4.tcp_fin_timeout=120",
+            "vm.swappiness=100",
+            "vm.dirty_ratio=5",
+            "vm.vfs_cache_pressure=200",
+        )
+    )
     executor = FakeExecutor(
         {
             "test -w /proc/sys/vm/swappiness && printf 'writable'": CommandResult(
@@ -101,6 +119,7 @@ def test_kernel_probe_collects_kernel_info() -> None:
             "tuned-adm active | awk -F': ' 'NR==1 {print $2}' || true": CommandResult(
                 "tuned-adm", 0, "throughput-performance", ""
             ),
+            profile_cmd: CommandResult("sh", 0, profile_out, ""),
         }
     )
 
@@ -108,3 +127,5 @@ def test_kernel_probe_collects_kernel_info() -> None:
 
     assert kernel.sysctl_writable is True
     assert kernel.tuned_profile == "throughput-performance"
+    assert dict(kernel.sysctl_profile)["net.core.somaxconn"] == "128"
+    assert dict(kernel.sysctl_profile)["vm.dirty_ratio"] == "5"

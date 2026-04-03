@@ -136,6 +136,8 @@ class ServiceTunableSurface:
     network_ring_priority_tier: PriorityTier
     # Process-level limits (prlimit); YAML keys map to runtime.prlimit.<name> in the catalog.
     runtime_limits: dict[str, DirectiveConstraint]
+    # systemd unit resource limits (LimitNOFILE, LimitNPROC); YAML keys map to systemd.unit.<name>.
+    systemd_unit_limits: dict[str, DirectiveConstraint]
     # Optional YAML override for network.ring.* catalog entries (rx/tx).
     network_ring_tuning_layer: str | None = None
 

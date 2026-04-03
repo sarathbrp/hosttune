@@ -53,6 +53,8 @@ restart:
     worker_model: restart
     kernel_network: reload
     runtime_limits: reload
+    # systemd unit Limit* via set-property; typically needs restart to affect service cgroup.
+    systemd_unit_limits: restart
   drain_policy: best_effort
   dependency_chain: []
   post_restart_validation: health_check
@@ -119,6 +121,17 @@ tunable_surface:
       min_value: 1024
       max_value: 2097152
       apply_mode: reload
+      allowed_values: []
+      forbidden_values: []
+  # systemd resource controls (systemctl set-property). YAML keys: limit_nofile -> LimitNOFILE,
+  # limit_nproc -> LimitNPROC. Complements runtime_limits (prlimit on PID) for unit-wide limits.
+  systemd_unit_limits:
+    limit_nproc:
+      value_type: integer
+      priority_tier: medium
+      min_value: 64
+      max_value: 655350
+      apply_mode: restart
       allowed_values: []
       forbidden_values: []
 

@@ -9,8 +9,10 @@ from baseline.domain.models import BaselineResult, BenchmarkConfig, WorkloadBenc
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.application.hosttune_instance import HostTuneInstance
+from preflight.domain.kernel_sysctl_profile import PREFLIGHT_SYSCTL_KEYS
 from preflight.domain.models import (
     CapabilityMap,
+    CommandResult,
     CpuInfo,
     DiscoverySnapshot,
     EngagementPolicy,
@@ -28,6 +30,24 @@ from tune.domain.tune_context import TuneContext
 from tune.domain.tune_state import TuneState
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
+
+
+class OnboardSysctlEnrichExecutor:
+    """load_onboard runs sysctl reads for contract-only relevant_sysctls (e.g. ip_local_port_range)."""
+
+    def run(self, command: str) -> CommandResult:
+        if (
+            "for k in " in command
+            and "sysctl -n" in command
+            and "ip_local_port_range" in command
+        ):
+            return CommandResult(
+                command,
+                0,
+                "net.ipv4.ip_local_port_range=32768\t60999\n",
+                "",
+            )
+        return CommandResult(command, 0, "", "")
 
 
 class FakeRunner:
@@ -161,7 +181,7 @@ def test_instance_stores_onboard_result(tmp_path: Path) -> None:
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
         baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
-        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
         artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
     )
 
@@ -171,6 +191,27 @@ def test_instance_stores_onboard_result(tmp_path: Path) -> None:
     assert instance.onboard is result
     assert instance.onboard is not None
     assert instance.onboard.service_name == "nginx"
+
+
+def test_load_onboard_enriches_preflight_sysctl_profile_with_contract_only_keys(
+    tmp_path: Path,
+) -> None:
+    instance = HostTuneInstance(
+        config_loader=FakeConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+    instance.load_preflight(Path("config.yaml"))
+    assert instance.preflight is not None
+    assert instance.preflight.kernel.sysctl_profile == ()
+    instance.load_onboard(Path("config.yaml"))
+    by_name = dict(instance.preflight.kernel.sysctl_profile)
+    assert by_name["net.ipv4.ip_local_port_range"] == "32768\t60999"
+    assert len(instance.preflight.kernel.sysctl_profile) == len(PREFLIGHT_SYSCTL_KEYS) + 1
 
 
 def test_instance_stores_snapshot_and_baseline_results(tmp_path: Path) -> None:
@@ -217,7 +258,7 @@ def test_instance_stores_snapshot_and_baseline_results(tmp_path: Path) -> None:
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: FakeSnapshotRunner(),
         baseline_runner_factory=lambda benchmark_config: FakeBaselineRunner(),
-        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
         artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
     )
 
@@ -240,7 +281,7 @@ def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
         baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
-        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
         artifact_store=artifact_store,
     )
 
@@ -251,7 +292,10 @@ def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
     preflight_file = instance.artifacts.stage_files["preflight"]
     onboard_file = instance.artifacts.stage_files["onboard"]
 
-    preflight_record = json.loads(preflight_file.read_text(encoding="utf-8").splitlines()[0])
+    preflight_lines = preflight_file.read_text(encoding="utf-8").splitlines()
+    assert len(preflight_lines) == 2
+    preflight_record = json.loads(preflight_lines[0])
+    enriched_preflight = json.loads(preflight_lines[1])
     onboard_record = json.loads(onboard_file.read_text(encoding="utf-8").splitlines()[0])
 
     assert len(instance.artifacts.session_id) == RuntimeArtifactStore.SESSION_ID_LENGTH
@@ -259,6 +303,9 @@ def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
     assert onboard_file.name == f"onboard_{instance.artifacts.session_id}.jsonl"
     assert preflight_record["stage"] == "preflight"
     assert preflight_record["payload"]["platform_summary"] == "bare_metal_linux"
+    assert enriched_preflight["stage"] == "preflight"
+    profile = {pair[0]: pair[1] for pair in enriched_preflight["payload"]["kernel"]["sysctl_profile"]}
+    assert "32768" in profile.get("net.ipv4.ip_local_port_range", "")
     assert onboard_record["stage"] == "onboard"
     assert onboard_record["payload"]["service_name"] == "nginx"
 
@@ -307,7 +354,7 @@ def test_instance_builds_tune_context(tmp_path: Path) -> None:
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: FakeSnapshotRunner(),
         baseline_runner_factory=lambda benchmark_config: FakeBaselineRunner(),
-        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
         artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
     )
 
@@ -395,7 +442,7 @@ def test_instance_runs_tune_and_persists_artifact(tmp_path: Path) -> None:
         onboard_runner_factory=lambda: FakeOnboardRunner(),
         snapshot_runner_factory=lambda: FakeSnapshotRunner(),
         baseline_runner_factory=lambda benchmark_config: FakeBaselineRunner(),
-        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
         artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
     )
 

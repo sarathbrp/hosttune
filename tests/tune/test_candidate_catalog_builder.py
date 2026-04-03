@@ -7,6 +7,7 @@ from onboard.infrastructure.service_definition_validator import ServiceDefinitio
 from preflight.domain.models import (
     CapabilityFlag,
     CapabilityMap,
+    CommandExecutor,
     CommandResult,
     CpuInfo,
     DiscoverySnapshot,
@@ -52,6 +53,8 @@ class FakeExecutor:
                 stdout="8192 1048576\n",
                 stderr="",
             )
+        if "systemctl show" in command and "LimitNPROC" in command:
+            return CommandResult(command=command, exit_code=0, stdout="32768\n", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
@@ -73,12 +76,13 @@ def build_tune_context() -> TuneContext:
         kernel=KernelInfo(True, "Permissive", "unknown"),
         network=NetworkInfo("eth0", "ixgbe", "1.0.0", 512, 4096, 512, 4096, 8, True),
         storage=StorageInfo("sda", "ssd", "[none] mq-deadline", True),
-        capability_map=CapabilityMap(
+        capability_map=        CapabilityMap(
             flags=(
                 CapabilityFlag("kernel_sysctl_tuning", True, "supported"),
                 CapabilityFlag("network_ring_buffer_tuning", True, "supported"),
                 CapabilityFlag("network_queue_tuning", True, "supported"),
                 CapabilityFlag("runtime_prlimit_tuning", True, "supported"),
+                CapabilityFlag("systemd_unit_limit_tuning", True, "supported"),
             )
         ),
     )
@@ -135,6 +139,7 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
     assert "sysctl.net.ipv4.ip_local_port_range" in candidate_keys
     assert "network.ring.rx" in candidate_keys
     assert "runtime.prlimit.nofile_soft" in candidate_keys
+    assert "systemd.unit.limit_nproc" in candidate_keys
     prlimit_nofile = next(
         candidate
         for candidate in candidates
@@ -142,6 +147,9 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
     )
     assert prlimit_nofile.tuning_layer is TuningLayer.RUNTIME
     assert prlimit_nofile.source is CandidateSource.RUNTIME_PRLIMIT
+    nproc = next(c for c in candidates if c.parameter_key == "systemd.unit.limit_nproc")
+    assert nproc.source is CandidateSource.SYSTEMD_UNIT_LIMIT
+    assert nproc.current_value == "32768"
     assert prlimit_nofile.current_value == "8192"
     assert "service.directive.worker_rlimit_nofile" in candidate_keys
     assert any(
@@ -195,6 +203,40 @@ def test_candidate_catalog_applies_yaml_tuning_layer_overrides() -> None:
     assert rx_ring.tuning_layer is TuningLayer.RUNTIME
     assert tuning_layer_for_parameter_key(somaxconn.parameter_key) is TuningLayer.KERNEL
     assert tuning_layer_for_parameter_key(rx_ring.parameter_key) is TuningLayer.NETWORK
+
+
+def test_catalog_sysctl_current_from_preflight_when_live_sysctl_empty() -> None:
+    base = build_tune_context()
+    kernel = replace(
+        base.preflight.kernel,
+        sysctl_profile=(("net.core.somaxconn", "8000"),),
+    )
+    ctx = replace(base, preflight=replace(base.preflight, kernel=kernel))
+
+    class EmptySysctl:
+        def run(self, command: str) -> CommandResult:
+            if command.startswith("sysctl -n"):
+                return CommandResult(command=command, exit_code=0, stdout="", stderr="")
+            return FakeExecutor().run(command)
+
+    candidates = CandidateCatalogBuilder().build(ctx, cast(CommandExecutor, EmptySysctl()))
+    somaxconn = next(c for c in candidates if c.parameter_key == "sysctl.net.core.somaxconn")
+    assert somaxconn.current_value == "8000"
+
+
+def test_catalog_network_ring_prefers_live_ethtool_over_preflight() -> None:
+    context = build_tune_context()
+
+    class RingLive:
+        def run(self, command: str) -> CommandResult:
+            if "ethtool -g" in command and "awk" in command:
+                return CommandResult(command=command, exit_code=0, stdout="900\n", stderr="")
+            return FakeExecutor().run(command)
+
+    candidates = CandidateCatalogBuilder().build(context, cast(CommandExecutor, RingLive()))
+    rx = next(c for c in candidates if c.parameter_key == "network.ring.rx")
+    assert rx.current_value == "900"
+    assert rx.min_value == 900
 
 
 def test_catalog_marks_sysctl_deferred_when_kernel_network_is_reboot() -> None:

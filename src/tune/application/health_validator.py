@@ -10,6 +10,25 @@ from tune.domain.tune_context import TuneContext
 from tune.domain.validation_models import ValidationCheck, ValidationResult
 
 
+def _systemd_unit_limit_observation_matches(observed: str, expected_applied: str) -> bool:
+    obs = observed.strip()
+    exp = expected_applied.strip()
+    if obs == exp:
+        return True
+    try:
+        return int(obs.split()[0]) == int(exp)
+    except ValueError:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "systemd unit limit comparison failed: observed=%r expected=%r "
+            "(non-numeric value like 'infinity' may indicate the limit was not applied)",
+            obs,
+            exp,
+        )
+        return False
+
+
 @dataclass
 class HealthValidator:
     def validate_baseline(
@@ -197,6 +216,22 @@ class HealthValidator:
             result = executor.run(command)
             observed = result.stdout.strip()
             passed = result.exit_code == 0 and observed == applied_change.applied_value
+            detail = f"observed={observed or 'unknown'}"
+            return ValidationCheck(
+                name="effective_value",
+                passed=passed,
+                detail=detail,
+            )
+
+        if applied_change.hypothesis.parameter_key.startswith("systemd.unit."):
+            unit, prop = applied_change.target_path.rsplit(":", maxsplit=1)
+            command = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(prop)} --value"
+            result = executor.run(command)
+            observed = result.stdout.strip()
+            passed = result.exit_code == 0 and _systemd_unit_limit_observation_matches(
+                observed,
+                applied_change.applied_value,
+            )
             detail = f"observed={observed or 'unknown'}"
             return ValidationCheck(
                 name="effective_value",

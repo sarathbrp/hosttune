@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 from baseline.domain.models import BaselineResult
 from onboard.domain.models import OnboardResult
+from preflight.domain.kernel_sysctl_profile import format_sysctl_profile_compact
 from preflight.domain.models import DiscoverySnapshot
 from snapshot.domain.models import SnapshotResult
 from tune.domain.hypothesis_models import HypothesisStatus
@@ -53,6 +54,10 @@ class ConsoleReporter:
                 (
                     f"  Memory: {preflight.memory.total_memory_kib} KiB RAM, "
                     f"{preflight.memory.swap_total_kib} KiB swap"
+                ),
+                (
+                    "  Kernel sysctl profile: "
+                    + format_sysctl_profile_compact(preflight.kernel.sysctl_profile, max_chars=400)
                 ),
                 (
                     f"  Network: {preflight.network.interface_name} "

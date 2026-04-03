@@ -6,6 +6,7 @@ _SERVICE_DIRECTIVE_PREFIX = "service.directive."
 _SYSCTL_PREFIX = "sysctl."
 _NETWORK_RING_PREFIX = "network.ring."
 _RUNTIME_PRLIMIT_PREFIX = "runtime.prlimit."
+_SYSTEMD_UNIT_PREFIX = "systemd.unit."
 
 _RUNTIME_DIRECTIVES = frozenset({"worker_rlimit_nofile"})
 
@@ -27,6 +28,7 @@ def tuning_layer_for_parameter_key(parameter_key: str) -> TuningLayer:
     - sysctl.* → KERNEL
     - network.ring.* → NETWORK
     - runtime.prlimit.* → RUNTIME (process limits via prlimit)
+    - systemd.unit.* → RUNTIME (systemd unit LimitNOFILE / LimitNPROC via set-property)
     - service.directive.worker_rlimit_nofile → RUNTIME (fd / process limits surface)
     - other service.directive.* → SERVICE
     """
@@ -35,6 +37,8 @@ def tuning_layer_for_parameter_key(parameter_key: str) -> TuningLayer:
     if parameter_key.startswith(_NETWORK_RING_PREFIX):
         return TuningLayer.NETWORK
     if parameter_key.startswith(_RUNTIME_PRLIMIT_PREFIX):
+        return TuningLayer.RUNTIME
+    if parameter_key.startswith(_SYSTEMD_UNIT_PREFIX):
         return TuningLayer.RUNTIME
     if parameter_key.startswith(_SERVICE_DIRECTIVE_PREFIX):
         directive = parameter_key.removeprefix(_SERVICE_DIRECTIVE_PREFIX)

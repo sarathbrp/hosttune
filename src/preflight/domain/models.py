@@ -97,6 +97,8 @@ class KernelInfo:
     sysctl_writable: bool
     selinux_mode: str
     tuned_profile: str
+    # Fixed-list sysctl snapshot from preflight (see kernel_sysctl_profile.PREFLIGHT_SYSCTL_KEYS).
+    sysctl_profile: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

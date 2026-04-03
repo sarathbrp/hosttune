@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
-import re
-import shlex
 from dataclasses import dataclass
 
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
 from preflight.domain.models import CommandExecutor
-from tune.application.apply_coordinator import PrlimitApplier
+from tune.application.apply_coordinator import PrlimitApplier, SystemdUnitLimitApplier
+from tune.application.candidate_value_reads import (
+    read_network_ring_catalog_current,
+    read_service_directive_catalog_current,
+    read_sysctl_catalog_current,
+)
 from tune.domain.hypothesis_models import (
     CandidateAvailability,
     CandidateParameter,
@@ -17,10 +20,17 @@ from tune.domain.tune_context import TuneContext
 from tune.domain.tuning_layer import resolve_tuning_layer
 
 _SUPPORTED_RUNTIME_PRLIMIT_NAMES = frozenset({"nofile_soft"})
+_SUPPORTED_SYSTEMD_UNIT_LIMIT_NAMES = frozenset({"limit_nofile", "limit_nproc"})
 
 
 @dataclass
 class CandidateCatalogBuilder:
+    """Build selectable rows with live probes and preflight fallbacks.
+
+    See `candidate_value_reads` for read semantics. Runtime prlimit and
+    systemd limits stay live-only. Broad context in preflight/snapshot.
+    """
+
     def build(
         self,
         context: TuneContext,
@@ -29,8 +39,9 @@ class CandidateCatalogBuilder:
         candidates: list[CandidateParameter] = []
         candidates.extend(self._build_service_directive_candidates(context, executor))
         candidates.extend(self._build_service_sysctl_candidates(context, executor))
-        candidates.extend(self._build_network_ring_candidates(context))
+        candidates.extend(self._build_network_ring_candidates(context, executor))
         candidates.extend(self._build_runtime_prlimit_candidates(context, executor))
+        candidates.extend(self._build_systemd_unit_limit_candidates(context, executor))
         return tuple(
             sorted(
                 candidates,
@@ -74,10 +85,11 @@ class CandidateCatalogBuilder:
                         f"Allowed nginx directive from service plugin for "
                         f"{context.onboard.service_name}"
                     ),
-                    current_value=self._read_service_directive_current_value(
-                        context=context,
-                        directive_name=directive_name,
+                    current_value=read_service_directive_catalog_current(
                         executor=executor,
+                        config_path=self._resolve_config_path(context),
+                        directive_name=directive_name,
+                        runtime_state_output=context.snapshot.runtime_state_output,
                     ),
                 )
             )
@@ -128,7 +140,11 @@ class CandidateCatalogBuilder:
                     min_value=None,
                     max_value=None,
                     rationale_hint=hint,
-                    current_value=self._read_sysctl_current_value(sysctl_name, executor),
+                    current_value=read_sysctl_catalog_current(
+                        sysctl_name,
+                        executor,
+                        context.preflight.kernel.sysctl_profile,
+                    ),
                     availability=availability,
                 )
             )
@@ -137,6 +153,7 @@ class CandidateCatalogBuilder:
     def _build_network_ring_candidates(
         self,
         context: TuneContext,
+        executor: CommandExecutor | None,
     ) -> list[CandidateParameter]:
         if not self._capability_available(context, "network_ring_buffer_tuning"):
             return []
@@ -145,7 +162,7 @@ class CandidateCatalogBuilder:
         interface_name = context.preflight.network.interface_name
         ring_tier = context.onboard.service.tunable_surface.network_ring_priority_tier
         ring_layer_override = context.onboard.service.tunable_surface.network_ring_tuning_layer
-        for parameter_name, current_value, max_value in (
+        for parameter_name, preflight_current, max_value in (
             (
                 "rx",
                 context.preflight.network.rx_ring_current,
@@ -157,7 +174,20 @@ class CandidateCatalogBuilder:
                 context.preflight.network.tx_ring_max,
             ),
         ):
-            if max_value <= current_value:
+            if max_value <= preflight_current:
+                continue
+            catalog_current = read_network_ring_catalog_current(
+                parameter_name,
+                interface_name,
+                executor,
+                preflight_current,
+            )
+            try:
+                current_int = int(catalog_current)
+            except ValueError:
+                current_int = preflight_current
+                catalog_current = str(preflight_current)
+            if max_value <= current_int:
                 continue
             pkey = f"network.ring.{parameter_name}"
             candidates.append(
@@ -172,13 +202,13 @@ class CandidateCatalogBuilder:
                     priority_tier=ring_tier,
                     allowed_values=(),
                     forbidden_values=(),
-                    min_value=current_value,
+                    min_value=current_int,
                     max_value=max_value,
                     rationale_hint=(
                         f"NIC ring buffer tuning on {interface_name} "
-                        f"for {parameter_name} from {current_value} to {max_value}"
+                        f"for {parameter_name} from {current_int} to {max_value}"
                     ),
-                    current_value=str(current_value),
+                    current_value=catalog_current,
                 )
             )
         return candidates
@@ -226,6 +256,67 @@ class CandidateCatalogBuilder:
             )
         return candidates
 
+    def _build_systemd_unit_limit_candidates(
+        self,
+        context: TuneContext,
+        executor: CommandExecutor | None,
+    ) -> list[CandidateParameter]:
+        if not self._capability_available(context, "systemd_unit_limit_tuning"):
+            return []
+        candidates: list[CandidateParameter] = []
+        for (
+            limit_name,
+            constraint,
+        ) in context.onboard.service.tunable_surface.systemd_unit_limits.items():
+            if limit_name not in _SUPPORTED_SYSTEMD_UNIT_LIMIT_NAMES:
+                continue
+            if constraint.apply_mode is ApplyMode.REBOOT:
+                continue
+            parameter_key = f"systemd.unit.{limit_name}"
+            candidates.append(
+                CandidateParameter(
+                    parameter_key=parameter_key,
+                    domain="runtime",
+                    tuning_layer=resolve_tuning_layer(parameter_key, constraint.tuning_layer),
+                    parameter_name=limit_name,
+                    source=CandidateSource.SYSTEMD_UNIT_LIMIT,
+                    value_type=constraint.value_type,
+                    apply_mode=constraint.apply_mode,
+                    priority_tier=constraint.priority_tier,
+                    allowed_values=constraint.allowed_values,
+                    forbidden_values=constraint.forbidden_values,
+                    min_value=constraint.min_value,
+                    max_value=constraint.max_value,
+                    rationale_hint=(
+                        f"systemd unit limit {limit_name} on "
+                        f"{context.onboard.service.identity.systemd_unit_name}"
+                    ),
+                    current_value=self._read_systemd_unit_limit_current(
+                        executor, context, limit_name
+                    ),
+                )
+            )
+        return candidates
+
+    def _read_systemd_unit_limit_current(
+        self,
+        executor: CommandExecutor | None,
+        context: TuneContext,
+        limit_name: str,
+    ) -> str | None:
+        if executor is None:
+            return None
+        prop = SystemdUnitLimitApplier.property_name(limit_name)
+        unit = context.onboard.service.identity.systemd_unit_name
+        try:
+            return SystemdUnitLimitApplier.read_property_value(executor, unit, prop)
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Failed to read systemd unit limit %s; no-op check may be skipped",
+                limit_name,
+            )
+            return None
+
     def _read_current_nofile_soft(
         self,
         executor: CommandExecutor | None,
@@ -252,40 +343,6 @@ class CandidateCatalogBuilder:
         if restart_mode is None:
             return ApplyMode.RELOAD
         return restart_mode
-
-    def _read_service_directive_current_value(
-        self,
-        context: TuneContext,
-        directive_name: str,
-        executor: CommandExecutor | None,
-    ) -> str | None:
-        if executor is None:
-            return None
-        config_path = self._resolve_config_path(context)
-        command = (
-            f"grep -E '^\\s*{re.escape(directive_name)}\\s+' "
-            f"{shlex.quote(config_path)} | tail -n 1"
-        )
-        result = executor.run(command)
-        if result.exit_code != 0 or result.stdout == "":
-            return None
-        line = result.stdout.strip().rstrip(";")
-        parts = line.split(maxsplit=1)
-        if len(parts) != 2:
-            return None
-        return parts[1].strip()
-
-    def _read_sysctl_current_value(
-        self,
-        sysctl_name: str,
-        executor: CommandExecutor | None,
-    ) -> str | None:
-        if executor is None:
-            return None
-        result = executor.run(f"sysctl -n {shlex.quote(sysctl_name)}")
-        if result.exit_code != 0:
-            return None
-        return result.stdout.strip()
 
     def _resolve_config_path(self, context: TuneContext) -> str:
         for path in context.onboard.service.identity.config_paths:

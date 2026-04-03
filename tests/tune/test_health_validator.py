@@ -41,6 +41,8 @@ class HealthyExecutor:
                 stdout="worker_processes 56;",
                 stderr="",
             )
+        if "systemctl show" in command and "LimitNPROC" in command:
+            return CommandResult(command=command, exit_code=0, stdout="8000\n", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
@@ -110,6 +112,29 @@ def build_network_change() -> AppliedChange:
         apply_mode=ApplyMode.RELOAD,
         apply_command="ethtool -G eth0 rx 1024",
         rollback_command="ethtool -G eth0 rx 511",
+    )
+
+
+def build_systemd_unit_limit_change() -> AppliedChange:
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="systemd.unit.limit_nproc",
+        parameter_name="limit_nproc",
+        domain="runtime",
+        tuning_layer=tuning_layer_for_parameter_key("systemd.unit.limit_nproc"),
+        proposed_value="8000",
+        source=CandidateSource.SYSTEMD_UNIT_LIMIT,
+        apply_mode=ApplyMode.RESTART,
+        rationale="Raise unit NPROC.",
+    )
+    return AppliedChange(
+        hypothesis=hypothesis,
+        target_path="nginx.service:LimitNPROC",
+        previous_value="1000",
+        applied_value="8000",
+        apply_mode=ApplyMode.RESTART,
+        apply_command="systemctl set-property ...",
+        rollback_command="systemctl set-property ...",
     )
 
 
@@ -204,3 +229,17 @@ def test_health_validator_accepts_healthy_network_change() -> None:
 
     assert result.healthy is True
     assert any(check.name == "effective_value" and check.detail == "observed=1024" for check in result.checks)
+
+
+def test_health_validator_accepts_healthy_systemd_unit_limit_change() -> None:
+    validator = HealthValidator()
+    result = validator.validate(
+        context=build_tune_context(),
+        applied_change=build_systemd_unit_limit_change(),
+        executor=HealthyExecutor(),
+    )
+
+    assert result.healthy is True
+    assert any(
+        check.name == "effective_value" and check.detail == "observed=8000" for check in result.checks
+    )

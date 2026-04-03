@@ -129,6 +129,7 @@ class ServiceDefinitionValidator:
             raise ValueError(msg)
         ring_layer_raw = data.get("network_ring_tuning_layer")
         runtime_limits_raw = cast(dict[str, Any], data.get("runtime_limits", {}))
+        systemd_limits_raw = cast(dict[str, Any], data.get("systemd_unit_limits", {}))
         return ServiceTunableSurface(
             allowed_directives={
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
@@ -141,6 +142,10 @@ class ServiceDefinitionValidator:
             runtime_limits={
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
                 for name, value in runtime_limits_raw.items()
+            },
+            systemd_unit_limits={
+                name: self._parse_directive_constraint(cast(dict[str, Any], value))
+                for name, value in systemd_limits_raw.items()
             },
             network_ring_tuning_layer=self._optional_tuning_layer_string(ring_layer_raw),
         )

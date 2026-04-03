@@ -34,15 +34,21 @@ class FakeModelClient:
     def complete(self, prompt: str) -> ModelCompletion:
         assert "Selectable candidates (this phase):" in prompt
         assert "Deferred candidates" in prompt
-        assert "Preflight summary:" in prompt
-        assert "Service contract summary:" in prompt
-        assert "Baseline summary:" in prompt
-        assert "Last benchmark runtime telemetry" in prompt
+        assert "Context policy:" in prompt
+        assert "Preflight digest" in prompt
+        assert "Onboard service contract" in prompt
+        assert "Baseline digest" in prompt
+        assert "Last benchmark runtime telemetry digest" in prompt
+        assert "kernel_sysctl_profile=" in prompt
         assert "Current tune state:" in prompt
         assert "current=112" in prompt
         assert "forbidden=" not in prompt
         assert "priority=high" in prompt
         assert "runtime_limits=nofile_soft" in prompt
+        assert "systemd_unit_limits=limit_nproc" in prompt
+        assert "Snapshot digest" in prompt
+        assert "nginx -T" in prompt
+        assert "process_state" in prompt
         return ModelCompletion(
             content=json.dumps(self._response),
             usage=ModelUsage(

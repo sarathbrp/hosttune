@@ -20,6 +20,8 @@ from tests.tune.test_candidate_catalog_builder import FakeExecutor, build_tune_c
         ("service.directive.keepalive_timeout", TuningLayer.SERVICE),
         ("service.directive.worker_rlimit_nofile", TuningLayer.RUNTIME),
         ("runtime.prlimit.nofile_soft", TuningLayer.RUNTIME),
+        ("systemd.unit.limit_nproc", TuningLayer.RUNTIME),
+        ("systemd.unit.limit_nofile", TuningLayer.RUNTIME),
     ],
 )
 def test_tuning_layer_for_parameter_key_maps_known_prefixes(

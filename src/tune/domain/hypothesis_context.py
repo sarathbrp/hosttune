@@ -8,6 +8,11 @@ from tune.domain.tune_context import TuneContext
 
 @dataclass(frozen=True)
 class HypothesisContext:
+    """Inputs for hypothesis generation; raw host data stays on `tune_context` (preflight/snapshot).
+
+    The prompt builder derives curated digests from this context plus catalog rows (`candidates`).
+    """
+
     tune_context: TuneContext
     phase: TunePhase
     iteration_number: int
@@ -18,5 +23,5 @@ class HypothesisContext:
     history: tuple[HypothesisRecord, ...]
     active_parameter_keys: tuple[str, ...]
     best_parameter_values: tuple[tuple[str, str], ...]
-    # Digest from the most recent iteration with benchmark runtime telemetry.
+    # Truncated telemetry digest from the last benchmarked iteration (built in tune_engine).
     last_benchmark_runtime_telemetry_digest: str = ""

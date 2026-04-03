@@ -170,6 +170,7 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     rendered = reporter.render_runtime(snapshot, onboard, runtime_snapshot, baseline, tune)
 
     assert "Preflight" in rendered
+    assert "Kernel sysctl profile" in rendered
     assert "Onboard" in rendered
     assert "Snapshot" in rendered
     assert "Baseline" in rendered

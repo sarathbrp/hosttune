@@ -46,7 +46,11 @@ def build_valid_definition() -> dict[str, object]:
                 "command": "systemctl restart nginx",
                 "expected_downtime_seconds": 5,
             },
-            "change_categories": {"service_config": "reload", "runtime_limits": "reload"},
+            "change_categories": {
+                "service_config": "reload",
+                "runtime_limits": "reload",
+                "systemd_unit_limits": "restart",
+            },
             "drain_policy": "best_effort",
             "dependency_chain": [],
             "post_restart_validation": "health_check",
@@ -108,6 +112,17 @@ def build_valid_definition() -> dict[str, object]:
                     "apply_mode": "reload",
                 },
             },
+            "systemd_unit_limits": {
+                "limit_nproc": {
+                    "value_type": "integer",
+                    "priority_tier": "medium",
+                    "min_value": 64,
+                    "max_value": 655350,
+                    "allowed_values": [],
+                    "forbidden_values": [],
+                    "apply_mode": "restart",
+                },
+            },
         },
         "benchmark_hints": {
             "primary_metric": "requests_per_second",
@@ -135,7 +150,9 @@ def test_validator_builds_typed_service_definition() -> None:
         PriorityTier.MEDIUM,
     ]
     assert "nofile_soft" in definition.tunable_surface.runtime_limits
+    assert "limit_nproc" in definition.tunable_surface.systemd_unit_limits
     assert definition.restart.change_categories["runtime_limits"] is ApplyMode.RELOAD
+    assert definition.restart.change_categories["systemd_unit_limits"] is ApplyMode.RESTART
 
 
 def test_validator_parses_sysctl_strings_as_high_tier() -> None:

@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-import re
 import shlex
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Protocol
 
+from onboard.domain.models import ApplyMode
 from preflight.domain.models import CommandExecutor
+from tune.application.candidate_value_reads import (
+    grep_directive_from_config_file,
+    try_read_network_ring_current,
+)
 from tune.domain.apply_models import AppliedChange
 from tune.domain.hypothesis_models import TuningHypothesis
 from tune.domain.tune_context import TuneContext
+
+_SYSTEMD_LIMIT_PROPERTIES: dict[str, str] = {
+    "limit_nofile": "LimitNOFILE",
+    "limit_nproc": "LimitNPROC",
+}
 
 
 class ChangeApplier(Protocol):
@@ -28,6 +37,7 @@ class ApplyCoordinator:
     sysctl_applier: ChangeApplier
     network_ring_applier: ChangeApplier
     runtime_limit_applier: ChangeApplier
+    systemd_unit_limit_applier: ChangeApplier
 
     def apply(
         self,
@@ -43,6 +53,8 @@ class ApplyCoordinator:
             return self.network_ring_applier.apply(context, hypothesis, executor)
         if hypothesis.parameter_key.startswith("runtime.prlimit."):
             return self.runtime_limit_applier.apply(context, hypothesis, executor)
+        if hypothesis.parameter_key.startswith("systemd.unit."):
+            return self.systemd_unit_limit_applier.apply(context, hypothesis, executor)
         msg = f"No applier available for parameter_key: {hypothesis.parameter_key}"
         raise ValueError(msg)
 
@@ -98,20 +110,11 @@ class NginxDirectiveApplier:
         config_path: str,
         directive_name: str,
     ) -> str:
-        grep_command = (
-            f"grep -E '^\\s*{re.escape(directive_name)}\\s+' "
-            f"{shlex.quote(config_path)} | tail -n 1"
-        )
-        result = executor.run(grep_command)
-        if result.exit_code != 0 or result.stdout == "":
+        parsed = grep_directive_from_config_file(executor, config_path, directive_name)
+        if parsed is None:
             msg = f"Directive {directive_name} not found in {config_path}"
             raise ValueError(msg)
-        line = result.stdout.strip().rstrip(";")
-        parts = line.split(maxsplit=1)
-        if len(parts) != 2:
-            msg = f"Unable to parse directive line for {directive_name}: {line}"
-            raise ValueError(msg)
-        return parts[1].strip()
+        return parsed
 
     def _build_replace_command(
         self,
@@ -225,18 +228,11 @@ class NetworkRingApplier:
         interface_name: str,
         ring_name: str,
     ) -> str:
-        command = (
-            f"ethtool -g {shlex.quote(interface_name)} | "
-            'awk \'BEGIN{section=""} '
-            '/Current hardware settings:/{section="current"; next} '
-            '/Pre-set maximums:/{section="max"; next} '
-            f'section=="current" && $1=="{ring_name}:" {{print $2; exit}}\''
-        )
-        result = executor.run(command)
-        if result.exit_code != 0 or result.stdout.strip() == "":
+        current = try_read_network_ring_current(executor, interface_name, ring_name)
+        if current is None:
             msg = f"Failed to read current {ring_name} ring value for {interface_name}"
             raise ValueError(msg)
-        return result.stdout.strip()
+        return current
 
     def _build_ethtool_command(
         self,
@@ -316,6 +312,88 @@ class PrlimitApplier:
             target_path=f"pid={pid}:nofile",
             previous_value=str(prev_soft),
             applied_value=str(new_soft),
+            apply_mode=hypothesis.apply_mode,
+            apply_command=apply_command,
+            rollback_command=rollback_command,
+        )
+
+
+@dataclass
+class SystemdUnitLimitApplier:
+    """Apply systemd unit LimitNOFILE / LimitNPROC via systemctl set-property."""
+
+    @staticmethod
+    def property_name(limit_yaml_name: str) -> str:
+        prop = _SYSTEMD_LIMIT_PROPERTIES.get(limit_yaml_name)
+        if prop is None:
+            msg = f"Unsupported systemd unit limit: {limit_yaml_name!r}"
+            raise ValueError(msg)
+        return prop
+
+    @staticmethod
+    def read_property_value(executor: CommandExecutor, unit: str, prop: str) -> str:
+        cmd = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(prop)} --value"
+        result = executor.run(cmd)
+        if result.exit_code != 0:
+            msg = f"Failed to read {prop} for unit {unit!r}"
+            raise ValueError(msg)
+        return result.stdout.strip()
+
+    @staticmethod
+    def _post_set_commands(context: TuneContext, apply_mode: ApplyMode) -> list[str]:
+        tail: list[str] = ["systemctl daemon-reload"]
+        restart = context.onboard.service.restart
+        if apply_mode is ApplyMode.RESTART:
+            if restart.restart.supported and restart.restart.command:
+                tail.append(restart.restart.command.strip())
+            else:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "systemd unit limit requires restart but no restart command "
+                    "is configured; limit will not take effect until manual restart"
+                )
+        elif apply_mode is ApplyMode.RELOAD and restart.reload.supported and restart.reload.command:
+            tail.append(restart.reload.command.strip())
+        return tail
+
+    def apply(
+        self,
+        context: TuneContext,
+        hypothesis: TuningHypothesis,
+        executor: CommandExecutor,
+    ) -> AppliedChange:
+        limit_name = hypothesis.parameter_name
+        prop = self.property_name(limit_name)
+        unit = context.onboard.service.identity.systemd_unit_name
+        previous_raw = self.read_property_value(executor, unit, prop)
+        new_value = hypothesis.proposed_value.strip()
+        set_cmd = (
+            f"systemctl set-property {shlex.quote(unit)} " f"{shlex.quote(f'{prop}={new_value}')}"
+        )
+        apply_parts = [set_cmd, *self._post_set_commands(context, hypothesis.apply_mode)]
+        apply_command = " && ".join(apply_parts)
+        apply_result = executor.run(apply_command)
+        if apply_result.exit_code != 0:
+            msg = (
+                "Failed to apply systemd unit limit: "
+                f"{apply_result.stderr or apply_result.stdout}"
+            )
+            raise ValueError(msg)
+        rollback_set = (
+            f"systemctl set-property {shlex.quote(unit)} "
+            f"{shlex.quote(f'{prop}={previous_raw}')}"
+        )
+        rollback_parts = [
+            rollback_set,
+            *self._post_set_commands(context, hypothesis.apply_mode),
+        ]
+        rollback_command = " && ".join(rollback_parts)
+        return AppliedChange(
+            hypothesis=hypothesis,
+            target_path=f"{unit}:{prop}",
+            previous_value=previous_raw,
+            applied_value=new_value,
             apply_mode=hypothesis.apply_mode,
             apply_command=apply_command,
             rollback_command=rollback_command,

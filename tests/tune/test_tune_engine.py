@@ -9,6 +9,7 @@ from tune.application.apply_coordinator import (
     NginxDirectiveApplier,
     PrlimitApplier,
     SysctlApplier,
+    SystemdUnitLimitApplier,
 )
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
@@ -261,6 +262,7 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
             sysctl_applier=SysctlApplier(),
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
+            systemd_unit_limit_applier=SystemdUnitLimitApplier(),
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
@@ -359,6 +361,7 @@ def test_tune_engine_logs_model_token_summary(tmp_path) -> None:  # type: ignore
             sysctl_applier=SysctlApplier(),
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
+            systemd_unit_limit_applier=SystemdUnitLimitApplier(),
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),
@@ -421,6 +424,7 @@ def test_tune_engine_logs_benchmark_skipped_reason(tmp_path) -> None:  # type: i
             sysctl_applier=SysctlApplier(),
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
+            systemd_unit_limit_applier=SystemdUnitLimitApplier(),
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=GatePassFailIterationValidator(),
@@ -469,6 +473,7 @@ def test_tune_engine_fails_fast_when_pre_tune_health_gate_fails(
                 sysctl_applier=SysctlApplier(),
                 network_ring_applier=NetworkRingApplier(),
                 runtime_limit_applier=PrlimitApplier(),
+                systemd_unit_limit_applier=SystemdUnitLimitApplier(),
             ),
             pre_apply_validator=PreApplyValidator(),
             health_validator=FailingHealthValidator(),
@@ -554,6 +559,7 @@ def test_tune_engine_rejects_forbidden_value_before_apply(tmp_path) -> None:  # 
             sysctl_applier=SysctlApplier(),
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
+            systemd_unit_limit_applier=SystemdUnitLimitApplier(),
         ),
         pre_apply_validator=PreApplyValidator(),
         health_validator=HealthValidator(),

@@ -128,4 +128,4 @@ def test_runner_builds_snapshot() -> None:
     assert snapshot.network.driver_name == "ixgbe"
     assert snapshot.storage.device_name == "sda"
     assert snapshot.benchmark_result is not None
-    assert len(snapshot.capability_map.flags) == 10
+    assert len(snapshot.capability_map.flags) == 11
