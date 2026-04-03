@@ -250,6 +250,7 @@ def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
     preflight_record = json.loads(preflight_file.read_text(encoding="utf-8").splitlines()[0])
     onboard_record = json.loads(onboard_file.read_text(encoding="utf-8").splitlines()[0])
 
+    assert len(instance.artifacts.session_id) == RuntimeArtifactStore.SESSION_ID_LENGTH
     assert preflight_file.name == f"preflight_{instance.artifacts.session_id}.jsonl"
     assert onboard_file.name == f"onboard_{instance.artifacts.session_id}.jsonl"
     assert preflight_record["stage"] == "preflight"

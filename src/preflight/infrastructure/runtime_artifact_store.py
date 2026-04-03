@@ -10,11 +10,13 @@ from preflight.domain.runtime_artifacts import RuntimeArtifacts
 
 
 class RuntimeArtifactStore:
+    SESSION_ID_LENGTH = 12
+
     def __init__(self, base_directory: Path = Path("artifacts")) -> None:
         self._base_directory = base_directory
 
     def create_session(self) -> RuntimeArtifacts:
-        session_id = uuid4().hex
+        session_id = uuid4().hex[: self.SESSION_ID_LENGTH]
         session_directory = self._base_directory / session_id
         session_directory.mkdir(parents=True, exist_ok=True)
         return RuntimeArtifacts(
