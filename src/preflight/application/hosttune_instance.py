@@ -22,6 +22,7 @@ from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from snapshot.application.snapshot_runner import SnapshotRunner
 from snapshot.domain.models import SnapshotResult
+from tune.domain.tune_context import TuneContext
 
 ExecutorFactory = Callable[[LocalTargetConfig | SshTargetConfig], CommandExecutor]
 DiscoveryRunnerFactory = Callable[[str | None], DiscoveryRunner]
@@ -107,6 +108,28 @@ class HostTuneInstance:
         self.baseline = result
         self._persist_stage_result("baseline", result)
         return result
+
+    def build_tune_context(self) -> TuneContext:
+        if self.preflight is None:
+            msg = "Preflight must be loaded before building TuneContext."
+            raise ValueError(msg)
+        if self.onboard is None:
+            msg = "Onboard must be loaded before building TuneContext."
+            raise ValueError(msg)
+        if self.snapshot is None:
+            msg = "Snapshot must be loaded before building TuneContext."
+            raise ValueError(msg)
+        if self.baseline is None:
+            msg = "Baseline must be loaded before building TuneContext."
+            raise ValueError(msg)
+
+        return TuneContext(
+            preflight=self.preflight,
+            onboard=self.onboard,
+            snapshot=self.snapshot,
+            baseline=self.baseline,
+            artifacts=self.artifacts,
+        )
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
         runner = self.discovery_runner_factory(None)

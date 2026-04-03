@@ -227,11 +227,11 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert '"preflight"' in output
-    assert '"onboard"' in output
-    assert '"snapshot"' in output
-    assert '"baseline"' in output
-    assert '"benchmark_target": "10.1.90.178"' in output
+    assert "Preflight" in output
+    assert "Onboard" in output
+    assert "Snapshot" in output
+    assert "Baseline" in output
+    assert "Target: 10.1.90.178" in output
 
 
 def test_main_defaults_to_config_yaml_and_accepts_short_verbose(
@@ -294,7 +294,7 @@ def test_main_defaults_to_config_yaml_and_accepts_short_verbose(
     assert exit_code == 0
     assert called["verbose"] is True
     assert called["debug"] is False
-    assert '"preflight"' in output
+    assert "Preflight" in output
 
 
 def test_main_debug_enables_debug_instance(monkeypatch, capsys, tmp_path: Path) -> None:
@@ -353,4 +353,4 @@ def test_main_debug_enables_debug_instance(monkeypatch, capsys, tmp_path: Path) 
     assert exit_code == 0
     assert called["verbose"] is True
     assert called["debug"] is True
-    assert '"preflight"' in output
+    assert "Preflight" in output

@@ -86,7 +86,7 @@ def test_console_reporter_serializes_snapshot() -> None:
     assert '"irq_affinity"' in rendered
 
 
-def test_console_reporter_serializes_full_runtime() -> None:
+def test_console_reporter_renders_human_readable_runtime() -> None:
     reporter = ConsoleReporter()
     snapshot = DiscoverySnapshot(
         target=LocalTargetConfig(),
@@ -142,11 +142,20 @@ def test_console_reporter_serializes_full_runtime() -> None:
         expected_variance=0.05,
         warmup_seconds=10,
         guardrail_metrics=("p95_latency",),
-        comparison_output="homepage improved by 3%",
+        comparison_output=(
+            "=== Performance Comparison ===\n"
+            "Workload   |  Baseline (rps) |   Current (rps) |          Change |     Status\n"
+            "--------------------------------------------------------------------------------\n"
+            "homepage   |          374706 |         1085909 |          189.8% | IMPROVED\n"
+        ),
     )
 
     rendered = reporter.render_runtime(snapshot, onboard, runtime_snapshot, baseline)
 
-    assert '"onboard"' in rendered
-    assert '"snapshot"' in rendered
-    assert '"baseline"' in rendered
+    assert "Preflight" in rendered
+    assert "Onboard" in rendered
+    assert "Snapshot" in rendered
+    assert "Baseline" in rendered
+    assert "homepage" in rendered
+    assert "Comparison" in rendered
+    assert "baseline_rps" in rendered

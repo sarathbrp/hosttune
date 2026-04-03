@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from baseline.domain.models import BaselineResult, BenchmarkConfig, WorkloadBenchmarkResult
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
@@ -22,6 +24,7 @@ from preflight.domain.models import (
 from preflight.infrastructure.config_loader import ConfigLoader, LoadedConfig
 from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from snapshot.domain.models import SnapshotResult
+from tune.domain.tune_context import TuneContext
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
 
@@ -257,3 +260,81 @@ def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
     assert preflight_record["payload"]["platform_summary"] == "bare_metal_linux"
     assert onboard_record["stage"] == "onboard"
     assert onboard_record["payload"]["service_name"] == "nginx"
+
+
+def test_instance_builds_tune_context(tmp_path: Path) -> None:
+    class FakeSnapshotRunner:
+        def run(self, service, executor):  # type: ignore[no-untyped-def]
+            _ = service
+            _ = executor
+            return SnapshotResult(
+                service_name="nginx",
+                snapshot_directory="/var/tmp/hosttune/snapshots/nginx",
+                captured_paths=("/etc/nginx/nginx.conf",),
+                runtime_state_output="nginx -T",
+                process_state={"pid_file": "1234"},
+                restore_sequence=("systemctl restart nginx",),
+            )
+
+    class FakeBaselineRunner:
+        def run(self, service, executor, dut_target):  # type: ignore[no-untyped-def]
+            _ = service
+            _ = executor
+            _ = dut_target
+            return BaselineResult(
+                service_name="nginx",
+                benchmark_command="TARGET_HOST=10.1.90.178 /root/hackathon-tools/benchmark.sh hosttune",
+                benchmark_target="10.1.90.178",
+                workload_results=(
+                    WorkloadBenchmarkResult(
+                        workload_name="homepage",
+                        result_path="/root/hackathon-results/hosttune_homepage.json",
+                        requests_per_second=1234.5,
+                        total_requests=9999,
+                        average_latency_ms=4.2,
+                    ),
+                ),
+                expected_variance=0.05,
+                warmup_seconds=10,
+                guardrail_metrics=("p95_latency",),
+                comparison_output="homepage improved by 3%",
+            )
+
+    instance = HostTuneInstance(
+        config_loader=FakeConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: FakeSnapshotRunner(),
+        baseline_runner_factory=lambda benchmark_config: FakeBaselineRunner(),
+        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+
+    instance.load_preflight(Path("config.yaml"))
+    instance.load_onboard(Path("config.yaml"))
+    instance.load_snapshot(Path("config.yaml"))
+    instance.load_baseline(Path("config.yaml"))
+
+    context = instance.build_tune_context()
+
+    assert isinstance(context, TuneContext)
+    assert context.preflight is instance.preflight
+    assert context.onboard is instance.onboard
+    assert context.snapshot is instance.snapshot
+    assert context.baseline is instance.baseline
+    assert context.artifacts is instance.artifacts
+
+
+def test_instance_rejects_incomplete_tune_context(tmp_path: Path) -> None:
+    instance = HostTuneInstance(
+        config_loader=FakeConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda target: object(),  # type: ignore[arg-type]
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+
+    with pytest.raises(ValueError, match="Preflight must be loaded"):
+        instance.build_tune_context()
