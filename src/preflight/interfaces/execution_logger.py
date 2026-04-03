@@ -34,7 +34,8 @@ class VerboseExecutionLogger(ExecutionLogger):
         self._write(f"+++ {name.upper()} +++")
 
     def stage_detail(self, stage: str, message: str) -> None:
-        self._write(f"[{stage}] {message}")
+        for line in message.splitlines() or ("",):
+            self._write(f"[{stage}] {line}")
 
     def command(self, stage: str, command: str) -> None:
         self._write(f"[{stage}] $ {command}")

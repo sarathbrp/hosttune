@@ -40,6 +40,10 @@ class BaselineRunner:
             self._load_workload_result(benchmark_executor, workload_name)
             for workload_name in self.benchmark_config.workloads
         )
+        self.logger.stage_detail(
+            "baseline",
+            self._format_workload_summary(workload_results),
+        )
         self.logger.stage_detail("baseline", "Running baseline comparison")
         comparison_output = self._run_comparison(benchmark_executor)
         return BaselineResult(
@@ -72,7 +76,6 @@ class BaselineRunner:
         benchmark_executor: CommandExecutor,
         workload_name: str,
     ) -> WorkloadBenchmarkResult:
-        self.logger.stage_detail("baseline", f"Reading workload result: {workload_name}")
         result_path = (
             f"{self.benchmark_config.results_directory}/"
             f"{self.benchmark_config.contestant_name}_{workload_name}.json"
@@ -93,7 +96,7 @@ class BaselineRunner:
             result_path=result_path,
             requests_per_second=float(requests.get("per_sec", 0.0)),
             total_requests=int(requests.get("total", 0)),
-            average_latency_ms=float(latency.get("avg", 0.0)),
+            average_latency_ms=self._parse_duration_ms(latency.get("avg", 0.0)),
         )
 
     def _run_comparison(self, benchmark_executor: CommandExecutor) -> str | None:
@@ -109,3 +112,34 @@ class BaselineRunner:
         if command_result.exit_code != 0:
             return command_result.stderr or command_result.stdout
         return command_result.stdout
+
+    def _parse_duration_ms(self, value: object) -> float:
+        if isinstance(value, int | float):
+            return float(value)
+        if not isinstance(value, str):
+            return 0.0
+
+        normalized = value.strip().lower()
+        if normalized.endswith("ms"):
+            return float(normalized.removesuffix("ms"))
+        if normalized.endswith("us"):
+            return float(normalized.removesuffix("us")) / 1000.0
+        if normalized.endswith("s"):
+            return float(normalized.removesuffix("s")) * 1000.0
+        return float(normalized)
+
+    def _format_workload_summary(
+        self,
+        workload_results: tuple[WorkloadBenchmarkResult, ...],
+    ) -> str:
+        header = "Workload summary:"
+        rows = [
+            (
+                f"{result.workload_name:<10} "
+                f"rps={result.requests_per_second:>10.2f} "
+                f"total={result.total_requests:>10} "
+                f"latency_ms={result.average_latency_ms:>8.2f}"
+            )
+            for result in workload_results
+        ]
+        return "\n".join((header, *rows))
