@@ -106,7 +106,7 @@ def test_tune_benchmark_executor_aggregates_median_results() -> None:
         ]
     )
 
-    result = TuneBenchmarkExecutor(run_count=3).run(
+    result = TuneBenchmarkExecutor(run_count=3, sleeper=lambda _seconds: None).run(
         context=context,
         iteration_number=1,
         validation_result=build_validation_result(),
@@ -169,7 +169,7 @@ def test_tune_benchmark_executor_flags_unstable_variance() -> None:
         ]
     )
 
-    result = TuneBenchmarkExecutor(run_count=3).run(
+    result = TuneBenchmarkExecutor(run_count=3, sleeper=lambda _seconds: None).run(
         context=context,
         iteration_number=2,
         validation_result=build_validation_result(),
@@ -178,3 +178,66 @@ def test_tune_benchmark_executor_flags_unstable_variance() -> None:
 
     assert result.stable is False
     assert any(summary.stable is False for summary in result.workload_summaries)
+
+
+def test_tune_benchmark_executor_respects_cooling_period() -> None:
+    context = build_tune_context()
+    executor = BenchmarkExecutorDouble(
+        [
+            {
+                "homepage": {
+                    "results": {
+                        "requests": {"per_sec": 1040.0, "total": 10400},
+                        "latency": {"avg": "2.0ms"},
+                    }
+                },
+                "small": {
+                    "results": {
+                        "requests": {"per_sec": 918.0, "total": 9180},
+                        "latency": {"avg": "1.5ms"},
+                    }
+                },
+            },
+            {
+                "homepage": {
+                    "results": {
+                        "requests": {"per_sec": 1060.0, "total": 10600},
+                        "latency": {"avg": "1.9ms"},
+                    }
+                },
+                "small": {
+                    "results": {
+                        "requests": {"per_sec": 920.0, "total": 9200},
+                        "latency": {"avg": "1.4ms"},
+                    }
+                },
+            },
+            {
+                "homepage": {
+                    "results": {
+                        "requests": {"per_sec": 1050.0, "total": 10500},
+                        "latency": {"avg": "2.1ms"},
+                    }
+                },
+                "small": {
+                    "results": {
+                        "requests": {"per_sec": 922.0, "total": 9220},
+                        "latency": {"avg": "1.6ms"},
+                    }
+                },
+            },
+        ]
+    )
+    sleep_calls: list[float] = []
+
+    TuneBenchmarkExecutor(
+        run_count=3,
+        sleeper=lambda seconds: sleep_calls.append(seconds),
+    ).run(
+        context=context,
+        iteration_number=1,
+        validation_result=build_validation_result(),
+        benchmark_executor=executor,
+    )
+
+    assert sleep_calls == [30, 30]

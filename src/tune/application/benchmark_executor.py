@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 from statistics import median
+from time import sleep
 from typing import Any, cast
 
 from preflight.domain.models import CommandExecutor
@@ -21,6 +23,7 @@ from tune.domain.validation_models import ValidationResult
 class TuneBenchmarkExecutor:
     run_count: int = 3
     logger: ExecutionLogger = NullExecutionLogger()
+    sleeper: Callable[[float], None] = sleep
 
     def run(
         self,
@@ -66,6 +69,16 @@ class TuneBenchmarkExecutor:
                 "tune",
                 self._build_run_summary(run_index, workload_samples),
             )
+            if run_index < self.run_count and context.benchmark_config.cooling_period_seconds > 0:
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Cooling period: "
+                        f"sleeping {context.benchmark_config.cooling_period_seconds}s "
+                        "before next benchmark run"
+                    ),
+                )
+                self.sleeper(context.benchmark_config.cooling_period_seconds)
 
         workload_summaries = tuple(
             self._summarize_workload(

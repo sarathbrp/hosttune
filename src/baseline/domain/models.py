@@ -13,6 +13,7 @@ class BenchmarkConfig:
     results_directory: str
     workloads: tuple[str, ...]
     compare_script_path: str | None
+    cooling_period_seconds: int = 30
 
 
 @dataclass(frozen=True)

@@ -98,6 +98,7 @@ class ConfigLoader:
         results_directory = data.get("results_directory")
         workloads = data.get("workloads")
         compare_script_path = data.get("compare_script_path")
+        cooling_period_seconds = data.get("cooling_period_seconds", 30)
 
         if not isinstance(contestant_name, str) or contestant_name == "":
             msg = "benchmark.contestant_name must be a non-empty string."
@@ -117,6 +118,9 @@ class ConfigLoader:
         if compare_script_path is not None and not isinstance(compare_script_path, str):
             msg = "benchmark.compare_script_path must be a string when provided."
             raise ValueError(msg)
+        if not isinstance(cooling_period_seconds, int) or cooling_period_seconds < 0:
+            msg = "benchmark.cooling_period_seconds must be a non-negative integer."
+            raise ValueError(msg)
 
         return BenchmarkConfig(
             runner_target=self._load_target(runner_data),
@@ -125,4 +129,5 @@ class ConfigLoader:
             results_directory=results_directory,
             workloads=tuple(str(workload) for workload in workloads),
             compare_script_path=compare_script_path,
+            cooling_period_seconds=cooling_period_seconds,
         )

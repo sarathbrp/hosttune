@@ -24,6 +24,7 @@ benchmark:
   script_path: /root/hackathon-tools/benchmark.sh
   compare_script_path: /root/hackathon-tools/compare-results.sh
   results_directory: /root/hackathon-results
+  cooling_period_seconds: 30
   workloads:
     - homepage
     - small

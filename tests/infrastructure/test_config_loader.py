@@ -36,6 +36,7 @@ benchmark:
     assert loaded.benchmark_config is not None
     assert loaded.benchmark_config.contestant_name == "hosttune"
     assert loaded.benchmark_config.runner_target.mode == "local"
+    assert loaded.benchmark_config.cooling_period_seconds == 30
 
 
 def test_loads_ssh_configuration(tmp_path: Path) -> None:
