@@ -21,7 +21,7 @@ from tune.domain.validation_models import ValidationResult
 
 @dataclass
 class TuneBenchmarkExecutor:
-    run_count: int = 3
+    run_count: int = 1
     logger: ExecutionLogger = NullExecutionLogger()
     sleeper: Callable[[float], None] = sleep
 
