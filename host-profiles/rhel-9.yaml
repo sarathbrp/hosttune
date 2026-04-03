@@ -1,0 +1,49 @@
+identity:
+  name: rhel-9
+  platform: rhel
+  version: "9"
+  variant: null   # bare metal
+
+tunable_surface:
+  # NIC queue expansion via ethtool -L combined N.
+  # max_combined=0 means "resolve to logical_cores at catalog build time".
+  # Effective ceiling: min(max_combined_resolved, ethtool-l hardware max).
+  network_queues:
+    min_combined: 1
+    max_combined: 0       # 0 = use logical_cores as ceiling
+    allow_irq_affinity: true
+    priority_tier: high
+    apply_mode: reload    # ethtool -L takes effect immediately; no service restart
+
+  # CPU frequency governor via cpupower frequency-set -g.
+  cpu_governor:
+    allowed_governors: [performance, schedutil, powersave]
+    forbidden_governors: []
+    preferred_governor: performance
+    priority_tier: high
+    apply_mode: reload    # sysfs write; takes effect immediately
+
+  # Host-level sysctls beyond service-specific relevant_sysctls.
+  # These broaden the kernel tuning surface available to the rhel_expert agent.
+  host_sysctls:
+    - name: net.core.rmem_max
+      priority_tier: medium
+      rationale_hint: "System-wide max receive socket buffer; raise for high-BDP flows"
+    - name: net.core.wmem_max
+      priority_tier: medium
+      rationale_hint: "System-wide max send socket buffer; pair with rmem_max"
+    - name: net.ipv4.tcp_rmem
+      priority_tier: medium
+      rationale_hint: "TCP receive buffer auto-tuning range (min default max)"
+    - name: net.ipv4.tcp_wmem
+      priority_tier: medium
+      rationale_hint: "TCP send buffer auto-tuning range (min default max)"
+    - name: net.ipv4.tcp_max_syn_backlog
+      priority_tier: medium
+      rationale_hint: "SYN queue depth; raise alongside somaxconn for burst traffic"
+    - name: net.ipv4.tcp_tw_reuse
+      priority_tier: low
+      rationale_hint: "Allow reuse of TIME_WAIT sockets; reduces ephemeral port exhaustion"
+    - name: vm.swappiness
+      priority_tier: low
+      rationale_hint: "Reduce kernel swap preference to keep latency-sensitive data in RAM"

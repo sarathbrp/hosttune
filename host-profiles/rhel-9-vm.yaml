@@ -1,0 +1,34 @@
+identity:
+  name: rhel-9-vm
+  platform: rhel
+  version: "9"
+  variant: vm
+
+tunable_surface:
+  # VM NICs typically don't support hardware queue count changes.
+  network_queues: null
+
+  # CPU governor may still be tunable inside a VM depending on hypervisor policy.
+  cpu_governor:
+    allowed_governors: [performance, schedutil]
+    forbidden_governors: [powersave]
+    preferred_governor: schedutil
+    priority_tier: medium
+    apply_mode: reload
+
+  host_sysctls:
+    - name: net.core.rmem_max
+      priority_tier: medium
+      rationale_hint: "System-wide max receive socket buffer"
+    - name: net.core.wmem_max
+      priority_tier: medium
+      rationale_hint: "System-wide max send socket buffer"
+    - name: net.ipv4.tcp_rmem
+      priority_tier: medium
+      rationale_hint: "TCP receive buffer auto-tuning range"
+    - name: net.ipv4.tcp_wmem
+      priority_tier: medium
+      rationale_hint: "TCP send buffer auto-tuning range"
+    - name: vm.swappiness
+      priority_tier: low
+      rationale_hint: "Reduce swap preference for latency-sensitive workloads"
