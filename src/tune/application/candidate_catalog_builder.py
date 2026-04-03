@@ -378,19 +378,26 @@ class CandidateCatalogBuilder:
             nq = surface.network_queues
             pkey = "network.queue.combined"
             current_queues = context.preflight.network.combined_queues
-            # Resolve max: 0 means "use logical_cores"
-            hardware_max = nq.max_combined or context.preflight.cpu.logical_cores
+            # Resolve max: 0 = use logical_cores; always cap against the NIC's
+            # actual hardware preset maximum read live from ethtool -l.
+            yaml_max = nq.max_combined or context.preflight.cpu.logical_cores
+            hardware_max = yaml_max  # will be overridden if executor is available
+            current_val: str | None = str(current_queues) if executor else None
+            if executor:
+                iface = shlex.quote(context.preflight.network.interface_name)
+                ethtool_result = executor.run(
+                    f"ethtool -l {iface} 2>/dev/null | "
+                    "awk '/Pre-set maximums/{found=1} found && /Combined/{print $2; exit}'"
+                )
+                if ethtool_result.exit_code == 0 and ethtool_result.stdout.strip().isdigit():
+                    hardware_max = min(yaml_max, int(ethtool_result.stdout.strip()))
+                current_result = executor.run(
+                    f"ethtool -l {iface} 2>/dev/null | "
+                    "awk '/Current hardware settings/{found=1} found && /Combined/{print $2; exit}'"
+                )
+                if current_result.exit_code == 0 and current_result.stdout.strip().isdigit():
+                    current_val = current_result.stdout.strip()
             if hardware_max > current_queues:
-                current_val: str | None = str(current_queues) if executor else None
-                if executor:
-                    iface = shlex.quote(context.preflight.network.interface_name)
-                    result = executor.run(
-                        f"ethtool -l {iface} 2>/dev/null | "
-                        "awk '/Current hardware settings/{found=1} "
-                        "found && /Combined/{print $2; exit}'"
-                    )
-                    if result.exit_code == 0 and result.stdout.strip().isdigit():
-                        current_val = result.stdout.strip()
                 candidates.append(
                     CandidateParameter(
                         parameter_key=pkey,
@@ -406,7 +413,7 @@ class CandidateCatalogBuilder:
                         min_value=nq.min_combined,
                         max_value=hardware_max,
                         rationale_hint=(
-                            f"NIC has {hardware_max} max combined queues; "
+                            f"NIC hardware max combined queues={hardware_max}; "
                             f"currently {current_queues} — expand to parallelize packet processing"
                         ),
                         current_value=current_val,
