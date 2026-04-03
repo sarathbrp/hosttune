@@ -4,18 +4,25 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
+from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.domain.hypothesis_context import HypothesisContext
-from tune.domain.hypothesis_models import CandidateParameter, TuningHypothesis
+from tune.domain.hypothesis_models import (
+    CandidateParameter,
+    ModelCompletion,
+    TunePhase,
+    TuningHypothesis,
+)
 
 
 class HypothesisModelClient(Protocol):
-    def complete(self, prompt: str) -> str:
-        """Return a serialized hypothesis proposal."""
+    def complete(self, prompt: str) -> ModelCompletion:
+        """Return a serialized hypothesis proposal plus optional model usage."""
 
 
 @dataclass
 class HypothesisPromptBuilder:
     def build(self, context: HypothesisContext) -> str:
+        tune_context = context.tune_context
         candidate_lines = [
             (
                 f"- key={candidate.parameter_key}; "
@@ -42,11 +49,79 @@ class HypothesisPromptBuilder:
             )
             for record in context.history
         ]
+        capability_lines = [
+            f"- {flag.name}: {flag.detail}"
+            for flag in tune_context.preflight.capability_map.flags
+            if flag.available
+        ]
+        workload_lines = [
+            (
+                f"- {workload.workload_name}: "
+                f"rps={workload.requests_per_second:.2f}; "
+                f"latency_ms={workload.average_latency_ms:.2f}; "
+                f"total={workload.total_requests}"
+            )
+            for workload in tune_context.baseline.workload_results
+        ]
+        phase_objective = self._phase_objective(context.phase)
+        best_config = (
+            ", ".join(f"{key}={value}" for key, value in context.best_parameter_values) or "none"
+        )
+        active_changes = ", ".join(context.active_parameter_keys) or "none"
+        allowed_directives = ", ".join(
+            sorted(tune_context.onboard.service.tunable_surface.allowed_directives)
+        )
+        relevant_sysctls = ", ".join(tune_context.onboard.service.tunable_surface.relevant_sysctls)
+        guardrails = ", ".join(tune_context.onboard.service.benchmark_hints.guardrail_metrics)
+        interference = ", ".join(tune_context.onboard.service.benchmark_hints.interference_sources)
         sections = [
-            "You must select exactly one candidate parameter from the allowed list.",
-            "Return JSON with keys: parameter_key, proposed_value, rationale.",
+            "You are the hypothesis generator for HostTune.",
+            "Select exactly one candidate parameter from the allowed list.",
+            "Do not invent parameters, values, or apply modes outside the candidate list.",
+            "Prefer unexplored or promising regions based on prior history and current phase.",
+            "Return strict JSON with keys: parameter_key, proposed_value, rationale.",
             f"Current phase: {context.phase.value}",
+            f"Phase objective: {phase_objective}",
             f"Iteration number: {context.iteration_number}",
+            "Preflight summary:",
+            f"- platform={tune_context.preflight.platform_summary}",
+            (
+                "- cpu="
+                f"{tune_context.preflight.cpu.logical_cores} logical cores; "
+                f"numa_nodes={tune_context.preflight.cpu.numa_nodes}; "
+                f"hyperthreading={tune_context.preflight.cpu.hyperthreading_enabled}"
+            ),
+            (
+                "- memory="
+                f"swap_kib={tune_context.preflight.memory.swap_total_kib}; "
+                f"hugepages_total={tune_context.preflight.memory.hugepages_total}; "
+                f"thp={tune_context.preflight.memory.transparent_hugepages_mode}"
+            ),
+            (
+                "- network="
+                f"{tune_context.preflight.network.interface_name}; "
+                f"driver={tune_context.preflight.network.driver_name}; "
+                f"queues={tune_context.preflight.network.combined_queues}"
+            ),
+            "Available tunable surfaces:",
+            *(capability_lines or ["- none"]),
+            "Service contract summary:",
+            f"- service={tune_context.onboard.service_name}",
+            f"- allowed_directives={allowed_directives or 'none'}",
+            f"- relevant_sysctls={relevant_sysctls or 'none'}",
+            f"- health_probe={tune_context.onboard.service.health_check.probe_type.value}",
+            f"- primary_metric={tune_context.onboard.service.benchmark_hints.primary_metric}",
+            f"- guardrails={guardrails or 'none'}",
+            f"- interference_sources={interference or 'none'}",
+            "Baseline summary:",
+            f"- target={tune_context.baseline.benchmark_target}",
+            f"- expected_variance={tune_context.baseline.expected_variance:.2%}",
+            f"- warmup_seconds={tune_context.baseline.warmup_seconds}",
+            "Baseline workloads:",
+            *(workload_lines or ["- none"]),
+            "Current tune state:",
+            f"- active_changes={active_changes}",
+            f"- best_config={best_config}",
             "Allowed candidates:",
             *candidate_lines,
             "Prior hypothesis history:",
@@ -54,16 +129,31 @@ class HypothesisPromptBuilder:
         ]
         return "\n".join(sections)
 
+    def _phase_objective(self, phase: TunePhase) -> str:
+        objectives = {
+            TunePhase.WIDE_SWEEP: "Explore broadly across domains with maximum diversity.",
+            TunePhase.DOMAIN_FOCUS: "Focus on domains that have shown positive signal.",
+            TunePhase.INTERACTION: "Explore interactions between promising parameters.",
+            TunePhase.BOUNDARY_PUSH: "Push promising parameters toward safe limits.",
+            TunePhase.EXPLOIT: "Refine around the current best configuration.",
+            TunePhase.REBOOT_BATCH: "Batch deferred reboot-required changes if any exist.",
+        }
+        return objectives[phase]
+
 
 @dataclass
 class LlmHypothesisGenerator:
     model_client: HypothesisModelClient
     prompt_builder: HypothesisPromptBuilder
+    logger: ExecutionLogger = NullExecutionLogger()
 
     def generate(self, context: HypothesisContext) -> TuningHypothesis:
         prompt = self.prompt_builder.build(context)
+        self._debug_log("LLM prompt", prompt)
         response = self.model_client.complete(prompt)
-        payload = json.loads(response)
+        self._debug_log("LLM raw response", response.content)
+        payload = json.loads(response.content)
+        self._debug_log("LLM parsed payload", json.dumps(payload, sort_keys=True))
         parameter_key = self._require_string(payload, "parameter_key")
         proposed_value = self._require_string(payload, "proposed_value")
         rationale = self._require_string(payload, "rationale")
@@ -78,7 +168,14 @@ class LlmHypothesisGenerator:
             source=candidate.source,
             apply_mode=candidate.apply_mode,
             rationale=rationale,
+            model_usage=response.usage,
         )
+
+    def _debug_log(self, title: str, content: str) -> None:
+        if not self.logger.debug_enabled():
+            return
+        self.logger.stage_detail("tune", f"{title}:")
+        self.logger.stage_detail("tune", content)
 
     def _find_candidate(
         self,
@@ -144,6 +241,7 @@ class DeterministicHypothesisGenerator:
                     "Deterministic fallback selected the first untried allowed candidate "
                     f"for phase {context.phase.value}"
                 ),
+                model_usage=None,
             )
         msg = "No untried candidates remain for the current phase."
         raise ValueError(msg)

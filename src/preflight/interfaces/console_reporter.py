@@ -154,6 +154,21 @@ class ConsoleReporter:
             return ""
 
         accepted = sum(1 for item in tune.history if item.status is HypothesisStatus.ACCEPTED)
+        input_tokens = sum(
+            record.hypothesis.model_usage.input_tokens
+            for record in tune.iteration_records
+            if record.hypothesis.model_usage is not None
+        )
+        output_tokens = sum(
+            record.hypothesis.model_usage.output_tokens
+            for record in tune.iteration_records
+            if record.hypothesis.model_usage is not None
+        )
+        total_tokens = sum(
+            record.hypothesis.model_usage.total_tokens
+            for record in tune.iteration_records
+            if record.hypothesis.model_usage is not None
+        )
         best_config = "none"
         best_score = "n/a"
         if tune.best_configuration is not None:
@@ -173,6 +188,10 @@ class ConsoleReporter:
                 f"  Iterations: {tune.total_iterations}",
                 f"  Accepted hypotheses: {accepted}",
                 f"  Active changes: {active}",
+                (
+                    f"  Model tokens: input={input_tokens} "
+                    f"output={output_tokens} total={total_tokens}"
+                ),
                 f"  Best score: {best_score}",
                 f"  Best config: {best_config}",
                 f"  Drift detected: {tune.drift_detected}",

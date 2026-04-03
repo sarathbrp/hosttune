@@ -69,8 +69,11 @@ def test_nginx_directive_applier_builds_apply_and_rollback() -> None:
     assert applied.target_path == "/etc/nginx/nginx.conf"
     assert applied.previous_value == "112"
     assert applied.applied_value == "56"
-    assert "perl -0pi -e" in applied.apply_command
-    assert "worker_processes 112;" in applied.rollback_command
+    assert applied.apply_command.startswith("python3 -c ")
+    assert applied.rollback_command.startswith("python3 -c ")
+    assert applied.rollback_command.endswith(
+        "/etc/nginx/nginx.conf worker_processes 112"
+    )
 
 
 def test_apply_coordinator_routes_by_parameter_prefix() -> None:

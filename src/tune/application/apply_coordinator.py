@@ -113,11 +113,28 @@ class NginxDirectiveApplier:
         directive_name: str,
         directive_value: str,
     ) -> str:
-        escaped_name = re.escape(directive_name)
-        replacement = f"{directive_name} {directive_value};"
-        escaped_replacement = replacement.replace("\\", "\\\\").replace("/", "\\/")
-        perl_expr = f"s/^\\s*{escaped_name}\\s+[^;]+;/{escaped_replacement}/m"
-        return f"perl -0pi -e {shlex.quote(perl_expr)} {shlex.quote(config_path)}"
+        python_script = (
+            "import pathlib,re,sys; "
+            "path=pathlib.Path(sys.argv[1]); "
+            "name=sys.argv[2]; "
+            "value=sys.argv[3]; "
+            "text=path.read_text(); "
+            "pattern=rf'(?m)^\\s*{re.escape(name)}\\s+[^;]+;'; "
+            "replacement=f'{name} {value};'; "
+            "updated,count=re.subn(pattern,replacement,text); "
+            "count or sys.exit('directive not found'); "
+            "path.write_text(updated)"
+        )
+        return " ".join(
+            (
+                "python3",
+                "-c",
+                shlex.quote(python_script),
+                shlex.quote(config_path),
+                shlex.quote(directive_name),
+                shlex.quote(directive_value),
+            )
+        )
 
 
 @dataclass

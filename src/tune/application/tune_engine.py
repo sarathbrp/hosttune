@@ -117,13 +117,20 @@ class TuneEngine:
         started_timer = perf_counter()
         hypothesis = self.hypothesis_generator.generate(
             HypothesisContext(
+                tune_context=context,
                 phase=phase,
                 iteration_number=iteration_number,
                 candidates=candidates,
                 history=tuple(state.history),
+                active_parameter_keys=tuple(sorted(state.active_changes)),
+                best_parameter_values=(
+                    tuple(sorted(state.best_configuration.parameter_values.items()))
+                    if state.best_configuration is not None
+                    else ()
+                ),
             )
         )
-        self._log_hypothesis(hypothesis)
+        self._log_hypothesis(hypothesis, state)
         applied_change = self.apply_coordinator.apply(context, hypothesis, target_executor)
         self.logger.stage_detail(
             "tune",
@@ -206,7 +213,11 @@ class TuneEngine:
             return HypothesisStatus.REJECTED
         return HypothesisStatus.INCONCLUSIVE
 
-    def _log_hypothesis(self, hypothesis: TuningHypothesis) -> None:
+    def _log_hypothesis(
+        self,
+        hypothesis: TuningHypothesis,
+        state: TuneState,
+    ) -> None:
         self.logger.stage_detail(
             "tune",
             (
@@ -217,6 +228,35 @@ class TuneEngine:
                 f"reason={hypothesis.rationale}"
             ),
         )
+        if hypothesis.model_usage is not None:
+            cumulative_input = hypothesis.model_usage.input_tokens + sum(
+                record.hypothesis.model_usage.input_tokens
+                for record in state.iteration_records
+                if record.hypothesis.model_usage is not None
+            )
+            cumulative_output = hypothesis.model_usage.output_tokens + sum(
+                record.hypothesis.model_usage.output_tokens
+                for record in state.iteration_records
+                if record.hypothesis.model_usage is not None
+            )
+            cumulative_total = hypothesis.model_usage.total_tokens + sum(
+                record.hypothesis.model_usage.total_tokens
+                for record in state.iteration_records
+                if record.hypothesis.model_usage is not None
+            )
+            self.logger.stage_detail(
+                "tune",
+                (
+                    "Hypothesis tokens: "
+                    f"model={hypothesis.model_usage.model_name} "
+                    f"input={hypothesis.model_usage.input_tokens} "
+                    f"output={hypothesis.model_usage.output_tokens} "
+                    f"total={hypothesis.model_usage.total_tokens} "
+                    f"cumulative_input={cumulative_input} "
+                    f"cumulative_output={cumulative_output} "
+                    f"cumulative_total={cumulative_total}"
+                ),
+            )
 
     def _log_validation(self, validation_result: ValidationResult) -> None:
         passed_checks = sum(1 for check in validation_result.checks if check.passed)

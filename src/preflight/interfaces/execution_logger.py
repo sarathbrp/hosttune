@@ -21,6 +21,10 @@ class ExecutionLogger:
     def artifact_written(self, stage: str, path: str) -> None:
         """Log that a stage artifact was written."""
 
+    def debug_enabled(self) -> bool:
+        """Return whether debug-only logs should be emitted."""
+        return False
+
 
 class NullExecutionLogger(ExecutionLogger):
     pass
@@ -53,5 +57,8 @@ class VerboseExecutionLogger(ExecutionLogger):
 
 @dataclass
 class DebugExecutionLogger(VerboseExecutionLogger):
+    def debug_enabled(self) -> bool:
+        return True
+
     def command(self, stage: str, command: str) -> None:
         self._write(f"[{stage}] $ {command}")

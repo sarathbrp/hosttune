@@ -151,7 +151,7 @@ def build_baseline_runner(
 def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
-        hypothesis_generator = build_langgraph_hypothesis_generator()
+        hypothesis_generator = build_langgraph_hypothesis_generator(logger=execution_logger)
         execution_logger.stage_detail("tune", "Using LangGraph-backed hypothesis generation.")
     except (ImportError, ModuleNotFoundError, ValueError) as error:
         execution_logger.stage_detail(

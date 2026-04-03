@@ -33,6 +33,20 @@ class HypothesisStatus(StrEnum):
 
 
 @dataclass(frozen=True)
+class ModelUsage:
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+@dataclass(frozen=True)
+class ModelCompletion:
+    content: str
+    usage: ModelUsage | None = None
+
+
+@dataclass(frozen=True)
 class CandidateParameter:
     parameter_key: str
     domain: str
@@ -56,6 +70,7 @@ class TuningHypothesis:
     source: CandidateSource
     apply_mode: ApplyMode
     rationale: str
+    model_usage: ModelUsage | None = None
 
 
 @dataclass(frozen=True)
