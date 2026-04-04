@@ -1,10 +1,9 @@
 import json
 from dataclasses import replace
-from typing import cast
+from pathlib import Path
 
 import pytest
 
-from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.interfaces.execution_logger import DebugExecutionLogger, VerboseExecutionLogger
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.hypothesis_generator import (
@@ -12,6 +11,7 @@ from tune.application.hypothesis_generator import (
     HypothesisPromptBuilder,
     LlmHypothesisGenerator,
 )
+from tune.application.rule_based_triage import RuleBasedTriage, TriageRulesLoader
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateAvailability,
@@ -23,8 +23,10 @@ from tune.domain.hypothesis_models import (
 )
 from tune.domain.tuning_layer import TuningLayer
 
-from tests.onboard.test_service_definition_validator import build_valid_definition
 from tests.tune.test_candidate_catalog_builder import FakeExecutor, build_tune_context
+
+
+RULES_PATH = Path("triage-rules.yaml")
 
 
 class FakeModelClient:
@@ -32,31 +34,22 @@ class FakeModelClient:
         self._response = response
 
     def complete(self, context: HypothesisContext) -> ModelCompletion:
-        # Build the full monolithic prompt to validate its contents.
-        prompt = HypothesisPromptBuilder().build(context)
-        assert "Selectable candidates (this phase):" in prompt
-        assert "Deferred candidates" in prompt
-        assert "Context policy:" in prompt
-        assert "Preflight digest" in prompt
-        assert "Onboard service contract" in prompt
-        assert "Baseline digest" in prompt
-        assert "Last benchmark runtime telemetry digest" in prompt
-        assert "kernel_sysctl_profile=" in prompt
-        assert "Current tune state:" in prompt
+        prompt = HypothesisPromptBuilder(
+            triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH))
+        ).build(context)
+        assert "Rule-based triage result:" in prompt
+        assert "Selected runtime config snippet:" in prompt
+        assert "Selected service YAML reference snippet:" in prompt
+        assert "safe_candidate_subset=" in prompt
+        assert "suppressed_candidates=" in prompt
+        assert "Output rules:" in prompt
+        assert "choose exactly one selectable candidate" in prompt
         assert "current=112" in prompt
         assert "forbidden=" not in prompt
         assert "priority=high" in prompt
-        assert "runtime_limits=nofile_soft" in prompt
-        assert "systemd_unit_limits=limit_nofile, limit_nproc" in prompt
-        assert "cgroup_resource_controls=cpu_quota_percent, memory_max_mib" in prompt
-        assert "Limit baselines" in prompt
-        assert "runtime.prlimit.nofile_soft" in prompt
         assert "systemd.unit.limit_nproc" in prompt
-        assert "Snapshot digest" in prompt
-        assert "nginx -T" in prompt
-        assert "process_state" in prompt
         return ModelCompletion(
-            content=json.dumps([self._response]),
+            content=json.dumps(self._response),
             usage=ModelUsage(
                 model_name="/models/test-model",
                 input_tokens=120,
@@ -91,50 +84,25 @@ def build_hypothesis_context() -> HypothesisContext:
     )
 
 
-def test_hypothesis_prompt_lists_deferred_sysctl_when_kernel_network_reboot() -> None:
-    data = build_valid_definition()
-    restart = cast(dict[str, object], data["restart"])
-    categories = cast(dict[str, object], restart["change_categories"])
-    restart = {
-        **restart,
-        "change_categories": {**categories, "kernel_network": "reboot"},
+def _valid_response(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "parameter_key": "service.directive.worker_processes",
+        "proposed_value": "56",
+        "tuning_layer": "service",
+        "apply_mode": "reload",
+        "rationale": "Match worker count to a balanced subset of logical cores.",
+        "expected_benchmark_impact": "Moderate RPS uplift on homepage and small workloads.",
+        "rollback_plan": "Restore worker_processes to the previous nginx.conf value and reload.",
     }
-    data = {**data, "restart": restart}
-    service = ServiceDefinitionValidator().validate(data)
-    base = build_tune_context()
-    ctx = replace(base, onboard=replace(base.onboard, service=service))
-    built = CandidateCatalogBuilder().build(ctx, FakeExecutor())
-    deferred = [c for c in built if c.availability is CandidateAvailability.DEFERRED]
-    assert deferred
-    assert any(c.parameter_key == "sysctl.net.core.somaxconn" for c in deferred)
-    active_only = tuple(c for c in built if c.availability is CandidateAvailability.ACTIVE)
-    assert not any(c.parameter_key == "sysctl.net.core.somaxconn" for c in active_only)
-    hctx = HypothesisContext(
-        tune_context=ctx,
-        phase=TunePhase.WIDE_SWEEP,
-        iteration_number=1,
-        candidates=active_only,
-        deferred_candidates=tuple(deferred),
-        history=(),
-        active_parameter_keys=(),
-        best_parameter_values=(),
-    )
-    prompt = HypothesisPromptBuilder().build(hctx)
-    assert "availability=deferred" in prompt
-    assert "sysctl.net.core.somaxconn" in prompt
+    payload.update(overrides)
+    return payload
 
 
 def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
     context = build_hypothesis_context()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.worker_processes",
-                "proposed_value": "56",
-                "rationale": "Match worker count to a balanced subset of logical cores.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response()),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
     hypotheses = generator.generate(context)
@@ -146,20 +114,16 @@ def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
     assert hypothesis.tuning_layer is TuningLayer.SERVICE
     assert hypothesis.model_usage is not None
     assert hypothesis.model_usage.input_tokens == 120
+    assert hypothesis.expected_benchmark_impact is not None
+    assert hypothesis.rollback_plan is not None
 
 
 def test_llm_hypothesis_generator_logs_prompt_and_response_in_debug() -> None:
     context = build_hypothesis_context()
     logger = CaptureDebugLogger()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.worker_processes",
-                "proposed_value": "56",
-                "rationale": "Match worker count to a balanced subset of logical cores.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response()),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
         logger=logger,
     )
 
@@ -173,14 +137,8 @@ def test_llm_hypothesis_generator_logs_prompt_and_response_in_debug() -> None:
 def test_llm_hypothesis_generator_does_not_log_prompt_in_verbose() -> None:
     context = build_hypothesis_context()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.worker_processes",
-                "proposed_value": "56",
-                "rationale": "Match worker count to a balanced subset of logical cores.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response()),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
         logger=VerboseExecutionLogger(),
     )
 
@@ -193,75 +151,96 @@ def test_llm_hypothesis_generator_does_not_log_prompt_in_verbose() -> None:
 def test_llm_hypothesis_generator_rejects_unknown_parameter() -> None:
     context = build_hypothesis_context()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.unknown_knob",
-                "proposed_value": "1",
-                "rationale": "Try something unsupported.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response(parameter_key="service.directive.unknown_knob")),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
-    with pytest.raises(ValueError, match="invalid or empty"):
+    with pytest.raises(ValueError, match="unsupported parameter_key"):
         generator.generate(context)
 
 
 def test_llm_hypothesis_generator_rejects_noop_value() -> None:
     context = build_hypothesis_context()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.worker_processes",
-                "proposed_value": "112",
-                "rationale": "Repeat the current value.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response(proposed_value="112")),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
-    with pytest.raises(ValueError, match="invalid or empty"):
+    with pytest.raises(ValueError, match="no-op value"):
         generator.generate(context)
 
 
-def test_llm_hypothesis_generator_passes_forbidden_value_to_pre_apply_gate() -> None:
-    """Forbidden values are not shown in the prompt; PreApplyValidator rejects them."""
+def test_llm_hypothesis_generator_rejects_array_payload() -> None:
+    context = build_hypothesis_context()
+
+    class ArrayModelClient:
+        def complete(self, context: HypothesisContext) -> ModelCompletion:
+            _ = context
+            return ModelCompletion(content=json.dumps([_valid_response()]))
+
+    generator = LlmHypothesisGenerator(model_client=ArrayModelClient())
+
+    with pytest.raises(ValueError, match="exactly one JSON object"):
+        generator.generate(context)
+
+
+def test_llm_hypothesis_generator_rejects_mismatched_layer() -> None:
     context = build_hypothesis_context()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.sendfile",
-                "proposed_value": "off",
-                "rationale": "Try a known-bad setting.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response(tuning_layer="kernel")),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
-    hypotheses = generator.generate(context)
-    hypothesis = hypotheses[0]
-
-    assert hypothesis.parameter_key == "service.directive.sendfile"
-    assert hypothesis.proposed_value == "off"
+    with pytest.raises(ValueError, match="mismatched tuning_layer"):
+        generator.generate(context)
 
 
 def test_llm_hypothesis_generator_accepts_numeric_proposed_value() -> None:
     context = build_hypothesis_context()
     generator = LlmHypothesisGenerator(
-        model_client=FakeModelClient(
-            {
-                "parameter_key": "service.directive.worker_processes",
-                "proposed_value": 56,
-                "rationale": "Return a numeric JSON value.",
-            }
-        ),
-
+        model_client=FakeModelClient(_valid_response(proposed_value=56)),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
     hypotheses = generator.generate(context)
     hypothesis = hypotheses[0]
 
     assert hypothesis.proposed_value == "56"
+
+
+def test_llm_hypothesis_generator_short_circuits_for_autofix() -> None:
+    base = build_hypothesis_context()
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=tuple(
+            replace(candidate, current_value="off")
+            if candidate.parameter_key == "service.directive.sendfile"
+            else candidate
+            for candidate in base.candidates
+        ),
+        deferred_candidates=base.deferred_candidates,
+        history=base.history,
+        active_parameter_keys=base.active_parameter_keys,
+        best_parameter_values=base.best_parameter_values,
+    )
+
+    class FailIfCalledModelClient:
+        def complete(self, context: HypothesisContext) -> ModelCompletion:
+            _ = context
+            raise AssertionError("LLM should not be called for autofix")
+
+    generator = LlmHypothesisGenerator(
+        model_client=FailIfCalledModelClient(),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
+    )
+
+    hypothesis = generator.generate(context)[0]
+
+    assert hypothesis.parameter_key == "service.directive.sendfile"
+    assert hypothesis.proposed_value == "on"
+    assert hypothesis.model_usage is None
 
 
 def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:

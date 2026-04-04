@@ -112,6 +112,14 @@ class ApplyCoordinator:
 
 @dataclass
 class NginxDirectiveApplier:
+    _MAIN_CONTEXT_DIRECTIVES = frozenset(
+        {"worker_processes", "worker_rlimit_nofile", "worker_cpu_affinity"}
+    )
+    _EVENTS_CONTEXT_DIRECTIVES = frozenset({"worker_connections", "multi_accept"})
+    _HTTP_CONTEXT_DIRECTIVES = frozenset(
+        {"access_log", "sendfile", "keepalive_timeout", "keepalive_requests"}
+    )
+
     def apply(
         self,
         context: TuneContext,
@@ -124,19 +132,39 @@ class NginxDirectiveApplier:
             config_path=config_path,
             directive_name=hypothesis.parameter_name,
         )
-        apply_command = self._build_replace_command(
-            config_path=config_path,
-            directive_name=hypothesis.parameter_name,
-            directive_value=hypothesis.proposed_value,
+        was_present = current_value is not None
+        apply_command = (
+            self._build_replace_command(
+                config_path=config_path,
+                directive_name=hypothesis.parameter_name,
+                directive_value=hypothesis.proposed_value,
+            )
+            if was_present
+            else self._build_insert_command(
+                config_path=config_path,
+                directive_name=hypothesis.parameter_name,
+                directive_value=hypothesis.proposed_value,
+            )
         )
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
-            msg = f"Failed to apply nginx directive: {apply_result.stderr or apply_result.stdout}"
+            operation = "insert" if not was_present else "replace"
+            msg = (
+                f"Failed to {operation} nginx directive {hypothesis.parameter_name!r} "
+                f"in {config_path}: {apply_result.stderr or apply_result.stdout}"
+            )
             raise ValueError(msg)
-        restore_command = self._build_replace_command(
-            config_path=config_path,
-            directive_name=hypothesis.parameter_name,
-            directive_value=current_value,
+        restore_command = (
+            self._build_replace_command(
+                config_path=config_path,
+                directive_name=hypothesis.parameter_name,
+                directive_value=current_value,
+            )
+            if was_present
+            else self._build_delete_command(
+                config_path=config_path,
+                directive_name=hypothesis.parameter_name,
+            )
         )
         # Reload/restart nginx so the edited config takes effect before benchmarking.
         service_cmd = _service_reload_command(context, hypothesis.apply_mode)
@@ -144,10 +172,16 @@ class NginxDirectiveApplier:
             reload_result = executor.run(service_cmd)
             if reload_result.exit_code != 0:
                 # Restore the config file before raising so we don't leave a broken state.
-                executor.run(restore_command)
+                restore_result = executor.run(restore_command)
+                restore_note = ""
+                if restore_result.exit_code != 0:
+                    restore_note = (
+                        f" WARNING: config rollback also failed: "
+                        f"{restore_result.stderr or restore_result.stdout}"
+                    )
                 msg = (
                     f"nginx directive applied but service {hypothesis.apply_mode.value} failed: "
-                    f"{reload_result.stderr or reload_result.stdout}"
+                    f"{reload_result.stderr or reload_result.stdout}{restore_note}"
                 )
                 raise ValueError(msg)
             full_apply_command = f"{apply_command} && {service_cmd}"
@@ -158,7 +192,7 @@ class NginxDirectiveApplier:
         return AppliedChange(
             hypothesis=hypothesis,
             target_path=config_path,
-            previous_value=current_value,
+            previous_value=current_value if current_value is not None else "__absent__",
             applied_value=hypothesis.proposed_value,
             apply_mode=hypothesis.apply_mode,
             apply_command=full_apply_command,
@@ -177,12 +211,8 @@ class NginxDirectiveApplier:
         executor: CommandExecutor,
         config_path: str,
         directive_name: str,
-    ) -> str:
-        parsed = grep_directive_from_config_file(executor, config_path, directive_name)
-        if parsed is None:
-            msg = f"Directive {directive_name} not found in {config_path}"
-            raise ValueError(msg)
-        return parsed
+    ) -> str | None:
+        return grep_directive_from_config_file(executor, config_path, directive_name)
 
     def _build_replace_command(
         self,
@@ -210,6 +240,107 @@ class NginxDirectiveApplier:
                 shlex.quote(config_path),
                 shlex.quote(directive_name),
                 shlex.quote(directive_value),
+            )
+        )
+
+    def _directive_context(self, directive_name: str) -> str:
+        if directive_name in self._MAIN_CONTEXT_DIRECTIVES:
+            return "main"
+        if directive_name in self._EVENTS_CONTEXT_DIRECTIVES:
+            return "events"
+        if directive_name in self._HTTP_CONTEXT_DIRECTIVES:
+            return "http"
+        msg = f"Directive {directive_name!r} has no known insertion context"
+        raise ValueError(msg)
+
+    def _build_insert_command(
+        self,
+        config_path: str,
+        directive_name: str,
+        directive_value: str,
+    ) -> str:
+        context_name = self._directive_context(directive_name)
+        python_script = (
+            "import pathlib,sys; "
+            "path=pathlib.Path(sys.argv[1]); "
+            "name=sys.argv[2]; "
+            "value=sys.argv[3]; "
+            "context=sys.argv[4]; "
+            "lines=path.read_text().splitlines(); "
+            "entry=f'{name} {value};'; "
+            "def block_bounds(block):\n"
+            "    start=None; depth=0\n"
+            "    for idx,line in enumerate(lines):\n"
+            "        stripped=line.strip()\n"
+            "        if start is None and stripped.startswith(f'{block} {{'):\n"
+            "            start=idx; depth=stripped.count('{')-stripped.count('}')\n"
+            "            continue\n"
+            "        if start is not None:\n"
+            "            depth += line.count('{')-line.count('}')\n"
+            "            if depth==0:\n"
+            "                return start, idx\n"
+            "    return None\n"
+            "if context=='main':\n"
+            "    markers=('events {','http {')\n"
+            "    insert_at=next("
+            "(i for i,line in enumerate(lines) "
+            "if line.strip().startswith(markers)), None)\n"
+            "    if insert_at is None:\n"
+            "        sys.exit('main-context markers (events/http) not found in config')\n"
+            "    lines.insert(insert_at, entry)\n"
+            "else:\n"
+            "    bounds=block_bounds(context)\n"
+            "    bounds or sys.exit('directive context not found')\n"
+            "    start,end=bounds\n"
+            "    indent='    '\n"
+            "    for probe in lines[start+1:end]:\n"
+            "        stripped=probe.strip()\n"
+            "        if stripped:\n"
+            "            indent=probe[:len(probe)-len(probe.lstrip())] or '    '\n"
+            "            break\n"
+            "    lines.insert(end, f'{indent}{entry}')\n"
+            "path.write_text('\\n'.join(lines)+'\\n')"
+        )
+        return " ".join(
+            (
+                "python3",
+                "-c",
+                shlex.quote(python_script),
+                shlex.quote(config_path),
+                shlex.quote(directive_name),
+                shlex.quote(directive_value),
+                shlex.quote(context_name),
+            )
+        )
+
+    def _build_delete_command(
+        self,
+        config_path: str,
+        directive_name: str,
+    ) -> str:
+        python_script = (
+            "import pathlib,re,sys; "
+            "path=pathlib.Path(sys.argv[1]); "
+            "name=sys.argv[2]; "
+            "lines=path.read_text().splitlines(); "
+            "pattern=re.compile(rf'^\\s*{re.escape(name)}\\s+[^;]+;\\s*$'); "
+            "removed=False; "
+            "out=[]; "
+            "for line in lines:\n"
+            "    if (not removed) and pattern.match(line):\n"
+            "        removed=True\n"
+            "        continue\n"
+            "    out.append(line)\n"
+            "removed or sys.exit('directive not found'); "
+            "path.write_text('\\n'.join(out)+'\\n')"
+        )
+        return " ".join(
+            (
+                "python3",
+                "-c",
+                shlex.quote(python_script),
+                shlex.quote(config_path),
+                shlex.quote(directive_name),
             )
         )
 

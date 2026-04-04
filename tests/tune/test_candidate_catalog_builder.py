@@ -139,6 +139,8 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
 
     candidate_keys = {candidate.parameter_key for candidate in candidates}
     assert "service.directive.worker_processes" in candidate_keys
+    assert "service.directive.multi_accept" in candidate_keys
+    assert "service.directive.worker_cpu_affinity" in candidate_keys
     assert "sysctl.net.core.somaxconn" in candidate_keys
     assert "sysctl.net.ipv4.ip_local_port_range" in candidate_keys
     assert "network.ring.rx" in candidate_keys

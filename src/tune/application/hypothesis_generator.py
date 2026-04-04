@@ -5,24 +5,12 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
-from tune.application.benchmark_runtime_telemetry import (
-    format_runtime_telemetry_digest,
-    truncate_for_prompt,
-)
-from tune.application.hypothesis_prompt_layer import (
-    format_baseline_digest_lines,
-    format_candidate_line_for_llm,
-    format_contract_digest_lines,
-    format_limit_baseline_lines,
-    format_preflight_digest_lines,
-    hypothesis_prompt_layer_preamble,
-)
-from tune.application.snapshot_prompt_digest import format_snapshot_digest_for_prompt
+from tune.application.hypothesis_prompt_layer import format_hybrid_hypothesis_prompt
+from tune.application.rule_based_triage import RuleBasedTriage
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateParameter,
     ModelCompletion,
-    TunePhase,
     TuningHypothesis,
 )
 
@@ -36,101 +24,57 @@ class HypothesisModelClient(Protocol):
 class HypothesisPromptBuilder:
     """Assembles curated LLM prompts from HypothesisContext."""
 
+    triage: RuleBasedTriage
+
     def build(self, context: HypothesisContext) -> str:
-        tune_context = context.tune_context
-
-        candidate_lines = [format_candidate_line_for_llm(c) for c in context.candidates]
-        deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
-        _hist_eval_max = 180
-        history_lines = [
-            (
-                f"- iteration={record.iteration_number}; "
-                f"phase={record.phase.value}; "
-                f"parameter_key={record.hypothesis.parameter_key}; "
-                f"value={record.hypothesis.proposed_value}; "
-                f"status={record.status.value}; "
-                f"evaluation={truncate_for_prompt(record.evaluation_summary or '', _hist_eval_max)}"
-            )
-            for record in context.history
-        ]
-        capability_lines = [
-            f"- {flag.name}: {flag.detail}"
-            for flag in tune_context.preflight.capability_map.flags
-            if flag.available
-        ]
-        phase_objective = self._phase_objective(context.phase)
-        best_config = (
-            ", ".join(f"{key}={value}" for key, value in context.best_parameter_values) or "none"
+        return format_hybrid_hypothesis_prompt(
+            context=context,
+            triage=self.triage.evaluate(context),
         )
-        active_changes = ", ".join(context.active_parameter_keys) or "none"
-        _telemetry_max_section = 420
-        telemetry_digest_trimmed = context.last_benchmark_runtime_telemetry_digest.strip()
-        telemetry_body = (
-            telemetry_digest_trimmed
-            if telemetry_digest_trimmed
-            else format_runtime_telemetry_digest((), max_chars_per_section=_telemetry_max_section)
-        )
-        sections = [
-            "You are the hypothesis generator for HostTune.",
-            "Select exactly one candidate parameter from the allowed list.",
-            "Do not invent parameters, values, or apply modes outside the candidate list.",
-            "Prefer unexplored or promising regions based on prior history and current phase.",
-            "Return strict JSON with keys: parameter_key, proposed_value, rationale.",
-            *hypothesis_prompt_layer_preamble(),
-            f"Current phase: {context.phase.value}",
-            f"Phase objective: {phase_objective}",
-            f"Iteration number: {context.iteration_number}",
-            "Preflight digest (structured discovery facts):",
-            *format_preflight_digest_lines(tune_context.preflight),
-            "Available tunable surfaces:",
-            *(capability_lines or ["- none"]),
-            "Onboard service contract (summary):",
-            *format_contract_digest_lines(tune_context),
-            "Limit baselines (prlimit/systemd-unit; check before no-op):",
-            *format_limit_baseline_lines(context.candidates + context.deferred_candidates),
-            "Snapshot digest (effective runtime view; truncated, not full dumps):",
-            format_snapshot_digest_for_prompt(tune_context.snapshot),
-            "Baseline digest:",
-            *format_baseline_digest_lines(tune_context),
-            (
-                "Last benchmark runtime telemetry digest (target during load: ss -s, "
-                "softnet_stat, ethtool -S; truncated per section). "
-                "Use for domain hints — e.g. backlog/sysctl tuning only if counters show pressure."
-            ),
-            telemetry_body,
-            "Current tune state:",
-            f"- active_changes={active_changes}",
-            f"- best_config={best_config}",
-            "Selectable candidates (this phase):",
-            *candidate_lines,
-            (
-                "Deferred candidates (reboot-required per service policy; listed for visibility; "
-                "selectable only in reboot_batch when engagement allow_reboot is true):"
-            ),
-            *(deferred_lines or ["- none"]),
-            "Prior hypothesis history:",
-            *(history_lines or ["- none"]),
-        ]
-        return "\n".join(sections)
-
-    def _phase_objective(self, phase: TunePhase) -> str:
-        objectives = {
-            TunePhase.WIDE_SWEEP: "Explore broadly across domains with maximum diversity.",
-            TunePhase.DOMAIN_FOCUS: "Focus on domains that have shown positive signal.",
-            TunePhase.INTERACTION: "Explore interactions between promising parameters.",
-            TunePhase.BOUNDARY_PUSH: "Push promising parameters toward safe limits.",
-            TunePhase.EXPLOIT: "Refine around the current best configuration.",
-            TunePhase.REBOOT_BATCH: "Batch deferred reboot-required changes if any exist.",
-        }
-        return objectives[phase]
 
 
 @dataclass
 class LlmHypothesisGenerator:
     model_client: HypothesisModelClient
+    triage: RuleBasedTriage | None = None
     logger: ExecutionLogger = NullExecutionLogger()
 
     def generate(self, context: HypothesisContext) -> tuple[TuningHypothesis, ...]:
+        triage_result = self.triage.evaluate(context) if self.triage is not None else None
+        if triage_result is not None and triage_result.autofix_action is not None:
+            autofix = triage_result.autofix_action
+            candidate = self._find_candidate(context, autofix.parameter_key)
+            self.logger.stage_detail(
+                "tune",
+                (
+                    "Triage autofix: "
+                    f"parameter={autofix.parameter_key} "
+                    f"value={autofix.proposed_value} "
+                    f"reason={autofix.reason}"
+                ),
+            )
+            return (
+                TuningHypothesis(
+                    phase=context.phase,
+                    parameter_key=candidate.parameter_key,
+                    parameter_name=candidate.parameter_name,
+                    domain=candidate.domain,
+                    tuning_layer=candidate.tuning_layer,
+                    proposed_value=autofix.proposed_value,
+                    source=candidate.source,
+                    apply_mode=candidate.apply_mode,
+                    rationale=autofix.reason,
+                    model_usage=None,
+                    expected_benchmark_impact=(
+                        "Deterministic baseline correction; expect cleaner benchmark behavior "
+                        "rather than a model-predicted range change."
+                    ),
+                    rollback_plan=(
+                        f"Restore {candidate.parameter_name} to its prior value and "
+                        f"{candidate.apply_mode.value} the service/runtime."
+                    ),
+                ),
+            )
         self._debug_log(
             "LLM call",
             f"phase={context.phase.value} iteration={context.iteration_number} "
@@ -144,40 +88,37 @@ class LlmHypothesisGenerator:
             snippet = response.content[:200]
             msg = f"LLM returned non-JSON response: {exc}; content: {snippet!r}"
             raise ValueError(msg) from exc
-        # Accept both a single object and an array of proposals.
-        items: list[object] = raw if isinstance(raw, list) else [raw]
-        self._debug_log("LLM parsed payload", json.dumps(items, sort_keys=True))
-        hypotheses: list[TuningHypothesis] = []
-        for item in items:
-            if not isinstance(item, dict):
-                self.logger.stage_detail("tune", f"LLM item skipped: not a dict: {item!r}")
-                continue
-            try:
-                parameter_key = self._require_string(item, "parameter_key")
-                proposed_value = self._require_string(item, "proposed_value")
-                rationale = self._require_string(item, "rationale")
-                candidate = self._find_candidate(context, parameter_key)
-                self._validate_proposed_value(candidate, proposed_value)
-                hypotheses.append(
-                    TuningHypothesis(
-                        phase=context.phase,
-                        parameter_key=candidate.parameter_key,
-                        parameter_name=candidate.parameter_name,
-                        domain=candidate.domain,
-                        tuning_layer=candidate.tuning_layer,
-                        proposed_value=proposed_value,
-                        source=candidate.source,
-                        apply_mode=candidate.apply_mode,
-                        rationale=rationale,
-                        model_usage=response.usage,
-                    )
-                )
-            except ValueError as exc:
-                self.logger.stage_detail("tune", f"LLM item skipped: {exc}")
-        if not hypotheses:
-            msg = "All model-proposed hypotheses were invalid or empty."
-            raise ValueError(msg)
-        return tuple(hypotheses)
+        if isinstance(raw, list):
+            raise ValueError("LLM must return exactly one JSON object, not an array.")
+        if not isinstance(raw, dict):
+            raise ValueError("LLM must return a JSON object.")
+        self._debug_log("LLM parsed payload", json.dumps(raw, sort_keys=True))
+        parameter_key = self._require_string(raw, "parameter_key")
+        proposed_value = self._require_string(raw, "proposed_value")
+        tuning_layer = self._require_string(raw, "tuning_layer")
+        apply_mode = self._require_string(raw, "apply_mode")
+        rationale = self._require_string(raw, "rationale")
+        expected_benchmark_impact = self._require_string(raw, "expected_benchmark_impact")
+        rollback_plan = self._require_string(raw, "rollback_plan")
+        candidate = self._find_candidate(context, parameter_key)
+        self._validate_proposed_value(candidate, proposed_value)
+        self._validate_contract_fields(candidate, tuning_layer, apply_mode)
+        return (
+            TuningHypothesis(
+                phase=context.phase,
+                parameter_key=candidate.parameter_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value=proposed_value,
+                source=candidate.source,
+                apply_mode=candidate.apply_mode,
+                rationale=rationale,
+                model_usage=response.usage,
+                expected_benchmark_impact=expected_benchmark_impact,
+                rollback_plan=rollback_plan,
+            ),
+        )
 
     def _debug_log(self, title: str, content: str) -> None:
         if not self.logger.debug_enabled():
@@ -219,6 +160,23 @@ class LlmHypothesisGenerator:
         if candidate.current_value is not None and proposed_value == candidate.current_value:
             msg = f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key}"
             raise ValueError(msg)
+
+    def _validate_contract_fields(
+        self,
+        candidate: CandidateParameter,
+        tuning_layer: str,
+        apply_mode: str,
+    ) -> None:
+        if tuning_layer != candidate.tuning_layer.value:
+            raise ValueError(
+                f"Model proposed mismatched tuning_layer {tuning_layer!r} "
+                f"for {candidate.parameter_key}"
+            )
+        if apply_mode != candidate.apply_mode.value:
+            raise ValueError(
+                f"Model proposed mismatched apply_mode {apply_mode!r} "
+                f"for {candidate.parameter_key}"
+            )
 
     def _require_string(self, payload: dict[str, object], field_name: str) -> str:
         value = payload.get(field_name)

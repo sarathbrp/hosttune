@@ -21,8 +21,8 @@ from tune.domain.hypothesis_models import (
     HypothesisRecord,
     TunePhase,
 )
+from tune.domain.triage_models import TriageResult
 from tune.domain.tune_context import TuneContext
-from tune.domain.tuning_layer import TuningLayer
 
 _LIMIT_SOURCES = frozenset({CandidateSource.RUNTIME_PRLIMIT, CandidateSource.SYSTEMD_UNIT_LIMIT})
 
@@ -42,11 +42,12 @@ PROCESS_STATE_PROMPT_KEYS: tuple[str, ...] = (
 
 def hypothesis_prompt_layer_preamble() -> list[str]:
     return [
-        "Context policy: you receive curated digests only (no raw file dumps). "
+        "Context policy: you receive curated digests plus selected raw snippets "
+        "(no full raw file dumps). "
         "Structured host facts come from preflight discovery; tunable knobs and measured "
         "`current` values come from the selectable candidate list (catalog). "
-        "Snapshot and telemetry sections are truncated. Propose only parameters that appear "
-        "under 'Selectable candidates'.",
+        "Snapshot and telemetry sections are truncated. Propose exactly one parameter that "
+        "appears under 'Selectable candidates'.",
     ]
 
 
@@ -171,8 +172,85 @@ def format_limit_baseline_lines(candidates: tuple[CandidateParameter, ...]) -> l
     return lines or ["- (no limit candidates in catalog)"]
 
 
-_SERVICE_LAYERS = frozenset({TuningLayer.SERVICE, TuningLayer.RUNTIME})
-_RHEL_LAYERS = frozenset({TuningLayer.KERNEL, TuningLayer.NETWORK, TuningLayer.PLATFORM})
+def format_triage_lines(result: TriageResult) -> list[str]:
+    autofix = (
+        f"- autofix_action={result.autofix_action.parameter_key} -> "
+        f"{result.autofix_action.proposed_value}; "
+        f"reason={result.autofix_action.reason}"
+        if result.autofix_action is not None
+        else "- autofix_action=none"
+    )
+    recommendation = (
+        f"- recommended_action={result.recommended_action.parameter_key} -> "
+        f"{result.recommended_action.proposed_value}; "
+        f"reason={result.recommended_action.reason}"
+        if result.recommended_action is not None
+        else "- recommended_action=none"
+    )
+    triggered_lines = [
+        f"- {rule.section}:{rule.rule_id}; outcome={rule.outcome}; detail={rule.detail}"
+        for rule in result.triggered_rules
+    ]
+    return [
+        autofix,
+        recommendation,
+        f"- safe_candidate_subset={', '.join(result.safe_candidate_subset) or 'none'}",
+        f"- suppressed_candidates={', '.join(result.suppressed_candidates) or 'none'}",
+        f"- reboot_required_flags={', '.join(result.reboot_required_flags) or 'none'}",
+        f"- escalation_reason={result.escalation_reason}",
+        f"- rule_summary={result.non_triggered_summary}",
+        "Triggered rules:",
+        *(triggered_lines or ["- none"]),
+    ]
+
+
+def format_runtime_config_snippet(snapshot: str | None) -> str:
+    if not snapshot:
+        return "(runtime config unavailable)"
+    lines = snapshot.splitlines()
+    interesting_patterns = (
+        "worker_processes",
+        "worker_connections",
+        "worker_rlimit_nofile",
+        "access_log",
+        "keepalive_",
+        "sendfile",
+        "net.core.",
+        "listen",
+    )
+    selected = [
+        line.rstrip() for line in lines if any(pattern in line for pattern in interesting_patterns)
+    ]
+    if not selected:
+        selected = [line.rstrip() for line in lines[:16]]
+    return truncate_for_prompt("\n".join(selected[:16]), 1200)
+
+
+def format_service_yaml_reference_snippet(tune_context: TuneContext) -> str:
+    directives = sorted(tune_context.onboard.service.tunable_surface.allowed_directives)
+    sysctls = [
+        entry.name for entry in tune_context.onboard.service.tunable_surface.relevant_sysctls
+    ]
+    runtime_limits = sorted(tune_context.onboard.service.tunable_surface.runtime_limits)
+    systemd_limits = sorted(tune_context.onboard.service.tunable_surface.systemd_unit_limits)
+    snippet = "\n".join(
+        (
+            f"identity.service_name: {tune_context.onboard.service_name}",
+            f"identity.systemd_unit_name: "
+            f"{tune_context.onboard.service.identity.systemd_unit_name}",
+            f"tunable_surface.allowed_directives: {directives}",
+            f"tunable_surface.relevant_sysctls: {sysctls}",
+            f"tunable_surface.runtime_limits: {runtime_limits}",
+            f"tunable_surface.systemd_unit_limits: {systemd_limits}",
+            f"benchmark_hints.primary_metric: "
+            f"{tune_context.onboard.service.benchmark_hints.primary_metric}",
+            f"benchmark_hints.interference_sources: "
+            f"{list(tune_context.onboard.service.benchmark_hints.interference_sources)}",
+        )
+    )
+    return truncate_for_prompt(snippet, 1000)
+
+
 _TELEMETRY_MAX_SECTION = 420
 
 _PHASE_OBJECTIVES: dict[TunePhase, str] = {
@@ -230,55 +308,14 @@ def format_host_profile_digest_lines(context: HypothesisContext) -> list[str]:
     return lines
 
 
-def format_service_expert_prompt(context: HypothesisContext) -> str:
-    """Prompt for the service configuration expert (service/runtime layer candidates only)."""
+def format_hybrid_hypothesis_prompt(
+    context: HypothesisContext,
+    triage: TriageResult,
+) -> str:
     tune_context = context.tune_context
     phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
-    service_candidates = [c for c in context.candidates if c.tuning_layer in _SERVICE_LAYERS]
-    service_deferred = [c for c in context.deferred_candidates if c.tuning_layer in _SERVICE_LAYERS]
-    limit_candidates = context.candidates + context.deferred_candidates
-    candidate_lines = [format_candidate_line_for_llm(c) for c in service_candidates]
-    deferred_lines = [format_candidate_line_for_llm(c) for c in service_deferred]
-    sections = [
-        "You are the service configuration expert for HostTune.",
-        "Your domain: service-level and runtime parameters — "
-        "nginx directives (worker_processes, worker_connections, worker_rlimit_nofile, "
-        "access_log, keepalive_requests, keepalive_timeout, sendfile), "
-        "fd limits (prlimit nofile_soft), and systemd unit limits (LimitNOFILE, LimitNPROC). "
-        "Note: access_log off eliminates per-request disk writes at high RPS.",
-        "Select ONE candidate from the service/runtime list below.",
-        "Return strict JSON: "
-        '{"parameter_key": "...", "proposed_value": "...", "rationale": "...", '
-        '"confidence": "high|medium|low"}',
-        f"Current phase: {context.phase.value}",
-        f"Phase objective: {phase_obj}",
-        f"Iteration: {context.iteration_number}",
-        "Service contract (your domain):",
-        *format_contract_digest_lines(tune_context),
-        "Limit baselines (current prlimit/systemd-unit values):",
-        *format_limit_baseline_lines(limit_candidates),
-        "Snapshot digest:",
-        format_snapshot_digest_for_prompt(tune_context.snapshot),
-        "Baseline workload results:",
-        *format_baseline_digest_lines(tune_context),
-        "Prior history:",
-        *_format_history_lines(context.history),
-        "Service/runtime candidates (YOUR DOMAIN — pick from this list only):",
-        *(candidate_lines or ["- none"]),
-        "Deferred service/runtime candidates (reboot-required):",
-        *(deferred_lines or ["- none"]),
-    ]
-    return "\n".join(sections)
-
-
-def format_rhel_expert_prompt(context: HypothesisContext) -> str:
-    """Prompt for the RHEL system tuning expert (kernel/network layer candidates only)."""
-    tune_context = context.tune_context
-    phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
-    rhel_candidates = [c for c in context.candidates if c.tuning_layer in _RHEL_LAYERS]
-    rhel_deferred = [c for c in context.deferred_candidates if c.tuning_layer in _RHEL_LAYERS]
-    candidate_lines = [format_candidate_line_for_llm(c) for c in rhel_candidates]
-    deferred_lines = [format_candidate_line_for_llm(c) for c in rhel_deferred]
+    candidate_lines = [format_candidate_line_for_llm(c) for c in context.candidates]
+    deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
     capability_lines = [
         f"- {flag.name}: {flag.detail}"
         for flag in tune_context.preflight.capability_map.flags
@@ -290,81 +327,58 @@ def format_rhel_expert_prompt(context: HypothesisContext) -> str:
         else format_runtime_telemetry_digest((), max_chars_per_section=_TELEMETRY_MAX_SECTION)
     )
     sections = [
-        "You are the RHEL system tuning expert for HostTune.",
-        "Your domain: kernel sysctls, network stack (rings, queue count via ethtool -L), "
-        "CPU governor (cpupower frequency-set -g), IRQ affinity, cgroup, and storage. "
-        "network.queue.combined and platform.cpu_governor.scaling_governor "
-        "are high-impact platform candidates when a host profile is configured.",
-        "Select ONE candidate from the kernel/network/platform list below.",
-        "Return strict JSON: "
-        '{"parameter_key": "...", "proposed_value": "...", "rationale": "...", '
-        '"confidence": "high|medium|low"}',
+        "You are the single hybrid hypothesizer for HostTune.",
+        "A deterministic rule-based triage layer has already inspected the host and "
+        "service context. Use that signal, then reason across service, runtime, kernel, "
+        "network, and platform layers to choose exactly one change.",
+        "Return strict JSON with keys: "
+        '{"parameter_key": "...", "proposed_value": "...", "tuning_layer": "...", '
+        '"apply_mode": "...", "rationale": "...", '
+        '"expected_benchmark_impact": "...", "rollback_plan": "..."}',
         f"Current phase: {context.phase.value}",
         f"Phase objective: {phase_obj}",
         f"Iteration: {context.iteration_number}",
-        "Host facts (your domain):",
+        *hypothesis_prompt_layer_preamble(),
+        "Rule-based triage result:",
+        *format_triage_lines(triage),
+        "Host facts:",
         *format_preflight_digest_lines(tune_context.preflight),
-        "Host profile (platform-level tunables):",
+        "Host profile:",
         *format_host_profile_digest_lines(context),
-        "Available tunable surfaces (capability flags):",
+        "Available tunable surfaces:",
         *(capability_lines or ["- none"]),
-        "Last benchmark runtime telemetry (ss -s, softnet_stat, ethtool -S; truncated):",
+        "Service contract:",
+        *format_contract_digest_lines(tune_context),
+        "Limit baselines:",
+        *format_limit_baseline_lines(context.candidates + context.deferred_candidates),
+        "Snapshot digest:",
+        format_snapshot_digest_for_prompt(tune_context.snapshot),
+        "Selected runtime config snippet:",
+        format_runtime_config_snippet(tune_context.snapshot.runtime_state_output),
+        "Selected service YAML reference snippet:",
+        format_service_yaml_reference_snippet(tune_context),
+        "Baseline workload results:",
+        *format_baseline_digest_lines(tune_context),
+        "Last benchmark runtime telemetry:",
         telemetry_body,
-        "Prior history:",
-        *_format_history_lines(context.history),
-        "Kernel/network candidates (YOUR DOMAIN — pick from this list only):",
-        *(candidate_lines or ["- none"]),
-        "Deferred kernel/network candidates (reboot-required):",
-        *(deferred_lines or ["- none"]),
-    ]
-    return "\n".join(sections)
-
-
-def format_synthesizer_prompt(
-    context: HypothesisContext,
-    expert_recommendations: list[str],
-    full_prompt: str,
-) -> str:
-    """Prompt for the synthesizer that combines both expert recommendations into a final action."""
-    phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
-    candidate_lines = [format_candidate_line_for_llm(c) for c in context.candidates]
-    deferred_lines = [format_candidate_line_for_llm(c) for c in context.deferred_candidates]
-    best_config = ", ".join(f"{k}={v}" for k, v in context.best_parameter_values) or "none"
-    active_changes = ", ".join(context.active_parameter_keys) or "none"
-    # expert_recommendations is ordered [service_agent_response, rhel_expert_response]
-    # because the client now uses named state fields — labels are always deterministic.
-    labels = ["service_agent", "rhel_expert"]
-    labeled_recommendations = [
-        f"[{label}]: {rec}" for label, rec in zip(labels, expert_recommendations, strict=True)
-    ]
-    sections = [
-        "You are the parameter synthesizer for HostTune.",
-        "Two domain experts (service_agent and rhel_expert) have independently recommended "
-        "tuning actions from their respective domains.",
-        "Your job: synthesize their recommendations into the final list of parameters to apply.",
-        "Apply BOTH when they are from different tuning layers — "
-        "e.g. service directive (access_log off) + kernel sysctl, "
-        "or NIC queue expansion (network.queue.combined) + nginx worker_connections. "
-        "Orthogonal changes across layers combine safely in one iteration.",
-        "Apply only ONE if: both experts picked the same layer, one returned null/error, "
-        "or there is a resource conflict between them.",
-        "All parameter_key values MUST appear in the selectable candidates list below.",
-        "Return a JSON ARRAY (even for a single item): "
-        '[{"parameter_key": "...", "proposed_value": "...", "rationale": "..."}, ...]',
-        f"Current phase: {context.phase.value}",
-        f"Phase objective: {phase_obj}",
-        f"Iteration: {context.iteration_number}",
         "Current tune state:",
-        f"- active_changes={active_changes}",
-        f"- best_config={best_config}",
-        "Expert recommendations:",
-        *labeled_recommendations,
-        "Selectable candidates (ALL domains — final answer must use one of these keys):",
-        *(candidate_lines or ["- none"]),
-        "Deferred candidates (reboot-required; selectable only in reboot_batch phase):",
-        *(deferred_lines or ["- none"]),
+        f"- active_changes={', '.join(context.active_parameter_keys) or 'none'}",
+        (
+            f"- best_config="
+            f"{', '.join(f'{k}={v}' for k, v in context.best_parameter_values) or 'none'}"
+        ),
         "Prior history:",
         *_format_history_lines(context.history),
+        "Selectable candidates:",
+        *(candidate_lines or ["- none"]),
+        "Deferred candidates (visibility only):",
+        *(deferred_lines or ["- none"]),
+        "Output rules:",
+        "- choose exactly one selectable candidate",
+        "- respect the triage recommendation unless broader context makes another choice safer",
+        "- do not select suppressed or reboot-only candidates outside reboot_batch",
+        "- expected_benchmark_impact should predict primary metric movement concisely",
+        "- rollback_plan should be human-readable and specific to the chosen knob",
     ]
     return "\n".join(sections)
 

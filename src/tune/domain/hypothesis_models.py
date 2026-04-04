@@ -94,6 +94,8 @@ class TuningHypothesis:
     apply_mode: ApplyMode
     rationale: str
     model_usage: ModelUsage | None = None
+    expected_benchmark_impact: str | None = None
+    rollback_plan: str | None = None
 
 
 @dataclass(frozen=True)

@@ -94,6 +94,24 @@ def build_valid_definition() -> dict[str, object]:
                     "forbidden_values": [],
                     "apply_mode": "reload",
                 },
+                "multi_accept": {
+                    "value_type": "enum",
+                    "priority_tier": "medium",
+                    "min_value": None,
+                    "max_value": None,
+                    "allowed_values": ["on", "off"],
+                    "forbidden_values": [],
+                    "apply_mode": "reload",
+                },
+                "worker_cpu_affinity": {
+                    "value_type": "string",
+                    "priority_tier": "medium",
+                    "min_value": None,
+                    "max_value": None,
+                    "allowed_values": [],
+                    "forbidden_values": [],
+                    "apply_mode": "reload",
+                },
             },
             "forbidden_directives": ["daemon"],
             "interdependencies": [],
@@ -174,6 +192,11 @@ def test_validator_builds_typed_service_definition() -> None:
     assert definition.tunable_surface.allowed_directives["worker_processes"].forbidden_values == (
         "1",
     )
+    assert definition.tunable_surface.allowed_directives["multi_accept"].allowed_values == (
+        "on",
+        "off",
+    )
+    assert definition.tunable_surface.allowed_directives["worker_cpu_affinity"].value_type.value == "string"
     assert definition.tunable_surface.network_ring_priority_tier is PriorityTier.MEDIUM
     assert [s.priority_tier for s in definition.tunable_surface.relevant_sysctls] == [
         PriorityTier.HIGH,

@@ -109,6 +109,19 @@ tunable_surface:
       max_value: 300
       apply_mode: reload
       forbidden_values: []
+    multi_accept:
+      value_type: enum
+      priority_tier: medium
+      allowed_values:
+        - "on"
+        - "off"
+      apply_mode: reload
+      forbidden_values: []
+    worker_cpu_affinity:
+      value_type: string
+      priority_tier: medium
+      apply_mode: reload
+      forbidden_values: []
     sendfile:
       value_type: enum
       priority_tier: medium

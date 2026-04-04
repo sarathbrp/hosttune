@@ -1,18 +1,31 @@
+from pathlib import Path
+
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
 from tune.application.hypothesis_prompt_layer import (
     format_candidate_line_for_llm,
+    format_hybrid_hypothesis_prompt,
     format_preflight_digest_lines,
+    format_runtime_config_snippet,
+    format_service_yaml_reference_snippet,
     hypothesis_prompt_layer_preamble,
 )
-from tune.domain.hypothesis_models import CandidateParameter, CandidateSource
+from tune.application.rule_based_triage import RuleBasedTriage, TriageRulesLoader
+from tune.domain.hypothesis_context import HypothesisContext
+from tune.domain.hypothesis_models import (
+    CandidateAvailability,
+    CandidateParameter,
+    CandidateSource,
+    TunePhase,
+)
 from tune.domain.tuning_layer import TuningLayer
 
-from tests.tune.test_candidate_catalog_builder import build_tune_context
+from tests.tune.test_candidate_catalog_builder import FakeExecutor, build_tune_context
+from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 
 
-def test_preamble_mentions_curated_digests() -> None:
+def test_preamble_mentions_curated_and_snippets() -> None:
     lines = hypothesis_prompt_layer_preamble()
-    assert any("curated digests" in line for line in lines)
+    assert any("selected raw snippets" in line for line in lines)
 
 
 def test_preflight_digest_includes_ring_and_storage_facts() -> None:
@@ -45,3 +58,50 @@ def test_candidate_line_truncates_long_hint() -> None:
     line = format_candidate_line_for_llm(candidate)
     assert "truncated" in line
     assert len(line) < len(long_hint) + 200
+
+
+def test_runtime_config_snippet_prefers_interesting_lines() -> None:
+    snippet = format_runtime_config_snippet(
+        "\n".join(
+            (
+                "events {",
+                "worker_connections 1024;",
+                "}",
+                "http {",
+                "access_log off;",
+                "}",
+            )
+        )
+    )
+    assert "worker_connections 1024;" in snippet
+    assert "access_log off;" in snippet
+
+
+def test_service_yaml_reference_snippet_mentions_tunable_surface() -> None:
+    snippet = format_service_yaml_reference_snippet(build_tune_context())
+    assert "tunable_surface.allowed_directives" in snippet
+    assert "benchmark_hints.primary_metric" in snippet
+
+
+def test_hybrid_prompt_includes_triage_section() -> None:
+    tune_context = build_tune_context()
+    built = CandidateCatalogBuilder().build(tune_context, FakeExecutor())
+    context = HypothesisContext(
+        tune_context=tune_context,
+        phase=TunePhase.WIDE_SWEEP,
+        iteration_number=1,
+        candidates=tuple(c for c in built if c.availability is CandidateAvailability.ACTIVE),
+        deferred_candidates=tuple(
+            c for c in built if c.availability is CandidateAvailability.DEFERRED
+        ),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+    triage = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(context)
+    prompt = format_hybrid_hypothesis_prompt(context, triage)
+    assert "Rule-based triage result:" in prompt
+    assert "autofix_action=" in prompt
+    assert "Selected runtime config snippet:" in prompt
+    assert "Selected service YAML reference snippet:" in prompt
+    assert "rollback_plan" in prompt

@@ -19,3 +19,4 @@ def test_hypothesis_factory_builds_llm_generator(tmp_path: Path) -> None:
     generator = build_langgraph_hypothesis_generator(env_path)
 
     assert generator.model_client.__class__.__name__ == "LangGraphHypothesisClient"
+    assert generator.triage is not None

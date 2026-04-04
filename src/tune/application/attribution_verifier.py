@@ -7,7 +7,7 @@ from preflight.domain.models import CommandExecutor
 from tune.application.benchmark_executor import TuneBenchmarkExecutor
 from tune.application.health_validator import HealthValidator
 from tune.domain.apply_models import AppliedChange
-from tune.domain.benchmark_models import TuneBenchmarkResult
+from tune.domain.benchmark_models import BenchmarkWorkloadSummary, TuneBenchmarkResult
 from tune.domain.evaluation_models import AttributionVerificationResult
 from tune.domain.tune_context import TuneContext
 
@@ -57,7 +57,13 @@ class AttributionVerifier:
             label="verify",
             telemetry_executor=target_executor,
         )
-        average_drop = self._calculate_average_drop(
+        (
+            average_drop,
+            max_drop,
+            compared_workloads,
+            material_gain_workloads,
+        ) = self._calculate_average_drop(
+            context=context,
             accepted_benchmark_result=accepted_benchmark_result,
             reverted_benchmark_result=reverted_benchmark_result,
         )
@@ -67,7 +73,10 @@ class AttributionVerifier:
         # the primary hypothesis likely contributed little on top of cumulative gains;
         # treat as unverified so it can be cleanly rolled back without masking the
         # real signal. This avoids spurious INCONCLUSIVE loops.
-        verified = average_drop > context.effective_variance_threshold
+        verified = (
+            average_drop > context.effective_variance_threshold
+            or max_drop > context.effective_variance_threshold
+        )
         if verified:
             reapply_result = target_executor.run(applied_change.apply_command)
             if reapply_result.exit_code != 0:
@@ -75,7 +84,10 @@ class AttributionVerifier:
                     verified=False,
                     summary=(
                         f"average_drop={average_drop:.4f}; "
+                        f"max_drop={max_drop:.4f}; "
                         f"threshold={context.effective_variance_threshold:.4f}; "
+                        f"compared_workloads={compared_workloads}; "
+                        f"material_gain_workloads={material_gain_workloads}; "
                         "attribution reapply failed: "
                         f"{reapply_result.stderr or reapply_result.stdout}"
                     ),
@@ -86,7 +98,10 @@ class AttributionVerifier:
             verified=verified,
             summary=(
                 f"average_drop={average_drop:.4f}; "
+                f"max_drop={max_drop:.4f}; "
                 f"threshold={context.effective_variance_threshold:.4f}; "
+                f"compared_workloads={compared_workloads}; "
+                f"material_gain_workloads={material_gain_workloads}; "
                 f"verified={verified}"
             ),
             reverted_benchmark_result=reverted_benchmark_result,
@@ -95,14 +110,57 @@ class AttributionVerifier:
 
     def _calculate_average_drop(
         self,
+        context: TuneContext,
         accepted_benchmark_result: TuneBenchmarkResult,
         reverted_benchmark_result: TuneBenchmarkResult,
-    ) -> float:
+    ) -> tuple[float, float, int, int]:
+        baseline_by_name = {
+            workload.workload_name: workload.requests_per_second
+            for workload in context.baseline.workload_results
+        }
         reverted_by_name = {
             item.workload_name: item for item in reverted_benchmark_result.workload_summaries
         }
+        material_gain_workloads = [
+            accepted_summary
+            for accepted_summary in accepted_benchmark_result.workload_summaries
+            if self._is_material_gain(
+                accepted_summary=accepted_summary,
+                baseline_rps=baseline_by_name.get(accepted_summary.workload_name),
+                variance_threshold=context.effective_variance_threshold,
+            )
+        ]
+        selected_workloads = material_gain_workloads or list(
+            accepted_benchmark_result.workload_summaries
+        )
+        drops = self._calculate_drops(selected_workloads, reverted_by_name)
+        if not drops and material_gain_workloads:
+            logging.getLogger(__name__).warning(
+                "No matching reverted workloads for material-gain verification set; "
+                "falling back to all matched workloads"
+            )
+            selected_workloads = list(accepted_benchmark_result.workload_summaries)
+            drops = self._calculate_drops(selected_workloads, reverted_by_name)
+        if not drops:
+            logging.getLogger(__name__).warning(
+                "No matching workloads between accepted and reverted benchmarks; "
+                "average_drop defaults to 0.0"
+            )
+            return 0.0, 0.0, 0, len(material_gain_workloads)
+        return (
+            sum(drops) / len(drops),
+            max(drops),
+            len(drops),
+            len(material_gain_workloads),
+        )
+
+    def _calculate_drops(
+        self,
+        accepted_workloads: list[BenchmarkWorkloadSummary],
+        reverted_by_name: dict[str, BenchmarkWorkloadSummary],
+    ) -> list[float]:
         drops: list[float] = []
-        for accepted_summary in accepted_benchmark_result.workload_summaries:
+        for accepted_summary in accepted_workloads:
             reverted_summary = reverted_by_name.get(accepted_summary.workload_name)
             if reverted_summary is None:
                 continue
@@ -111,10 +169,15 @@ class AttributionVerifier:
             if accepted_rps <= 0.0:
                 continue
             drops.append((accepted_rps - reverted_rps) / accepted_rps)
-        if not drops:
-            logging.getLogger(__name__).warning(
-                "No matching workloads between accepted and reverted benchmarks; "
-                "average_drop defaults to 0.0"
-            )
-            return 0.0
-        return sum(drops) / len(drops)
+        return drops
+
+    def _is_material_gain(
+        self,
+        accepted_summary: BenchmarkWorkloadSummary,
+        baseline_rps: float | None,
+        variance_threshold: float,
+    ) -> bool:
+        if baseline_rps is None or baseline_rps <= 0.0:
+            return False
+        relative_gain = (accepted_summary.median_requests_per_second - baseline_rps) / baseline_rps
+        return relative_gain > variance_threshold

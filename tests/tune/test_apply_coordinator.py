@@ -54,6 +54,14 @@ class FakeExecutor:
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
+class MissingDirectiveExecutor(FakeExecutor):
+    def run(self, command: str) -> CommandResult:
+        if command.startswith("grep -E") and "multi_accept" in command:
+            self.commands.append(command)
+            return CommandResult(command=command, exit_code=1, stdout="", stderr="")
+        return super().run(command)
+
+
 def test_sysctl_applier_builds_apply_and_rollback() -> None:
     context = build_tune_context()
     executor = FakeExecutor()
@@ -104,6 +112,31 @@ def test_nginx_directive_applier_builds_apply_and_rollback() -> None:
     assert applied.rollback_command.startswith("python3 -c ")
     assert "worker_processes 112" in applied.rollback_command
     assert applied.rollback_command.endswith("&& systemctl reload nginx")
+
+
+def test_nginx_directive_applier_inserts_missing_events_directive() -> None:
+    context = build_tune_context()
+    executor = MissingDirectiveExecutor()
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="service.directive.multi_accept",
+        parameter_name="multi_accept",
+        domain="service_config",
+        tuning_layer=tuning_layer_for_parameter_key("service.directive.multi_accept"),
+        proposed_value="on",
+        source=CandidateSource.SERVICE_DIRECTIVE,
+        apply_mode=ApplyMode.RELOAD,
+        rationale="Enable multi_accept for higher connection accept throughput.",
+    )
+
+    applied = NginxDirectiveApplier().apply(context, hypothesis, executor)
+
+    assert applied.previous_value == "__absent__"
+    assert applied.applied_value == "on"
+    assert applied.apply_command.startswith("python3 -c ")
+    assert "multi_accept" in applied.apply_command
+    assert applied.rollback_command.startswith("python3 -c ")
+    assert "multi_accept" in applied.rollback_command
 
 
 def test_apply_coordinator_routes_by_parameter_prefix() -> None:

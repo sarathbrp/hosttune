@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TypedDict
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.domain.hypothesis_context import HypothesisContext
@@ -13,190 +12,42 @@ from tune.infrastructure.model_config import ModelEndpointConfig
 _log = logging.getLogger(__name__)
 
 
-class HypothesisGraphState(TypedDict):
-    # Built from HypothesisContext before invoking the graph
-    service_prompt: str
-    rhel_prompt: str
-    full_prompt: str
-    context: HypothesisContext
-    # Named fields (not a reducer list) so agent labels are always deterministic
-    # regardless of parallel execution order.
-    service_agent_response: str
-    rhel_expert_response: str
-    # Final synthesizer output
-    response: str
-    usage: ModelUsage | None
-
-
 @dataclass
 class LangGraphHypothesisClient:
     config: ModelEndpointConfig
-    prompt_builder: object  # HypothesisPromptBuilder — avoids circular import at module level
+    prompt_builder: object
     logger: ExecutionLogger = field(default_factory=NullExecutionLogger)
-    _graph: object | None = field(default=None, init=False, repr=False)
 
     def complete(self, context: HypothesisContext) -> ModelCompletion:
-        from tune.application.hypothesis_prompt_layer import (
-            format_rhel_expert_prompt,
-            format_service_expert_prompt,
-        )
-
-        service_prompt = format_service_expert_prompt(context)
-        rhel_prompt = format_rhel_expert_prompt(context)
-        full_prompt = self.prompt_builder.build(context)  # type: ignore[union-attr]
-
-        graph = self._get_graph()
-        result = graph.invoke(
-            {
-                "service_prompt": service_prompt,
-                "rhel_prompt": rhel_prompt,
-                "full_prompt": full_prompt,
-                "context": context,
-                "service_agent_response": "",
-                "rhel_expert_response": "",
-                "response": "",
-                "usage": None,
-            }
-        )
-        response = result.get("response")
-        if not isinstance(response, str) or response == "":
-            msg = "LangGraph hypothesis client returned an empty response."
-            raise ValueError(msg)
-        usage = result.get("usage")
-        if usage is not None and not isinstance(usage, ModelUsage):
-            msg = "LangGraph hypothesis client returned malformed usage metadata."
-            raise ValueError(msg)
-        return ModelCompletion(content=response, usage=usage)
-
-    # ── Graph construction ────────────────────────────────────────────────────
-
-    def _get_graph(self) -> object:
-        if self._graph is None:
-            self._graph = self._build_graph()
-        return self._graph
-
-    def _build_graph(self) -> object:
-        try:
-            from langgraph.graph import END, START, StateGraph
-        except ImportError as error:
-            msg = "langgraph is required for LangGraphHypothesisClient."
-            raise RuntimeError(msg) from error
-
-        graph = StateGraph(HypothesisGraphState)
-        graph.add_node("service_agent", self._service_agent_node)
-        graph.add_node("rhel_expert", self._rhel_expert_node)
-        graph.add_node("synthesizer", self._synthesizer_node)
-
-        graph.add_edge(START, "service_agent")  # fan-out (parallel)
-        graph.add_edge(START, "rhel_expert")  # fan-out (parallel)
-        graph.add_edge("service_agent", "synthesizer")  # fan-in
-        graph.add_edge("rhel_expert", "synthesizer")  # fan-in
-        graph.add_edge("synthesizer", END)
-        return graph.compile()
-
-    # ── Agent nodes ──────────────────────────────────────────────────────────
-
-    def _service_agent_node(self, state: HypothesisGraphState) -> dict[str, object]:
-        """Service configuration expert — reasons over service/runtime candidates."""
-        context = state["context"]
-        prompt = state["service_prompt"]
-        self._log_prompt("service_agent", prompt)
-        try:
-            content = self._call_llm(
-                caller="service_agent",
-                system=(
-                    "You are the service configuration expert for HostTune. "
-                    "Your domain: nginx directives (worker_processes, worker_connections, "
-                    "worker_rlimit_nofile, access_log, keepalive_requests, sendfile), "
-                    "fd limits (prlimit nofile_soft), and systemd unit limits. "
-                    "Prioritize access_log off and worker_rlimit_nofile when present. "
-                    "Return strict JSON: parameter_key, proposed_value, rationale, confidence."
-                ),
-                prompt=prompt,
-            )
-        except Exception as exc:
-            content = f"ERROR: service_agent failed: {exc}"
-        self._log_response("service_agent", content)
-        self._save_agent_artifact(context, "service_agent", prompt, content)
-        return {"service_agent_response": content}
-
-    def _rhel_expert_node(self, state: HypothesisGraphState) -> dict[str, object]:
-        """RHEL system tuning expert — reasons over kernel/network candidates."""
-        context = state["context"]
-        prompt = state["rhel_prompt"]
-        self._log_prompt("rhel_expert", prompt)
-        try:
-            content = self._call_llm(
-                caller="rhel_expert",
-                system=(
-                    "You are the RHEL system tuning expert for HostTune. "
-                    "Your domain: kernel sysctls, NIC rings (network.ring.*), "
-                    "NIC queue count (network.queue.combined via ethtool -L), "
-                    "CPU governor (platform.cpu_governor.scaling_governor via cpupower), "
-                    "IRQ affinity, cgroup, and storage schedulers. "
-                    "network.queue.combined is high-impact when current < max: "
-                    "expanding from 8 to 56+ queues on a 112-core server "
-                    "can multiply packet throughput. "
-                    "Return strict JSON: parameter_key, proposed_value, rationale, confidence."
-                ),
-                prompt=prompt,
-            )
-        except Exception as exc:
-            content = f"ERROR: rhel_expert failed: {exc}"
-        self._log_response("rhel_expert", content)
-        self._save_agent_artifact(context, "rhel_expert", prompt, content)
-        return {"rhel_expert_response": content}
-
-    def _synthesizer_node(self, state: HypothesisGraphState) -> dict[str, object]:
-        """Synthesizer — combines expert recommendations into one final hypothesis array."""
-        from tune.application.hypothesis_prompt_layer import format_synthesizer_prompt
-
-        context = state["context"]
-        # Named fields guarantee correct labeling regardless of parallel execution order.
-        recommendations = [state["service_agent_response"], state["rhel_expert_response"]]
-        planner_prompt = format_synthesizer_prompt(
-            context=context,
-            expert_recommendations=recommendations,
-            full_prompt=state["full_prompt"],
-        )
-        self._log_prompt("synthesizer", planner_prompt)
+        prompt = self.prompt_builder.build(context)  # type: ignore[union-attr]
+        self._log_prompt("hybrid_hypothesizer", prompt)
         content, usage = self._call_llm_with_usage(
-            caller="synthesizer",
+            caller="hybrid_hypothesizer",
             system=(
-                "You are the parameter synthesizer for HostTune. "
-                "You receive recommendations from a service_agent and a rhel_expert and decide "
-                "which parameters to apply together. "
-                "Return a JSON ARRAY of hypothesis objects, each with keys: "
-                "parameter_key, proposed_value, rationale. "
-                "Include both recommendations when they are from different tuning layers. "
-                "Return a single-element array if only one recommendation is valid."
+                "You are the single hybrid hypothesizer for HostTune. "
+                "A deterministic triage layer has already run. "
+                "Return exactly one JSON object with keys: parameter_key, proposed_value, "
+                "tuning_layer, apply_mode, rationale, expected_benchmark_impact, rollback_plan."
             ),
-            prompt=planner_prompt,
+            prompt=prompt,
         )
-        self._log_response("synthesizer", content)
-        self._save_agent_artifact(context, "synthesizer", planner_prompt, content)
-        return {"response": content, "usage": usage}
-
-    # ── Logging helpers ───────────────────────────────────────────────────────
+        self._log_response("hybrid_hypothesizer", content)
+        self._save_agent_artifact(context, "hybrid_hypothesizer", prompt, content)
+        return ModelCompletion(content=content, usage=usage)
 
     def _log_prompt(self, agent: str, prompt: str) -> None:
-        """Log prompt size inline; full prompt is written to the hypothesis artifact file."""
         self.logger.stage_detail(
             "tune",
             f"{'─' * 8} {agent} PROMPT ({len(prompt)} chars) {'─' * 8}",
         )
         if self.logger.debug_enabled():
-            # Full dump only in --debug mode; note that parallel agents interleave here.
             self.logger.stage_detail("tune", prompt)
 
     def _log_response(self, agent: str, response: str) -> None:
-        """Log the agent response with a clear header so parallel outputs are distinguishable."""
         self.logger.stage_detail(
             "tune",
             f"{'─' * 8} {agent} RESPONSE {'─' * 8}\n{response}",
         )
-
-    # ── Artifact saving ───────────────────────────────────────────────────────
 
     def _save_agent_artifact(
         self,
@@ -205,7 +56,6 @@ class LangGraphHypothesisClient:
         prompt: str,
         response: str,
     ) -> None:
-        """Save agent prompt+response to hypothesis/ subfolder for later investigation."""
         artifacts = context.tune_context.artifacts
         if artifacts is None:
             return
@@ -225,36 +75,22 @@ class LangGraphHypothesisClient:
         except OSError as exc:
             _log.warning("Failed to save hypothesis artifact %s: %s", path, exc)
 
-    # ── LLM call helpers ──────────────────────────────────────────────────────
-
-    def _call_llm(self, *, caller: str, system: str, prompt: str) -> str:
-        client = self._build_openai_client()
-        completion = client.chat.completions.create(
-            model=self.config.model_name,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        content = completion.choices[0].message.content
-        if not isinstance(content, str):
-            msg = f"[{caller}] OpenAI-compatible response did not include string content."
-            raise ValueError(msg)
-        return content
-
     def _call_llm_with_usage(
         self, *, caller: str, system: str, prompt: str
     ) -> tuple[str, ModelUsage | None]:
         client = self._build_openai_client()
-        completion = client.chat.completions.create(
-            model=self.config.model_name,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-        )
+        try:
+            completion = client.chat.completions.create(
+                model=self.config.model_name,
+                temperature=0.0,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except Exception as exc:
+            msg = f"[{caller}] LLM call failed: {type(exc).__name__}: {exc}"
+            raise ValueError(msg) from exc
         content = completion.choices[0].message.content
         if not isinstance(content, str):
             msg = f"[{caller}] OpenAI-compatible response did not include string content."
