@@ -26,6 +26,7 @@ from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 def test_preamble_mentions_curated_and_snippets() -> None:
     lines = hypothesis_prompt_layer_preamble()
     assert any("selected raw snippets" in line for line in lines)
+    assert any("no deterministic autofix was applied" in line for line in lines)
 
 
 def test_preflight_digest_includes_ring_and_storage_facts() -> None:
@@ -104,4 +105,6 @@ def test_hybrid_prompt_includes_triage_section() -> None:
     assert "autofix_action=" in prompt
     assert "Selected runtime config snippet:" in prompt
     assert "Selected service YAML reference snippet:" in prompt
+    assert "triage autofix is already resolved before this prompt" in prompt
+    assert "do not invent unsupported knobs mentioned only in signal text" in prompt
     assert "rollback_plan" in prompt

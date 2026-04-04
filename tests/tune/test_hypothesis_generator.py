@@ -44,6 +44,8 @@ class FakeModelClient:
         assert "suppressed_candidates=" in prompt
         assert "Output rules:" in prompt
         assert "choose exactly one selectable candidate" in prompt
+        assert "triage autofix is already resolved before this prompt" in prompt
+        assert "do not invent unsupported knobs mentioned only in signal text" in prompt
         assert "current=112" in prompt
         assert "forbidden=" not in prompt
         assert "priority=high" in prompt

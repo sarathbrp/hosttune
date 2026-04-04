@@ -46,8 +46,9 @@ def hypothesis_prompt_layer_preamble() -> list[str]:
         "(no full raw file dumps). "
         "Structured host facts come from preflight discovery; tunable knobs and measured "
         "`current` values come from the selectable candidate list (catalog). "
-        "Snapshot and telemetry sections are truncated. Propose exactly one parameter that "
-        "appears under 'Selectable candidates'.",
+        "Snapshot and telemetry sections are truncated. Triage autofix runs before the LLM path; "
+        "if you are seeing this prompt, no deterministic autofix was applied. "
+        "Propose exactly one parameter that appears under 'Selectable candidates'.",
     ]
 
 
@@ -329,7 +330,8 @@ def format_hybrid_hypothesis_prompt(
     sections = [
         "You are the single hybrid hypothesizer for HostTune.",
         "A deterministic rule-based triage layer has already inspected the host and "
-        "service context. Use that signal, then reason across service, runtime, kernel, "
+        "service context. Use triage signal as a hard priority input, then reason "
+        "across service, runtime, kernel, "
         "network, and platform layers to choose exactly one change.",
         "Return strict JSON with keys: "
         '{"parameter_key": "...", "proposed_value": "...", "tuning_layer": "...", '
@@ -375,8 +377,15 @@ def format_hybrid_hypothesis_prompt(
         *(deferred_lines or ["- none"]),
         "Output rules:",
         "- choose exactly one selectable candidate",
-        "- respect the triage recommendation unless broader context makes another choice safer",
-        "- do not select suppressed or reboot-only candidates outside reboot_batch",
+        "- triage autofix is already resolved before this prompt; "
+        "do not simulate or re-propose autofix logic",
+        "- if recommended_action is present, treat it as the default choice and "
+        "only override it when broader context makes it clearly unsafe or lower-value",
+        "- use triggered signal rules as supporting context, not as direct "
+        "parameter proposals unless they map to an actual selectable candidate",
+        "- do not select suppressed candidates",
+        "- do not select reboot-only candidates outside reboot_batch",
+        "- do not invent unsupported knobs mentioned only in signal text",
         "- expected_benchmark_impact should predict primary metric movement concisely",
         "- rollback_plan should be human-readable and specific to the chosen knob",
     ]

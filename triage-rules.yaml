@@ -1,0 +1,152 @@
+hardware_topology:
+  - id: prefer_performance_governor_high_core
+    enabled: true
+    action: recommend
+    kind: host_profile_preferred_governor
+    candidate_key: platform.cpu_governor.scaling_governor
+    min_logical_cores: 32
+    min_numa_nodes: 1
+
+  - id: signal_dual_numa_high_core_host
+    enabled: true
+    action: signal
+    kind: host_fact_signal
+    signal_key: numa_topology
+    detail: "Dual-NUMA high-core host detected; consider affinity-aware tuning and per-node scaling."
+    min_logical_cores: 64
+    min_numa_nodes: 2
+
+kernel_os_baseline:
+  - id: widen_nic_queues_high_core
+    enabled: true
+    action: recommend
+    kind: queue_scale_up
+    candidate_key: network.queue.combined
+    min_logical_cores: 32
+
+  - id: recommend_somaxconn_high_core
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    candidate_key: sysctl.net.core.somaxconn
+    min_logical_cores: 32
+    floor_value: 8192
+
+  - id: recommend_netdev_backlog_high_core
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    candidate_key: sysctl.net.core.netdev_max_backlog
+    min_logical_cores: 32
+    floor_value: 5000
+
+  - id: recommend_tcp_max_syn_backlog_high_core
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    candidate_key: sysctl.net.ipv4.tcp_max_syn_backlog
+    min_logical_cores: 32
+    floor_value: 8192
+
+  - id: signal_irqbalance_state
+    enabled: true
+    action: signal
+    kind: host_fact_signal
+    signal_key: irqbalance
+    detail: "Review irqbalance and NIC IRQ distribution before deep network tuning."
+
+  - id: signal_hugepages_relevance_large_memory
+    enabled: true
+    action: signal
+    kind: host_fact_signal
+    signal_key: hugepages
+    detail: "Large-memory host detected; hugepages may matter if workload becomes memory or TLB sensitive."
+    min_ram_gb: 256
+
+application_discovery_sanity:
+  - id: nginx_disable_access_log
+    enabled: true
+    action: autofix
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.access_log
+    proposed_value: "off"
+    interference_source_contains: "access logging"
+    only_when_current_in:
+      - "/var/log/nginx/access.log"
+      - "/var/log/nginx/access.log main"
+
+  - id: nginx_enable_sendfile
+    enabled: true
+    action: autofix
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.sendfile
+    proposed_value: "on"
+    only_when_current_in:
+      - "off"
+
+  - id: nginx_align_worker_rlimit_nofile
+    enabled: true
+    action: recommend
+    kind: align_worker_rlimit_to_unit_limit
+    service_name: nginx
+    candidate_key: service.directive.worker_rlimit_nofile
+
+  - id: nginx_worker_processes_scale_check
+    enabled: true
+    action: signal
+    kind: candidate_scale_outlier
+    service_name: nginx
+    candidate_key: service.directive.worker_processes
+    min_logical_cores: 32
+    min_recommended_value: 32
+    preferred_value: "auto or scale-aware worker count"
+    detail: "nginx worker_processes appears undersized for a high-core host; prefer auto or a scale-aware worker count."
+
+  - id: nginx_worker_connections_floor
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    service_name: nginx
+    candidate_key: service.directive.worker_connections
+    min_logical_cores: 32
+    floor_value: 8192
+
+  - id: signal_nginx_cpu_affinity_on_dual_numa
+    enabled: true
+    action: signal
+    kind: host_fact_signal
+    service_name: nginx
+    signal_key: worker_cpu_affinity
+    detail: "Dual-NUMA nginx host detected; worker CPU affinity may improve locality."
+    min_logical_cores: 64
+    min_numa_nodes: 2
+
+  - id: signal_nginx_reuseport_consideration
+    enabled: true
+    action: signal
+    kind: host_fact_signal
+    service_name: nginx
+    signal_key: reuseport
+    detail: "Consider listen reuseport on high-core systems if accept distribution becomes a bottleneck."
+    min_logical_cores: 32
+
+  - id: signal_nginx_multi_accept_consideration
+    enabled: true
+    action: recommend
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.multi_accept
+    proposed_value: "on"
+    only_when_current_in:
+      - "off"
+    min_logical_cores: 32
+
+postcheck_escalation:
+  - id: fallback_to_llm
+    enabled: true
+    action: signal
+    kind: host_fact_signal
+    signal_key: escalation
+    detail: "No deterministic quick fix matched; escalate to the single hybrid LLM pass."
