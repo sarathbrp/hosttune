@@ -148,5 +148,6 @@ postcheck_escalation:
     enabled: true
     action: signal
     kind: host_fact_signal
+    only_if_no_action: true
     signal_key: escalation
     detail: "No deterministic quick fix matched; escalate to the single hybrid LLM pass."

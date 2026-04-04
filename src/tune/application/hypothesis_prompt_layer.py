@@ -188,6 +188,15 @@ def format_triage_lines(result: TriageResult) -> list[str]:
         if result.recommended_action is not None
         else "- recommended_action=none"
     )
+    alternate_recommendations = (
+        "- alternate_recommendations="
+        + ", ".join(
+            f"{item.parameter_key} -> {item.proposed_value}"
+            for item in result.alternate_recommendations
+        )
+        if result.alternate_recommendations
+        else "- alternate_recommendations=none"
+    )
     triggered_lines = [
         f"- {rule.section}:{rule.rule_id}; outcome={rule.outcome}; detail={rule.detail}"
         for rule in result.triggered_rules
@@ -195,6 +204,7 @@ def format_triage_lines(result: TriageResult) -> list[str]:
     return [
         autofix,
         recommendation,
+        alternate_recommendations,
         f"- safe_candidate_subset={', '.join(result.safe_candidate_subset) or 'none'}",
         f"- suppressed_candidates={', '.join(result.suppressed_candidates) or 'none'}",
         f"- reboot_required_flags={', '.join(result.reboot_required_flags) or 'none'}",
@@ -381,8 +391,12 @@ def format_hybrid_hypothesis_prompt(
         "do not simulate or re-propose autofix logic",
         "- if recommended_action is present, treat it as the default choice and "
         "only override it when broader context makes it clearly unsafe or lower-value",
+        "- alternate_recommendations are deterministic fallback options; prefer them only when "
+        "the primary recommended_action is clearly inferior in the current context",
         "- use triggered signal rules as supporting context, not as direct "
         "parameter proposals unless they map to an actual selectable candidate",
+        "- the service YAML reference may mention supported knobs that are not selectable in "
+        "this iteration; only choose from 'Selectable candidates'",
         "- do not select suppressed candidates",
         "- do not select reboot-only candidates outside reboot_batch",
         "- do not invent unsupported knobs mentioned only in signal text",

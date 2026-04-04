@@ -77,6 +77,65 @@ def test_triage_emits_signal_for_dual_numa_host() -> None:
     assert any(rule.rule_id == "signal_dual_numa_high_core_host" for rule in result.triggered_rules)
 
 
+def test_triage_hides_fallback_signal_when_recommendation_exists() -> None:
+    result = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(
+        build_hypothesis_context()
+    )
+    assert result.recommended_action is not None
+    assert not any(rule.rule_id == "fallback_to_llm" for rule in result.triggered_rules)
+
+
+def test_triage_preserves_alternate_recommendations(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    rules_yaml = """
+kernel_os_baseline:
+  - id: recommend_somaxconn_high_core
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    candidate_key: sysctl.net.core.somaxconn
+    min_logical_cores: 32
+    floor_value: 8192
+application_discovery_sanity:
+  - id: nginx_align_worker_rlimit_nofile
+    enabled: true
+    action: recommend
+    kind: align_worker_rlimit_to_unit_limit
+    service_name: nginx
+    candidate_key: service.directive.worker_rlimit_nofile
+"""
+    rules_path = tmp_path / "alternate-rules.yaml"
+    rules_path.write_text(rules_yaml, encoding="utf-8")
+    base = build_hypothesis_context()
+    candidates = tuple(
+        replace(candidate, current_value="1024")
+        if candidate.parameter_key in {
+            "sysctl.net.core.somaxconn",
+            "service.directive.worker_rlimit_nofile",
+        }
+        else replace(candidate, current_value="32768")
+        if candidate.parameter_key == "systemd.unit.limit_nofile"
+        else candidate
+        for candidate in base.candidates
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=candidates,
+        deferred_candidates=base.deferred_candidates,
+        history=base.history,
+        active_parameter_keys=base.active_parameter_keys,
+        best_parameter_values=base.best_parameter_values,
+    )
+    result = RuleBasedTriage(TriageRulesLoader().load(rules_path)).evaluate(context)
+    assert result.recommended_action is not None
+    assert result.alternate_recommendations
+    assert any(
+        item.parameter_key == "service.directive.worker_rlimit_nofile"
+        for item in result.alternate_recommendations
+    )
+
+
 def test_triage_recommends_candidate_floor_when_below_threshold(tmp_path) -> None:  # type: ignore[no-untyped-def]
     rules_yaml = """
 kernel_os_baseline:

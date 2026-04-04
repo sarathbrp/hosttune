@@ -103,8 +103,10 @@ def test_hybrid_prompt_includes_triage_section() -> None:
     prompt = format_hybrid_hypothesis_prompt(context, triage)
     assert "Rule-based triage result:" in prompt
     assert "autofix_action=" in prompt
+    assert "alternate_recommendations=" in prompt
     assert "Selected runtime config snippet:" in prompt
     assert "Selected service YAML reference snippet:" in prompt
     assert "triage autofix is already resolved before this prompt" in prompt
+    assert "only choose from 'Selectable candidates'" in prompt
     assert "do not invent unsupported knobs mentioned only in signal text" in prompt
     assert "rollback_plan" in prompt

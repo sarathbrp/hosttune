@@ -23,6 +23,7 @@ class TriggeredRule:
 class TriageResult:
     autofix_action: TriageRecommendation | None
     recommended_action: TriageRecommendation | None
+    alternate_recommendations: tuple[TriageRecommendation, ...]
     safe_candidate_subset: tuple[str, ...]
     suppressed_candidates: tuple[str, ...]
     triggered_rules: tuple[TriggeredRule, ...]

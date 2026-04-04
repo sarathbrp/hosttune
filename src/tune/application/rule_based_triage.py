@@ -54,11 +54,15 @@ class RuleBasedTriage:
         candidates_by_key = {candidate.parameter_key: candidate for candidate in context.candidates}
         triggered: list[TriggeredRule] = []
         autofix: TriageRecommendation | None = None
-        recommendation: TriageRecommendation | None = None
+        recommendations: list[TriageRecommendation] = []
 
         for section, rules in self.ruleset.sections.items():
             for rule in rules:
                 if rule.get("enabled", True) is False:
+                    continue
+                if rule.get("only_if_no_action", False) and (
+                    autofix is not None or recommendations
+                ):
                     continue
                 outcome = self._evaluate_rule(rule, section, context, candidates_by_key)
                 if outcome is None:
@@ -69,8 +73,11 @@ class RuleBasedTriage:
                 action = str(rule.get("action", "recommend"))
                 if action == "autofix" and autofix is None:
                     autofix = outcome[1]
-                elif action != "autofix" and recommendation is None:
-                    recommendation = outcome[1]
+                elif action != "autofix":
+                    recommendations.append(outcome[1])
+
+        recommendation = recommendations[0] if recommendations else None
+        alternate_recommendations = tuple(recommendations[1:])
 
         suppressed = tuple(sorted(self._suppressed_candidates(context, autofix, recommendation)))
         safe_subset = tuple(
@@ -93,6 +100,7 @@ class RuleBasedTriage:
         return TriageResult(
             autofix_action=autofix,
             recommended_action=recommendation,
+            alternate_recommendations=alternate_recommendations,
             safe_candidate_subset=safe_subset,
             suppressed_candidates=suppressed,
             triggered_rules=tuple(triggered),
