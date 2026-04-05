@@ -24,6 +24,7 @@ from tune.domain.iteration_record import TuneIterationRecord
 from tune.domain.hypothesis_models import (
     CandidateSource,
     HypothesisStatus,
+    ModelUsage,
     TunePhase,
     TuningHypothesis,
 )
@@ -220,7 +221,12 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
                 "Hypothesis",
                 (),
                 {
-                    "model_usage": None,
+                    "model_usage": ModelUsage(
+                        model_name="/models/test",
+                        input_tokens=120,
+                        output_tokens=24,
+                        total_tokens=144,
+                    ),
                     "parameter_key": "service.directive.access_log",
                     "proposed_value": "off",
                 },
@@ -273,7 +279,9 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     assert "Final retained config: service.directive.access_log=off" in rendered
     assert "Iteration history" in rendered
     assert "| duration " in rendered
+    assert "| tokens " in rendered
     assert "1.00s" in rendered
+    assert "144" in rendered
     assert "service.directive.access_log" in rendered
     assert "homepage=1234.50" in rendered
     assert "homepage=1085909.00" in rendered

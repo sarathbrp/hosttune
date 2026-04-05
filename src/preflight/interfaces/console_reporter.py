@@ -262,6 +262,9 @@ class ConsoleReporter:
                     f"{item.workload_name}={item.median_requests_per_second:.2f}"
                     for item in record.benchmark_result.workload_summaries
                 )
+            usage_display = "0"
+            if record.hypothesis.model_usage is not None:
+                usage_display = str(record.hypothesis.model_usage.total_tokens)
             status = history_by_iteration.get(record.iteration_number, "unknown")
             rows.append(
                 [
@@ -270,6 +273,7 @@ class ConsoleReporter:
                     self._truncate_cell(record.hypothesis.parameter_key, 28),
                     self._truncate_cell(record.hypothesis.proposed_value, 12),
                     f"{record.duration_seconds:.2f}s",
+                    usage_display,
                     status,
                     self._truncate_cell(baseline_summary, 30),
                     self._truncate_cell(benchmark_summary, 30),
@@ -284,6 +288,7 @@ class ConsoleReporter:
                     "parameter",
                     "value",
                     "duration",
+                    "tokens",
                     "status",
                     "baseline_rps",
                     "benchmarked_rps",
