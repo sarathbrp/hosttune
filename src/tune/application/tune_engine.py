@@ -52,6 +52,7 @@ class SupportsHypothesisGeneration(Protocol):
 def _refresh_snapshot_runtime_state(
     context: TuneContext,
     executor: CommandExecutor,
+    logger: ExecutionLogger | None = None,
 ) -> SnapshotResult:
     """Re-run runtime_state_command so the LLM sees the current live config."""
     from dataclasses import replace as dc_replace
@@ -61,14 +62,13 @@ def _refresh_snapshot_runtime_state(
         return context.snapshot
     result = executor.run(cmd)
     if result.exit_code != 0:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Snapshot refresh failed (exit=%d, cmd=%r): %s; using stale snapshot",
-            result.exit_code,
-            cmd,
-            result.stderr.strip() or result.stdout.strip(),
-        )
+        detail = result.stderr.strip() or result.stdout.strip()
+        if logger is not None:
+            logger.stage_detail(
+                "tune",
+                f"Snapshot refresh failed (exit={result.exit_code}): {detail}; "
+                "using stale snapshot",
+            )
         return context.snapshot
     return dc_replace(context.snapshot, runtime_state_output=result.stdout)
 
@@ -123,12 +123,25 @@ class TuneEngine:
             )
             raise ValueError(f"Pre-tune health gate failed: {detail}")
         self.logger.stage_detail("tune", "Pre-tune health gate passed.")
+        self._record_kb_event(
+            context=context,
+            component="tuning_executor",
+            event_type="pre_tune_health_gate",
+            payload={
+                "passed": True,
+                "checks": [
+                    {"name": check.name, "passed": check.passed, "detail": check.detail}
+                    for check in baseline_checks
+                ],
+            },
+        )
         if deferred_catalog:
             self.logger.stage_detail(
                 "tune",
                 f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
             )
-        while not self.phase_controller.should_stop(state, all_candidates):
+        stop_reason = self.phase_controller.stop_reason(state, all_candidates)
+        while stop_reason is None:
             # Rebuild catalog each iteration so current_values reflect applied changes.
             # Without this, the no-op check compares against stale startup values.
             all_candidates = self.candidate_catalog_builder.build(context, target_executor)
@@ -141,6 +154,16 @@ class TuneEngine:
                 self.logger.stage_detail(
                     "tune",
                     f"Phase advanced: {previous_phase.value} -> {phase.value}",
+                )
+                self._record_kb_event(
+                    context=context,
+                    component="phase_controller",
+                    event_type="phase_transition",
+                    phase=phase,
+                    payload={
+                        "from_phase": previous_phase.value,
+                        "to_phase": phase.value,
+                    },
                 )
             candidates = self.phase_controller.filter_candidates(
                 phase,
@@ -158,9 +181,18 @@ class TuneEngine:
                             "Set allow_reboot=true to unlock."
                         ),
                     )
+                    stop_reason = "reboot_blocked"
                 else:
                     self.logger.stage_detail(
                         "tune", "No eligible candidates remain for current phase."
+                    )
+                    stop_reason = "no_candidates"
+                    self._record_kb_event(
+                        context=context,
+                        component="phase_controller",
+                        event_type="no_candidates",
+                        phase=phase,
+                        payload={"phase": phase.value},
                     )
                 break
             iteration_number = state.total_iterations + 1
@@ -193,8 +225,30 @@ class TuneEngine:
                         f"score={state.best_configuration.score:.2%}"
                     ),
                 )
+                self._record_kb_event(
+                    context=context,
+                    component="best_config_tracker",
+                    event_type="best_config_updated",
+                    iteration_number=state.best_configuration.iteration_number,
+                    phase=phase,
+                    payload={
+                        "score": state.best_configuration.score,
+                        "parameter_values": state.best_configuration.parameter_values,
+                        "workloads": []
+                        if record.evaluation_result is None
+                        else [
+                            {
+                                "workload_name": item.workload_name,
+                                "relative_change": item.relative_change,
+                                "current_requests_per_second": item.current_requests_per_second,
+                            }
+                            for item in record.evaluation_result.workload_evaluations
+                        ],
+                    },
+                )
             self.recorder.record(context, record)
             self.recorder.record_scoreboard(context, state.scoreboard)
+            stop_reason = self.phase_controller.stop_reason(state, all_candidates)
         provisional_keys = {
             record.hypothesis.parameter_key
             for record in state.history
@@ -209,6 +263,13 @@ class TuneEngine:
                     f"(unverified) parameter(s): {', '.join(sorted(provisional_keys))}"
                 ),
             )
+        state.stop_reason = stop_reason or "completed"
+        self._record_kb_event(
+            context=context,
+            component="convergence_logic",
+            event_type="stop_reason",
+            payload={"stop_reason": state.stop_reason},
+        )
         self.logger.stage_end("tune")
         return state
 
@@ -227,7 +288,7 @@ class TuneEngine:
         started_timer = perf_counter()
         # Refresh runtime_state (e.g. nginx -T) so the LLM sees the live config,
         # not the stale snapshot captured before tuning started.
-        live_snapshot = _refresh_snapshot_runtime_state(context, target_executor)
+        live_snapshot = _refresh_snapshot_runtime_state(context, target_executor, self.logger)
         live_context = replace(context, snapshot=live_snapshot)
         hyp_context = HypothesisContext(
             tune_context=live_context,
@@ -248,13 +309,23 @@ class TuneEngine:
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
-        except ValueError as exc:
-            # All proposed hypotheses were invalid/no-op — skip this iteration gracefully
-            # rather than crashing the session. This happens when all candidates are at
-            # their current value (no-op) or outside allowed ranges.
+        except Exception as exc:
+            # Catch broadly so a single bad LLM response or parse error doesn't crash
+            # the entire session. Log the full exception type for debugging.
             self.logger.stage_detail(
                 "tune",
-                f"Hypothesis generation failed (no valid proposals): {exc} — skipping iteration.",
+                (
+                    f"Hypothesis generation failed ({type(exc).__name__}): {exc} "
+                    "— skipping iteration."
+                ),
+            )
+            self._record_kb_event(
+                context=context,
+                component="hybrid_llm",
+                event_type="hypothesis_generation_failed",
+                iteration_number=iteration_number,
+                phase=phase,
+                payload={"error": str(exc)},
             )
             completed_at = datetime.now(UTC)
             duration_seconds = perf_counter() - started_timer
@@ -318,6 +389,17 @@ class TuneEngine:
                     f"reason={primary_pre_apply.reason}"
                 ),
             )
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="pre_apply_rejected",
+                iteration_number=iteration_number,
+                phase=phase,
+                payload={
+                    "parameter_key": primary.parameter_key,
+                    "reason": primary_pre_apply.reason,
+                },
+            )
             completed_at = datetime.now(UTC)
             duration_seconds = perf_counter() - started_timer
             record = TuneIterationRecord(
@@ -377,9 +459,31 @@ class TuneEngine:
                         f"mode={ac.apply_mode.value}"
                     ),
                 )
-            except ValueError as exc:
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="change_applied",
+                    iteration_number=iteration_number,
+                    phase=phase,
+                    payload={
+                        "parameter_key": h.parameter_key,
+                        "previous_value": ac.previous_value,
+                        "applied_value": ac.applied_value,
+                        "apply_mode": ac.apply_mode.value,
+                        "apply_command": ac.apply_command,
+                    },
+                )
+            except Exception as exc:
                 apply_error = exc
                 self.logger.stage_detail("tune", f"Apply failed for {h.parameter_key}: {exc}")
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="apply_failed",
+                    iteration_number=iteration_number,
+                    phase=phase,
+                    payload={"parameter_key": h.parameter_key, "error": str(exc)},
+                )
                 break
 
         if apply_error is not None:
@@ -415,6 +519,21 @@ class TuneEngine:
             context, primary_applied_change, target_executor
         )
         self._log_validation(validation_result)
+        self._record_kb_event(
+            context=context,
+            component="tuning_executor",
+            event_type="validation_completed",
+            iteration_number=iteration_number,
+            phase=phase,
+            payload={
+                "parameter_key": primary.parameter_key,
+                "healthy": validation_result.healthy,
+                "checks": [
+                    {"name": check.name, "passed": check.passed, "detail": check.detail}
+                    for check in validation_result.checks
+                ],
+            },
+        )
 
         benchmark_result = None
         evaluation_result = None
@@ -441,6 +560,17 @@ class TuneEngine:
                     "reason=validation_failed"
                 ),
             )
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="rollback_completed",
+                iteration_number=iteration_number,
+                phase=phase,
+                payload={
+                    "parameters": sorted(applied_changes),
+                    "reason": "validation_failed",
+                },
+            )
             status = HypothesisStatus.FAILED_VALIDATION
         else:
             benchmark_result = self.benchmark_executor.run(
@@ -451,8 +581,54 @@ class TuneEngine:
                 telemetry_executor=target_executor,
             )
             self._log_benchmark(benchmark_result)
+            self._record_kb_event(
+                context=context,
+                component="benchmark_runner",
+                event_type="benchmark_completed",
+                iteration_number=iteration_number,
+                phase=phase,
+                payload={
+                    "stable": benchmark_result.stable,
+                    "run_count": benchmark_result.run_count,
+                    "variance_threshold": benchmark_result.variance_threshold,
+                    "workloads": [
+                        {
+                            "workload_name": item.workload_name,
+                            "median_requests_per_second": item.median_requests_per_second,
+                            "median_total_requests": item.median_total_requests,
+                            "median_latency_ms": item.median_latency_ms,
+                            "relative_variance": item.relative_variance,
+                            "stable": item.stable,
+                        }
+                        for item in benchmark_result.workload_summaries
+                    ],
+                },
+            )
             evaluation_result = self.result_evaluator.evaluate(
                 context, benchmark_result, phase=phase
+            )
+            self._record_kb_event(
+                context=context,
+                component="benchmark_runner",
+                event_type="evaluation_completed",
+                iteration_number=iteration_number,
+                phase=phase,
+                payload={
+                    "decision": evaluation_result.decision.value,
+                    "summary": evaluation_result.summary,
+                    "guardrails_held": evaluation_result.guardrails_held,
+                    "drift_detected": evaluation_result.drift_detected,
+                    "workloads": [
+                        {
+                            "workload_name": item.workload_name,
+                            "baseline_requests_per_second": item.baseline_requests_per_second,
+                            "current_requests_per_second": item.current_requests_per_second,
+                            "relative_change": item.relative_change,
+                            "above_noise_floor": item.above_noise_floor,
+                        }
+                        for item in evaluation_result.workload_evaluations
+                    ],
+                },
             )
             if evaluation_result.decision is EvaluationDecision.ACCEPT:
                 attribution_verification = self.attribution_verifier.verify(
@@ -464,6 +640,18 @@ class TuneEngine:
                     benchmark_runner_executor=benchmark_executor,
                 )
                 self._log_attribution_verification(attribution_verification)
+                self._record_kb_event(
+                    context=context,
+                    component="benchmark_runner",
+                    event_type="attribution_verification_completed",
+                    iteration_number=iteration_number,
+                    phase=phase,
+                    payload={
+                        "verified": attribution_verification.verified,
+                        "summary": attribution_verification.summary,
+                        "average_drop": attribution_verification.average_drop,
+                    },
+                )
                 if attribution_verification.verified:
                     evaluation_result = replace(
                         evaluation_result,
@@ -534,6 +722,17 @@ class TuneEngine:
                     "tune",
                     ("Rollback (all): " f"parameters={list(applied_changes)} " f"reason={reason}"),
                 )
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="rollback_completed",
+                    iteration_number=iteration_number,
+                    phase=phase,
+                    payload={
+                        "parameters": sorted(applied_changes),
+                        "reason": reason,
+                    },
+                )
 
         completed_at = datetime.now(UTC)
         duration_seconds = perf_counter() - started_timer
@@ -570,7 +769,7 @@ class TuneEngine:
         for param_key, ac in applied_changes.items():
             try:
                 self.rollback_coordinator.rollback(ac, target_executor)
-            except ValueError as exc:
+            except Exception as exc:
                 failures.append(param_key)
                 self.logger.stage_detail("tune", f"ROLLBACK FAILED for {param_key}: {exc}")
         if failures:
@@ -598,6 +797,30 @@ class TuneEngine:
         if evaluation_result.decision is EvaluationDecision.REJECT:
             return HypothesisStatus.REJECTED
         return HypothesisStatus.INCONCLUSIVE
+
+    def _record_kb_event(
+        self,
+        *,
+        context: TuneContext,
+        component: str,
+        event_type: str,
+        payload: object,
+        iteration_number: int | None = None,
+        phase: TunePhase | None = None,
+    ) -> None:
+        artifacts = context.artifacts
+        knowledge_base = context.knowledge_base
+        if artifacts is None or knowledge_base is None:
+            return
+        knowledge_base.record_event(
+            run_id=artifacts.session_id,
+            component=component,
+            event_type=event_type,
+            payload=payload,
+            iteration_number=iteration_number,
+            phase=None if phase is None else phase.value,
+            service_name=context.onboard.service_name,
+        )
 
     def _log_hypothesis(
         self,

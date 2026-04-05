@@ -1,7 +1,9 @@
+import sqlite3
 from dataclasses import replace
 
 from preflight.domain.models import CommandResult
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
+from preflight.infrastructure.knowledge_base import KnowledgeBase
 from preflight.interfaces.execution_logger import ExecutionLogger
 from tune.application.apply_coordinator import (
     ApplyCoordinator,
@@ -194,6 +196,7 @@ class VerifiedAttributionVerifier:
 
 def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:  # type: ignore[no-untyped-def]
     base_context = build_tune_context()
+    knowledge_base = KnowledgeBase(tmp_path / "artifacts" / "knowledge_base.sqlite")
     context = replace(
         base_context,
         preflight=replace(
@@ -204,8 +207,16 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
             session_id="abc123def456",
             session_directory=tmp_path / "artifacts" / "abc123def456",
         ),
+        knowledge_base=knowledge_base,
     )
     context.artifacts.session_directory.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+    context.artifacts.stage_files["knowledge_base"] = knowledge_base.path  # type: ignore[union-attr]
+    knowledge_base.record_run(
+        run_id="abc123def456",
+        preflight=context.preflight,
+        service_name=context.onboard.service_name,
+        benchmark_target=context.baseline.benchmark_target,
+    )
     target_executor = TargetExecutorDouble()
     benchmark_executor = BenchmarkExecutorDouble(
         [
@@ -289,6 +300,18 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
     assert any("Validate:" in message for message in logger.messages)
     assert any("Benchmark:" in message for message in logger.messages)
     assert any("Evaluate:" in message for message in logger.messages)
+    event_types = [
+        row[0]
+        for row in sqlite3.connect(knowledge_base.path)
+        .execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id ASC",
+            ("abc123def456",),
+        )
+        .fetchall()
+    ]
+    assert "change_applied" in event_types
+    assert "benchmark_completed" in event_types
+    assert "evaluation_completed" in event_types
 
 
 def test_tune_engine_logs_model_token_summary(tmp_path) -> None:  # type: ignore[no-untyped-def]

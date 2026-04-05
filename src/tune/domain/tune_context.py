@@ -11,6 +11,7 @@ from snapshot.domain.models import SnapshotResult
 
 if TYPE_CHECKING:
     from host_profile.domain.models import HostProfile
+    from preflight.infrastructure.knowledge_base import KnowledgeBase
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class TuneContext:
     benchmark_config: BenchmarkConfig
     artifacts: RuntimeArtifacts | None
     host_profile: HostProfile | None = None  # optional; loaded from host-profiles/ by name
+    knowledge_base: KnowledgeBase | None = None
 
     @property
     def effective_variance_threshold(self) -> float:

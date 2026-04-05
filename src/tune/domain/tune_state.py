@@ -35,6 +35,7 @@ class TuneState:
     iterations_since_best_update: int = 0
     drift_detected: bool = False
     scoreboard: TuneScoreboard = field(default_factory=TuneScoreboard)
+    stop_reason: str | None = None
 
     @classmethod
     def initialize(cls: type[TuneState], max_iterations: int) -> TuneState:

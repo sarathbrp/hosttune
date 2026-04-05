@@ -35,7 +35,7 @@ class ConsoleReporter:
             self._render_onboard(onboard),
             self._render_snapshot(snapshot),
             self._render_baseline(baseline),
-            self._render_tune(tune),
+            self._render_tune(tune, baseline),
         ]
         return "\n\n".join(section for section in sections if section)
 
@@ -154,7 +154,61 @@ class ConsoleReporter:
         )
         return rendered
 
-    def _render_tune(self, tune: TuneState | None) -> str:
+    def _render_best_iteration_table(
+        self,
+        tune: TuneState,
+        baseline: BaselineResult | None,
+    ) -> list[str]:
+        if tune.best_configuration is None or baseline is None:
+            return []
+        best_record = next(
+            (
+                record
+                for record in tune.iteration_records
+                if record.iteration_number == tune.best_configuration.iteration_number
+            ),
+            None,
+        )
+        if best_record is None or best_record.benchmark_result is None:
+            return []
+
+        baseline_by_name = {
+            workload.workload_name: workload.requests_per_second
+            for workload in baseline.workload_results
+        }
+        rows: list[tuple[str, str, str, str]] = []
+        for summary in best_record.benchmark_result.workload_summaries:
+            baseline_rps = baseline_by_name.get(summary.workload_name)
+            if baseline_rps is None or baseline_rps <= 0.0:
+                continue
+            best_rps = summary.median_requests_per_second
+            relative_change = (best_rps - baseline_rps) / baseline_rps
+            rows.append(
+                (
+                    summary.workload_name,
+                    f"{baseline_rps:.2f}",
+                    f"{best_rps:.2f}",
+                    f"{relative_change:.1%}",
+                )
+            )
+        if not rows:
+            return []
+        rendered = [
+            f"  Best iteration: {tune.best_configuration.iteration_number}",
+            "  Best comparison",
+            "    workload   baseline_rps     best_rps   change",
+        ]
+        rendered.extend(
+            f"    {name:<10} {baseline_rps:>12} {best_rps:>12} {change:>8}"
+            for name, baseline_rps, best_rps, change in rows
+        )
+        return rendered
+
+    def _render_tune(
+        self,
+        tune: TuneState | None,
+        baseline: BaselineResult | None,
+    ) -> str:
         if tune is None:
             return ""
 
@@ -186,19 +240,16 @@ class ConsoleReporter:
                 or "none"
             )
         active = ", ".join(sorted(tune.active_changes)) or "none"
-        return "\n".join(
-            (
-                "Tune",
-                f"  Current phase: {tune.current_phase.value}",
-                f"  Iterations: {tune.total_iterations}",
-                f"  Accepted hypotheses: {accepted}",
-                f"  Active changes: {active}",
-                (
-                    f"  Model tokens: input={input_tokens} "
-                    f"output={output_tokens} total={total_tokens}"
-                ),
-                f"  Best score: {best_score}",
-                f"  Best config: {best_config}",
-                f"  Drift detected: {tune.drift_detected}",
-            )
-        )
+        lines = [
+            "Tune",
+            f"  Current phase: {tune.current_phase.value}",
+            f"  Iterations: {tune.total_iterations}",
+            f"  Accepted hypotheses: {accepted}",
+            f"  Active changes: {active}",
+            f"  Model tokens: input={input_tokens} output={output_tokens} total={total_tokens}",
+            f"  Best score: {best_score}",
+            f"  Best config: {best_config}",
+            f"  Drift detected: {tune.drift_detected}",
+        ]
+        lines.extend(self._render_best_iteration_table(tune, baseline))
+        return "\n".join(lines)

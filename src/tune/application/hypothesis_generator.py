@@ -41,6 +41,48 @@ class LlmHypothesisGenerator:
 
     def generate(self, context: HypothesisContext) -> tuple[TuningHypothesis, ...]:
         triage_result = self.triage.evaluate(context) if self.triage is not None else None
+        if triage_result is not None:
+            self._record_kb_event(
+                context=context,
+                component="triage_layer",
+                event_type="triage_completed",
+                payload={
+                    "autofix_action": None
+                    if triage_result.autofix_action is None
+                    else {
+                        "parameter_key": triage_result.autofix_action.parameter_key,
+                        "proposed_value": triage_result.autofix_action.proposed_value,
+                        "reason": triage_result.autofix_action.reason,
+                    },
+                    "recommended_action": None
+                    if triage_result.recommended_action is None
+                    else {
+                        "parameter_key": triage_result.recommended_action.parameter_key,
+                        "proposed_value": triage_result.recommended_action.proposed_value,
+                        "reason": triage_result.recommended_action.reason,
+                    },
+                    "alternate_recommendations": [
+                        {
+                            "parameter_key": item.parameter_key,
+                            "proposed_value": item.proposed_value,
+                            "reason": item.reason,
+                        }
+                        for item in triage_result.alternate_recommendations
+                    ],
+                    "safe_candidate_subset": list(triage_result.safe_candidate_subset),
+                    "suppressed_candidates": list(triage_result.suppressed_candidates),
+                    "triggered_rules": [
+                        {
+                            "rule_id": item.rule_id,
+                            "section": item.section,
+                            "outcome": item.outcome,
+                            "detail": item.detail,
+                        }
+                        for item in triage_result.triggered_rules
+                    ],
+                    "escalation_reason": triage_result.escalation_reason,
+                },
+            )
         if triage_result is not None and triage_result.autofix_action is not None:
             autofix = triage_result.autofix_action
             candidate = self._find_candidate(context, autofix.parameter_key)
@@ -52,6 +94,16 @@ class LlmHypothesisGenerator:
                     f"value={autofix.proposed_value} "
                     f"reason={autofix.reason}"
                 ),
+            )
+            self._record_kb_event(
+                context=context,
+                component="hybrid_llm",
+                event_type="llm_skipped_autofix",
+                payload={
+                    "parameter_key": autofix.parameter_key,
+                    "proposed_value": autofix.proposed_value,
+                    "reason": autofix.reason,
+                },
             )
             return (
                 TuningHypothesis(
@@ -80,6 +132,17 @@ class LlmHypothesisGenerator:
             f"phase={context.phase.value} iteration={context.iteration_number} "
             f"candidates={len(context.candidates)}",
         )
+        self._record_kb_event(
+            context=context,
+            component="hybrid_llm",
+            event_type="llm_prompt_requested",
+            payload={
+                "candidate_count": len(context.candidates),
+                "deferred_candidate_count": len(context.deferred_candidates),
+                "history_count": len(context.history),
+                "active_parameter_keys": list(context.active_parameter_keys),
+            },
+        )
         response = self.model_client.complete(context)
         self._debug_log("LLM raw response", response.content)
         try:
@@ -87,22 +150,59 @@ class LlmHypothesisGenerator:
         except json.JSONDecodeError as exc:
             snippet = response.content[:200]
             msg = f"LLM returned non-JSON response: {exc}; content: {snippet!r}"
+            self._record_kb_event(
+                context=context,
+                component="hybrid_llm",
+                event_type="llm_invalid_response",
+                payload={"error": msg, "response_snippet": snippet},
+            )
             raise ValueError(msg) from exc
-        if isinstance(raw, list):
-            raise ValueError("LLM must return exactly one JSON object, not an array.")
-        if not isinstance(raw, dict):
-            raise ValueError("LLM must return a JSON object.")
-        self._debug_log("LLM parsed payload", json.dumps(raw, sort_keys=True))
-        parameter_key = self._require_string(raw, "parameter_key")
-        proposed_value = self._require_string(raw, "proposed_value")
-        tuning_layer = self._require_string(raw, "tuning_layer")
-        apply_mode = self._require_string(raw, "apply_mode")
-        rationale = self._require_string(raw, "rationale")
-        expected_benchmark_impact = self._require_string(raw, "expected_benchmark_impact")
-        rollback_plan = self._require_string(raw, "rollback_plan")
-        candidate = self._find_candidate(context, parameter_key)
-        self._validate_proposed_value(candidate, proposed_value)
-        self._validate_contract_fields(candidate, tuning_layer, apply_mode)
+        try:
+            if isinstance(raw, list):
+                raise ValueError("LLM must return exactly one JSON object, not an array.")
+            if not isinstance(raw, dict):
+                raise ValueError("LLM must return a JSON object.")
+            self._debug_log("LLM parsed payload", json.dumps(raw, sort_keys=True))
+            parameter_key = self._require_string(raw, "parameter_key")
+            proposed_value = self._require_string(raw, "proposed_value")
+            tuning_layer = self._require_string(raw, "tuning_layer")
+            apply_mode = self._require_string(raw, "apply_mode")
+            rationale = self._require_string(raw, "rationale")
+            expected_benchmark_impact = self._require_string(raw, "expected_benchmark_impact")
+            rollback_plan = self._require_string(raw, "rollback_plan")
+            candidate = self._find_candidate(context, parameter_key)
+            self._validate_proposed_value(candidate, proposed_value)
+            self._validate_contract_fields(candidate, tuning_layer, apply_mode)
+        except ValueError as exc:
+            self._record_kb_event(
+                context=context,
+                component="hybrid_llm",
+                event_type="llm_invalid_response",
+                payload={"error": str(exc), "response": raw},
+            )
+            raise
+        self._record_kb_event(
+            context=context,
+            component="hybrid_llm",
+            event_type="llm_proposal_selected",
+            payload={
+                "parameter_key": candidate.parameter_key,
+                "proposed_value": proposed_value,
+                "tuning_layer": tuning_layer,
+                "apply_mode": apply_mode,
+                "rationale": rationale,
+                "expected_benchmark_impact": expected_benchmark_impact,
+                "rollback_plan": rollback_plan,
+                "token_usage": None
+                if response.usage is None
+                else {
+                    "model_name": response.usage.model_name,
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                },
+            },
+        )
         return (
             TuningHypothesis(
                 phase=context.phase,
@@ -189,6 +289,28 @@ class LlmHypothesisGenerator:
             msg = f"Model response must include non-empty string field: {field_name}"
             raise ValueError(msg)
         return value
+
+    def _record_kb_event(
+        self,
+        *,
+        context: HypothesisContext,
+        component: str,
+        event_type: str,
+        payload: object,
+    ) -> None:
+        artifacts = context.tune_context.artifacts
+        knowledge_base = context.tune_context.knowledge_base
+        if artifacts is None or knowledge_base is None:
+            return
+        knowledge_base.record_event(
+            run_id=artifacts.session_id,
+            iteration_number=context.iteration_number,
+            phase=context.phase.value,
+            component=component,
+            event_type=event_type,
+            service_name=context.tune_context.onboard.service_name,
+            payload=payload,
+        )
 
 
 @dataclass

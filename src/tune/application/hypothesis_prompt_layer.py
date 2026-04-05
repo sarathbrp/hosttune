@@ -262,6 +262,23 @@ def format_service_yaml_reference_snippet(tune_context: TuneContext) -> str:
     return truncate_for_prompt(snippet, 1000)
 
 
+def format_prior_run_memory(tune_context: TuneContext) -> str:
+    artifacts = tune_context.artifacts
+    knowledge_base = tune_context.knowledge_base
+    if artifacts is None or knowledge_base is None:
+        return "- none"
+    summary = knowledge_base.summarize_similar_runs(
+        service_name=tune_context.onboard.service_name,
+        cpu_logical_cores=tune_context.preflight.cpu.logical_cores,
+        numa_nodes=tune_context.preflight.cpu.numa_nodes,
+        platform_summary=tune_context.preflight.platform_summary,
+        nic_driver=tune_context.preflight.network.driver_name,
+        exclude_run_id=artifacts.session_id,
+        limit=3,
+    )
+    return truncate_for_prompt(summary, 420) if summary else "- none"
+
+
 _TELEMETRY_MAX_SECTION = 420
 
 _PHASE_OBJECTIVES: dict[TunePhase, str] = {
@@ -285,6 +302,41 @@ def _format_history_lines(history: tuple[HypothesisRecord, ...]) -> list[str]:
         )
         for r in history
     ] or ["- none"]
+
+
+def format_compact_history_lines(history: tuple[HypothesisRecord, ...]) -> list[str]:
+    if not history:
+        return ["- none"]
+    if len(history) <= 4:
+        return _format_history_lines(history)
+
+    older = history[:-3]
+    recent = history[-3:]
+    accepted = sum(1 for item in older if item.status.value == "accepted")
+    promising = sum(1 for item in older if item.status.value == "promising")
+    inconclusive = sum(1 for item in older if item.status.value == "inconclusive")
+    rejected_like = sum(
+        1
+        for item in older
+        if item.status.value in {"rejected", "rejected_pre_apply", "failed_validation"}
+    )
+    positive_parameters = sorted(
+        {
+            item.hypothesis.parameter_key
+            for item in older
+            if item.status.value in {"accepted", "promising"}
+        }
+    )
+    return [
+        (
+            f"- older_history_summary=count={len(older)}; accepted={accepted}; "
+            f"promising={promising}; inconclusive={inconclusive}; "
+            f"rejected_like={rejected_like}; "
+            f"positive_parameters={', '.join(positive_parameters) or 'none'}"
+        ),
+        "- recent_history:",
+        *_format_history_lines(recent),
+    ]
 
 
 def format_host_profile_digest_lines(context: HypothesisContext) -> list[str]:
@@ -369,6 +421,8 @@ def format_hybrid_hypothesis_prompt(
         format_runtime_config_snippet(tune_context.snapshot.runtime_state_output),
         "Selected service YAML reference snippet:",
         format_service_yaml_reference_snippet(tune_context),
+        "Prior similar run memory:",
+        format_prior_run_memory(tune_context),
         "Baseline workload results:",
         *format_baseline_digest_lines(tune_context),
         "Last benchmark runtime telemetry:",
@@ -380,7 +434,7 @@ def format_hybrid_hypothesis_prompt(
             f"{', '.join(f'{k}={v}' for k, v in context.best_parameter_values) or 'none'}"
         ),
         "Prior history:",
-        *_format_history_lines(context.history),
+        *format_compact_history_lines(context.history),
         "Selectable candidates:",
         *(candidate_lines or ["- none"]),
         "Deferred candidates (visibility only):",

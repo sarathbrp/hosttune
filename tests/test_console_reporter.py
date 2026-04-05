@@ -18,6 +18,8 @@ from snapshot.domain.models import SnapshotResult
 from baseline.domain.models import BaselineResult, WorkloadBenchmarkResult
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
+from tune.domain.benchmark_models import BenchmarkSample, BenchmarkWorkloadSummary, TuneBenchmarkResult
+from tune.domain.iteration_record import TuneIterationRecord
 from tune.domain.hypothesis_models import HypothesisStatus, TunePhase
 from tune.domain.tune_state import TuneState
 
@@ -172,6 +174,48 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
             {"status": HypothesisStatus.REJECTED},
         )(),
     ]
+    tune.best_configuration = type(
+        "BestConfig",
+        (),
+        {
+            "score": 0.9203,
+            "parameter_values": {"service.directive.access_log": "off"},
+            "iteration_number": 1,
+        },
+    )()
+    tune.iteration_records = [
+        TuneIterationRecord(
+            iteration_number=1,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=type("Hypothesis", (), {"model_usage": None})(),
+            applied_change=None,
+            validation_result=None,
+            benchmark_result=TuneBenchmarkResult(
+                validation_result=None,
+                benchmark_command="benchmark",
+                run_count=1,
+                stable=True,
+                variance_threshold=0.05,
+                workload_summaries=(
+                    BenchmarkWorkloadSummary(
+                        workload_name="homepage",
+                        samples=(BenchmarkSample(1, 1085909.0, 9999, 4.2),),
+                        median_requests_per_second=1085909.0,
+                        median_total_requests=9999,
+                        median_latency_ms=4.2,
+                        relative_variance=0.0,
+                        stable=True,
+                    ),
+                ),
+            ),
+            evaluation_result=None,
+            attribution_verification=None,
+            active_parameter_keys=(),
+            started_at_utc="2026-04-04T00:00:00+00:00",
+            completed_at_utc="2026-04-04T00:00:01+00:00",
+            duration_seconds=1.0,
+        )
+    ]
 
     rendered = reporter.render_runtime(snapshot, onboard, runtime_snapshot, baseline, tune)
 
@@ -184,3 +228,6 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     assert "homepage" in rendered
     assert "Comparison" in rendered
     assert "baseline_rps" in rendered
+    assert "Best iteration: 1" in rendered
+    assert "Best comparison" in rendered
+    assert "best_rps" in rendered

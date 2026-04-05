@@ -24,6 +24,9 @@ class RuntimeArtifactStore:
             session_directory=session_directory,
         )
 
+    def knowledge_base_path(self) -> Path:
+        return self._base_directory / "knowledge_base.sqlite"
+
     def write_stage_result(
         self,
         artifacts: RuntimeArtifacts,

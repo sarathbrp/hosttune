@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -316,6 +317,30 @@ def test_instance_writes_stage_jsonl_artifacts(tmp_path: Path) -> None:
     assert "32768" in profile.get("net.ipv4.ip_local_port_range", "")
     assert onboard_record["stage"] == "onboard"
     assert onboard_record["payload"]["service_name"] == "nginx"
+    assert "knowledge_base" in instance.artifacts.stage_files
+
+
+def test_instance_records_stage_events_in_knowledge_base(tmp_path: Path) -> None:
+    instance = HostTuneInstance(
+        config_loader=FakeConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: OnboardSysctlEnrichExecutor(),
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+
+    instance.load_preflight(Path("config.yaml"))
+    instance.load_onboard(Path("config.yaml"))
+
+    assert instance.artifacts is not None
+    with sqlite3.connect(instance.artifacts.stage_files["knowledge_base"]) as connection:
+        rows = connection.execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id ASC",
+            (instance.artifacts.session_id,),
+        ).fetchall()
+    assert [row[0] for row in rows] == ["preflight_completed", "onboard_completed"]
 
 
 def test_instance_builds_tune_context(tmp_path: Path) -> None:

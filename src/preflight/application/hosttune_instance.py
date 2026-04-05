@@ -24,6 +24,7 @@ from preflight.domain.models import (
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from preflight.infrastructure.config_loader import ConfigLoader, LoadedConfig
 from preflight.infrastructure.executors.logging_executor import LoggingCommandExecutor
+from preflight.infrastructure.knowledge_base import KnowledgeBase, host_fingerprint_for_snapshot
 from preflight.infrastructure.parsers.kernel_parser import KernelParser
 from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
@@ -58,6 +59,7 @@ class HostTuneInstance:
     benchmark_config: BenchmarkConfig | None = None
     artifacts: RuntimeArtifacts | None = None
     host_profile: object | None = None  # HostProfile once loaded
+    knowledge_base: KnowledgeBase | None = None
 
     def load_preflight(self, config_path: Path) -> DiscoverySnapshot:
         loaded_config = self.config_loader.load(config_path)
@@ -67,6 +69,18 @@ class HostTuneInstance:
         self.logger.stage_end("preflight")
         self.preflight = snapshot
         self._persist_stage_result("preflight", snapshot)
+        self._record_stage_event(
+            component="snapshot_engine",
+            event_type="preflight_completed",
+            payload={
+                "platform_summary": snapshot.platform_summary,
+                "cpu_logical_cores": snapshot.cpu.logical_cores,
+                "numa_nodes": snapshot.cpu.numa_nodes,
+                "total_memory_kib": snapshot.memory.total_memory_kib,
+                "nic_driver": snapshot.network.driver_name,
+                "hostname": snapshot.platform.hostname,
+            },
+        )
         return snapshot
 
     def load_host_profile(self, config_path: Path) -> object | None:
@@ -99,6 +113,18 @@ class HostTuneInstance:
         self.logger.stage_end("onboard")
         self.onboard = result
         self._persist_stage_result("onboard", result)
+        self._record_stage_event(
+            component="snapshot_engine",
+            event_type="onboard_completed",
+            payload={
+                "service_name": result.service_name,
+                "systemd_unit_name": result.service.identity.systemd_unit_name,
+                "allowed_directives": sorted(result.service.tunable_surface.allowed_directives),
+                "relevant_sysctls": [
+                    entry.name for entry in result.service.tunable_surface.relevant_sysctls
+                ],
+            },
+        )
         return result
 
     def load_snapshot(self, config_path: Path) -> SnapshotResult:
@@ -113,6 +139,16 @@ class HostTuneInstance:
         self.logger.stage_end("snapshot")
         self.snapshot = result
         self._persist_stage_result("snapshot", result)
+        self._record_stage_event(
+            component="snapshot_engine",
+            event_type="snapshot_completed",
+            payload={
+                "snapshot_directory": result.snapshot_directory,
+                "captured_paths": list(result.captured_paths),
+                "restore_steps": len(result.restore_sequence),
+                "process_state_keys": sorted(result.process_state.keys()),
+            },
+        )
         return result
 
     def load_baseline(self, config_path: Path) -> BaselineResult:
@@ -134,6 +170,24 @@ class HostTuneInstance:
         self.baseline = result
         self.benchmark_config = loaded_config.benchmark_config
         self._persist_stage_result("baseline", result)
+        self._record_stage_event(
+            component="snapshot_engine",
+            event_type="baseline_completed",
+            payload={
+                "benchmark_target": result.benchmark_target,
+                "expected_variance": result.expected_variance,
+                "warmup_seconds": result.warmup_seconds,
+                "workloads": [
+                    {
+                        "workload_name": workload.workload_name,
+                        "requests_per_second": workload.requests_per_second,
+                        "total_requests": workload.total_requests,
+                        "average_latency_ms": workload.average_latency_ms,
+                    }
+                    for workload in result.workload_results
+                ],
+            },
+        )
         return result
 
     def build_tune_context(self) -> TuneContext:
@@ -153,6 +207,13 @@ class HostTuneInstance:
             msg = "Benchmark config must be loaded before building TuneContext."
             raise ValueError(msg)
 
+        if self.artifacts is not None and self.knowledge_base is not None:
+            self.knowledge_base.record_run(
+                run_id=self.artifacts.session_id,
+                preflight=self.preflight,
+                service_name=self.onboard.service_name,
+                benchmark_target=self.baseline.benchmark_target,
+            )
         return TuneContext(
             preflight=self.preflight,
             onboard=self.onboard,
@@ -161,6 +222,7 @@ class HostTuneInstance:
             benchmark_config=self.benchmark_config,
             artifacts=self.artifacts,
             host_profile=self.host_profile,  # type: ignore[arg-type]
+            knowledge_base=self.knowledge_base,
         )
 
     def run_tune(
@@ -182,6 +244,44 @@ class HostTuneInstance:
         )
         self.tune = result
         self._persist_stage_result("tune", result)
+        if (
+            self.artifacts is not None
+            and self.knowledge_base is not None
+            and self.preflight is not None
+        ):
+            self.knowledge_base.record_event(
+                run_id=self.artifacts.session_id,
+                component="convergence_logic",
+                event_type="run_completed",
+                service_name=self.onboard.service_name if self.onboard is not None else None,
+                host_fingerprint=host_fingerprint_for_snapshot(
+                    self.preflight,
+                    self.onboard.service_name if self.onboard is not None else None,
+                ),
+                payload={
+                    "stop_reason": result.stop_reason or "unknown",
+                    "current_phase": result.current_phase.value,
+                    "total_iterations": result.total_iterations,
+                    "active_changes": sorted(result.active_changes),
+                },
+            )
+            self.knowledge_base.finalize_run(
+                run_id=self.artifacts.session_id,
+                stop_reason=result.stop_reason or "unknown",
+                best_score=(
+                    None if result.best_configuration is None else result.best_configuration.score
+                ),
+                best_iteration=(
+                    None
+                    if result.best_configuration is None
+                    else result.best_configuration.iteration_number
+                ),
+                best_config=(
+                    None
+                    if result.best_configuration is None
+                    else result.best_configuration.parameter_values
+                ),
+            )
         return result
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
@@ -208,12 +308,37 @@ class HostTuneInstance:
     def _ensure_artifacts(self) -> RuntimeArtifacts:
         if self.artifacts is None:
             self.artifacts = self.artifact_store.create_session()
+            kb_path = self.artifact_store.knowledge_base_path()
+            self.artifacts.stage_files["knowledge_base"] = kb_path
+            if self.knowledge_base is None:
+                self.knowledge_base = KnowledgeBase(kb_path)
         return self.artifacts
 
     def _persist_stage_result(self, stage_name: str, payload: object) -> None:
         artifacts = self._ensure_artifacts()
         file_path = self.artifact_store.write_stage_result(artifacts, stage_name, payload)
         self.logger.artifact_written(stage_name, str(file_path))
+
+    def _record_stage_event(
+        self,
+        *,
+        component: str,
+        event_type: str,
+        payload: object,
+    ) -> None:
+        if self.artifacts is None or self.knowledge_base is None or self.preflight is None:
+            return
+        self.knowledge_base.record_event(
+            run_id=self.artifacts.session_id,
+            component=component,
+            event_type=event_type,
+            service_name=self.onboard.service_name if self.onboard is not None else None,
+            host_fingerprint=host_fingerprint_for_snapshot(
+                self.preflight,
+                self.onboard.service_name if self.onboard is not None else None,
+            ),
+            payload=payload,
+        )
 
     def _enrich_preflight_sysctl_profile_with_contract(
         self,

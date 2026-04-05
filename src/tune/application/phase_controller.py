@@ -101,9 +101,18 @@ class PhaseController:
         state: TuneState,
         candidates: tuple[CandidateParameter, ...],
     ) -> bool:
+        return self.stop_reason(state, candidates) is not None
+
+    def stop_reason(
+        self,
+        state: TuneState,
+        candidates: tuple[CandidateParameter, ...],
+    ) -> str | None:
         if sum(state.remaining_budget.values()) == 0:
-            return True
-        return self._has_converged(state, active_catalog_candidates(candidates))
+            return "budget_exhausted"
+        if self._has_converged(state, active_catalog_candidates(candidates)):
+            return "converged"
+        return None
 
     def _should_advance(
         self,
