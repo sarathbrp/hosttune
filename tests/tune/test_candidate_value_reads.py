@@ -1,5 +1,7 @@
 from typing import cast
 
+import pytest
+
 from preflight.domain.models import CommandExecutor, CommandResult
 from tune.application.candidate_value_reads import (
     parse_directive_from_nginx_dump,
@@ -38,6 +40,24 @@ def test_read_sysctl_catalog_current_falls_back_to_profile() -> None:
     assert read_sysctl_catalog_current("net.core.somaxconn", cast(CommandExecutor, _Ex()), profile) == "1111"
 
 
+def test_read_sysctl_catalog_current_logs_live_fallback(caplog: pytest.LogCaptureFixture) -> None:
+    profile = (("net.core.somaxconn", "1111"),)
+
+    class _Ex:
+        def run(self, command: str) -> CommandResult:
+            return CommandResult(command, 1, "", "permission denied")
+
+    with caplog.at_level("WARNING"):
+        value = read_sysctl_catalog_current(
+            "net.core.somaxconn",
+            cast(CommandExecutor, _Ex()),
+            profile,
+        )
+
+    assert value == "1111"
+    assert "sysctl live read failed for net.core.somaxconn" in caplog.text
+
+
 def test_read_sysctl_catalog_current_no_executor_uses_profile() -> None:
     profile = (("net.core.somaxconn", "3333"),)
     assert read_sysctl_catalog_current("net.core.somaxconn", None, profile) == "3333"
@@ -54,6 +74,27 @@ def test_read_service_directive_catalog_current_dump_when_no_executor() -> None:
     assert (
         read_service_directive_catalog_current(None, "/x", "worker_processes", dump) == "77"
     )
+
+
+def test_read_service_directive_catalog_current_logs_snapshot_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dump = "worker_processes 77;\n"
+
+    class _Ex:
+        def run(self, command: str) -> CommandResult:
+            return CommandResult(command, 1, "", "not found")
+
+    with caplog.at_level("WARNING"):
+        value = read_service_directive_catalog_current(
+            cast(CommandExecutor, _Ex()),
+            "/etc/nginx/nginx.conf",
+            "worker_processes",
+            dump,
+        )
+
+    assert value == "77"
+    assert "directive live read fell back to runtime snapshot" in caplog.text
 
 
 def test_read_network_ring_catalog_current_live_then_preflight() -> None:

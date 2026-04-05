@@ -3,6 +3,7 @@ from pathlib import Path
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from tune.application.hypothesis_prompt_layer import (
+    format_blocked_prior_pairs,
     format_candidate_line_for_llm,
     format_compact_history_lines,
     format_hybrid_hypothesis_prompt,
@@ -158,6 +159,49 @@ def test_prior_run_memory_is_compact(tmp_path) -> None:  # type: ignore[no-untyp
     assert "best=service.directive.access_log=off" in summary
 
 
+def test_blocked_prior_pairs_deduplicate_history() -> None:
+    history = (
+        HypothesisRecord(
+            iteration_number=1,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=TuningHypothesis(
+                phase=TunePhase.WIDE_SWEEP,
+                parameter_key="sysctl.net.core.somaxconn",
+                parameter_name="net.core.somaxconn",
+                domain="kernel_sysctl",
+                tuning_layer=TuningLayer.KERNEL,
+                proposed_value="8192",
+                source=CandidateSource.SERVICE_SYSCTL,
+                apply_mode=ApplyMode.RELOAD,
+                rationale="test",
+            ),
+            status=HypothesisStatus.ACCEPTED,
+            evaluation_summary="accepted",
+        ),
+        HypothesisRecord(
+            iteration_number=2,
+            phase=TunePhase.DOMAIN_FOCUS,
+            hypothesis=TuningHypothesis(
+                phase=TunePhase.DOMAIN_FOCUS,
+                parameter_key="sysctl.net.core.somaxconn",
+                parameter_name="net.core.somaxconn",
+                domain="kernel_sysctl",
+                tuning_layer=TuningLayer.KERNEL,
+                proposed_value="8192",
+                source=CandidateSource.SERVICE_SYSCTL,
+                apply_mode=ApplyMode.RELOAD,
+                rationale="test",
+            ),
+            status=HypothesisStatus.INCONCLUSIVE,
+            evaluation_summary="flat",
+        ),
+    )
+
+    lines = format_blocked_prior_pairs(history)
+
+    assert lines == ["- sysctl.net.core.somaxconn=8192"]
+
+
 def test_hybrid_prompt_includes_triage_section() -> None:
     tune_context = build_tune_context()
     built = CandidateCatalogBuilder().build(tune_context, FakeExecutor())
@@ -180,7 +224,9 @@ def test_hybrid_prompt_includes_triage_section() -> None:
     assert "alternate_recommendations=" in prompt
     assert "Selected runtime config snippet:" in prompt
     assert "Selected service YAML reference snippet:" in prompt
+    assert "Blocked prior parameter/value pairs:" in prompt
     assert "triage autofix is already resolved before this prompt" in prompt
     assert "only choose from 'Selectable candidates'" in prompt
+    assert "do not repeat a parameter/value pair" in prompt
     assert "do not invent unsupported knobs mentioned only in signal text" in prompt
     assert "rollback_plan" in prompt

@@ -224,7 +224,49 @@ def test_phase_controller_domain_focus_includes_winning_tuning_layer_across_doma
     ]
     filtered = PhaseController().filter_candidates(TunePhase.DOMAIN_FOCUS, state, candidates)
     keys = {c.parameter_key for c in filtered}
-    assert keys == {"service.directive.alpha", "service.directive.beta"}
+    assert keys == {"service.directive.beta"}
+
+
+def test_phase_controller_interaction_suppresses_positive_keys() -> None:
+    alpha = CandidateParameter(
+        parameter_key="service.directive.alpha",
+        domain="zone_a",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="alpha",
+        source=CandidateSource.SERVICE_DIRECTIVE,
+        value_type=DirectiveValueType.INTEGER,
+        apply_mode=ApplyMode.RELOAD,
+        priority_tier=PriorityTier.HIGH,
+        allowed_values=(),
+        forbidden_values=(),
+        min_value=1,
+        max_value=10,
+        rationale_hint="test",
+    )
+    beta = replace(alpha, parameter_key="service.directive.beta", parameter_name="beta")
+    state = TuneState.initialize(10)
+    state.history = [
+        HypothesisRecord(
+            iteration_number=1,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=TuningHypothesis(
+                phase=TunePhase.WIDE_SWEEP,
+                parameter_key=alpha.parameter_key,
+                parameter_name=alpha.parameter_name,
+                domain=alpha.domain,
+                tuning_layer=alpha.tuning_layer,
+                proposed_value="5",
+                source=alpha.source,
+                apply_mode=alpha.apply_mode,
+                rationale="test",
+            ),
+            status=HypothesisStatus.ACCEPTED,
+        )
+    ]
+
+    filtered = PhaseController().filter_candidates(TunePhase.INTERACTION, state, (alpha, beta))
+
+    assert {c.parameter_key for c in filtered} == {"service.directive.beta"}
 
 
 def test_phase_controller_domain_focus_without_accepts_returns_full_catalog() -> None:

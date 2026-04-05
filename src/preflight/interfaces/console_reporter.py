@@ -230,6 +230,7 @@ class ConsoleReporter:
         )
         best_config = "none"
         best_score = "n/a"
+        final_retained_config = "none"
         if tune.best_configuration is not None:
             best_score = f"{tune.best_configuration.score:.2%}"
             best_config = (
@@ -238,6 +239,11 @@ class ConsoleReporter:
                     for key, value in sorted(tune.best_configuration.parameter_values.items())
                 )
                 or "none"
+            )
+        if tune.active_changes:
+            final_retained_config = ", ".join(
+                f"{key}={change.applied_value}"
+                for key, change in sorted(tune.active_changes.items())
             )
         active = ", ".join(sorted(tune.active_changes)) or "none"
         lines = [
@@ -248,7 +254,8 @@ class ConsoleReporter:
             f"  Active changes: {active}",
             f"  Model tokens: input={input_tokens} output={output_tokens} total={total_tokens}",
             f"  Best score: {best_score}",
-            f"  Best config: {best_config}",
+            f"  Best iteration config: {best_config}",
+            f"  Final retained config: {final_retained_config}",
             f"  Drift detected: {tune.drift_detected}",
         ]
         lines.extend(self._render_best_iteration_table(tune, baseline))

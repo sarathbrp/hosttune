@@ -339,6 +339,25 @@ def format_compact_history_lines(history: tuple[HypothesisRecord, ...]) -> list[
     ]
 
 
+def format_blocked_prior_pairs(history: tuple[HypothesisRecord, ...]) -> list[str]:
+    seen: list[str] = []
+    added: set[tuple[str, str]] = set()
+    for item in history:
+        pair = (item.hypothesis.parameter_key, item.hypothesis.proposed_value)
+        if pair in added:
+            continue
+        added.add(pair)
+        seen.append(f"{pair[0]}={pair[1]}")
+    if not seen:
+        return ["- none"]
+    if len(seen) <= 6:
+        return [f"- {value}" for value in seen]
+    return [
+        *(f"- {value}" for value in seen[:6]),
+        f"- ... ({len(seen) - 6} more blocked prior pair(s))",
+    ]
+
+
 def format_host_profile_digest_lines(context: HypothesisContext) -> list[str]:
     """Compact host profile summary for the rhel_expert prompt."""
     host_profile = context.tune_context.host_profile
@@ -435,6 +454,8 @@ def format_hybrid_hypothesis_prompt(
         ),
         "Prior history:",
         *format_compact_history_lines(context.history),
+        "Blocked prior parameter/value pairs:",
+        *format_blocked_prior_pairs(context.history),
         "Selectable candidates:",
         *(candidate_lines or ["- none"]),
         "Deferred candidates (visibility only):",
@@ -451,6 +472,8 @@ def format_hybrid_hypothesis_prompt(
         "parameter proposals unless they map to an actual selectable candidate",
         "- the service YAML reference may mention supported knobs that are not selectable in "
         "this iteration; only choose from 'Selectable candidates'",
+        "- do not repeat a parameter/value pair that already appears under "
+        "'Blocked prior parameter/value pairs'",
         "- do not select suppressed candidates",
         "- do not select reboot-only candidates outside reboot_batch",
         "- do not invent unsupported knobs mentioned only in signal text",

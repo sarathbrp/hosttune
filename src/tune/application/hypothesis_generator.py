@@ -172,6 +172,7 @@ class LlmHypothesisGenerator:
             rollback_plan = self._require_string(raw, "rollback_plan")
             candidate = self._find_candidate(context, parameter_key)
             self._validate_proposed_value(candidate, proposed_value)
+            self._validate_against_history(context, candidate, proposed_value)
             self._validate_contract_fields(candidate, tuning_layer, apply_mode)
         except ValueError as exc:
             self._record_kb_event(
@@ -260,6 +261,24 @@ class LlmHypothesisGenerator:
         if candidate.current_value is not None and proposed_value == candidate.current_value:
             msg = f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key}"
             raise ValueError(msg)
+
+    def _validate_against_history(
+        self,
+        context: HypothesisContext,
+        candidate: CandidateParameter,
+        proposed_value: str,
+    ) -> None:
+        for record in context.history:
+            prior = record.hypothesis
+            if (
+                prior.parameter_key == candidate.parameter_key
+                and prior.proposed_value == proposed_value
+            ):
+                raise ValueError(
+                    "Model proposed duplicate parameter/value pair "
+                    f"{candidate.parameter_key}={proposed_value!r} already tried in "
+                    f"iteration {record.iteration_number}"
+                )
 
     def _validate_contract_fields(
         self,

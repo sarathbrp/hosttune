@@ -18,10 +18,18 @@ from snapshot.domain.models import SnapshotResult
 from baseline.domain.models import BaselineResult, WorkloadBenchmarkResult
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
+from onboard.domain.models import ApplyMode
 from tune.domain.benchmark_models import BenchmarkSample, BenchmarkWorkloadSummary, TuneBenchmarkResult
 from tune.domain.iteration_record import TuneIterationRecord
-from tune.domain.hypothesis_models import HypothesisStatus, TunePhase
+from tune.domain.hypothesis_models import (
+    CandidateSource,
+    HypothesisStatus,
+    TunePhase,
+    TuningHypothesis,
+)
 from tune.domain.tune_state import TuneState
+from tune.domain.apply_models import AppliedChange
+from tune.domain.tuning_layer import TuningLayer
 
 from tests.onboard.test_service_definition_validator import build_valid_definition
 
@@ -183,6 +191,27 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
             "iteration_number": 1,
         },
     )()
+    tune.active_changes = {
+        "service.directive.access_log": AppliedChange(
+            hypothesis=TuningHypothesis(
+                phase=TunePhase.WIDE_SWEEP,
+                parameter_key="service.directive.access_log",
+                parameter_name="access_log",
+                domain="service_config",
+                tuning_layer=TuningLayer.SERVICE,
+                proposed_value="off",
+                source=CandidateSource.SERVICE_DIRECTIVE,
+                apply_mode=ApplyMode.RELOAD,
+                rationale="test",
+            ),
+            target_path="/etc/nginx/nginx.conf",
+            previous_value="/var/log/nginx/access.log",
+            applied_value="off",
+            apply_mode=ApplyMode.RELOAD,
+            apply_command="",
+            rollback_command="",
+        )
+    }
     tune.iteration_records = [
         TuneIterationRecord(
             iteration_number=1,
@@ -231,3 +260,5 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     assert "Best iteration: 1" in rendered
     assert "Best comparison" in rendered
     assert "best_rps" in rendered
+    assert "Best iteration config: service.directive.access_log=off" in rendered
+    assert "Final retained config: service.directive.access_log=off" in rendered

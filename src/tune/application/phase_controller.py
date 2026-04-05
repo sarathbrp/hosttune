@@ -65,7 +65,10 @@ class PhaseController:
         if phase is TunePhase.WIDE_SWEEP:
             return self._filter_by_priority_tier(state, active)
         if phase is TunePhase.DOMAIN_FOCUS:
-            return self._filter_domain_focus(state, active)
+            focused = self._filter_domain_focus(state, active)
+            return self._suppress_positive_keys(state, focused)
+        if phase is TunePhase.INTERACTION:
+            return self._suppress_positive_keys(state, active)
         if phase is TunePhase.EXPLOIT and state.best_configuration is not None:
             winning_keys = set(state.best_configuration.parameter_values)
             if winning_keys:
@@ -94,6 +97,22 @@ class PhaseController:
             candidate
             for candidate in candidates
             if candidate.domain in winning_domains or candidate.tuning_layer in winning_layers
+        )
+
+    def _suppress_positive_keys(
+        self,
+        state: TuneState,
+        candidates: tuple[CandidateParameter, ...],
+    ) -> tuple[CandidateParameter, ...]:
+        positive_keys = {
+            record.hypothesis.parameter_key
+            for record in state.history
+            if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING)
+        }
+        if not positive_keys:
+            return candidates
+        return tuple(
+            candidate for candidate in candidates if candidate.parameter_key not in positive_keys
         )
 
     def should_stop(

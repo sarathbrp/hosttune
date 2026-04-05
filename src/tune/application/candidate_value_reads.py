@@ -42,6 +42,13 @@ def read_sysctl_catalog_current(
                 "sysctl -n %s returned empty; falling back to preflight profile",
                 sysctl_name,
             )
+        else:
+            logging.getLogger(__name__).warning(
+                "sysctl live read failed for %s (exit=%s, stderr=%r); falling back to preflight",
+                sysctl_name,
+                result.exit_code,
+                result.stderr.strip(),
+            )
     return sysctl_value_from_profile(sysctl_profile, sysctl_name)
 
 
@@ -124,4 +131,9 @@ def read_service_directive_catalog_current(
         from_file = grep_directive_from_config_file(executor, config_path, directive_name)
         if from_file is not None:
             return from_file
+        logging.getLogger(__name__).warning(
+            "directive live read fell back to runtime snapshot for %s from %s",
+            directive_name,
+            config_path,
+        )
     return parse_directive_from_nginx_dump(directive_name, runtime_state_output)

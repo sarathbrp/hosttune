@@ -172,6 +172,44 @@ def test_llm_hypothesis_generator_rejects_noop_value() -> None:
         generator.generate(context)
 
 
+def test_llm_hypothesis_generator_rejects_duplicate_parameter_value_pair() -> None:
+    base_context = build_hypothesis_context()
+    history = (
+        HypothesisRecord(
+            iteration_number=1,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=DeterministicHypothesisGenerator().generate(base_context)[0],
+            status=HypothesisStatus.ACCEPTED,
+            evaluation_summary="accepted",
+        ),
+    )
+    context = HypothesisContext(
+        tune_context=base_context.tune_context,
+        phase=TunePhase.DOMAIN_FOCUS,
+        iteration_number=2,
+        candidates=base_context.candidates,
+        deferred_candidates=base_context.deferred_candidates,
+        history=history,
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+    duplicate = history[0].hypothesis
+    generator = LlmHypothesisGenerator(
+        model_client=FakeModelClient(
+            _valid_response(
+                parameter_key=duplicate.parameter_key,
+                proposed_value=duplicate.proposed_value,
+                tuning_layer=duplicate.tuning_layer.value,
+                apply_mode=duplicate.apply_mode.value,
+            )
+        ),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
+    )
+
+    with pytest.raises(ValueError, match="duplicate parameter/value pair"):
+        generator.generate(context)
+
+
 def test_llm_hypothesis_generator_rejects_array_payload() -> None:
     context = build_hypothesis_context()
 
