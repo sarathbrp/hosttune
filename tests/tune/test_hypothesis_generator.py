@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from preflight.domain.runtime_artifacts import RuntimeArtifacts
+from preflight.infrastructure.knowledge_base import KnowledgeBase
 from preflight.interfaces.execution_logger import DebugExecutionLogger, VerboseExecutionLogger
 from tune.application.candidate_catalog_builder import CandidateCatalogBuilder
 from tune.application.hypothesis_generator import (
@@ -118,6 +120,63 @@ def test_llm_hypothesis_generator_accepts_allowed_candidate() -> None:
     assert hypothesis.model_usage.input_tokens == 120
     assert hypothesis.expected_benchmark_impact is not None
     assert hypothesis.rollback_plan is not None
+
+
+def test_llm_hypothesis_generator_records_prompt_artifact_path_in_kb(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    base = build_tune_context()
+    artifacts = RuntimeArtifacts(
+        session_id="abc123def456",
+        session_directory=tmp_path / "artifacts" / "abc123def456",
+    )
+    artifacts.session_directory.mkdir(parents=True, exist_ok=True)
+    knowledge_base = KnowledgeBase(tmp_path / "artifacts" / "knowledge_base.sqlite")
+    tune_context = base.__class__(
+        preflight=base.preflight,
+        onboard=base.onboard,
+        snapshot=base.snapshot,
+        baseline=base.baseline,
+        benchmark_config=base.benchmark_config,
+        artifacts=artifacts,
+        host_profile=base.host_profile,
+        knowledge_base=knowledge_base,
+    )
+    built = CandidateCatalogBuilder().build(tune_context, FakeExecutor())
+    context = HypothesisContext(
+        tune_context=tune_context,
+        phase=TunePhase.WIDE_SWEEP,
+        iteration_number=1,
+        candidates=tuple(c for c in built if c.availability is CandidateAvailability.ACTIVE),
+        deferred_candidates=tuple(
+            c for c in built if c.availability is CandidateAvailability.DEFERRED
+        ),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+
+    class ArtifactModelClient(FakeModelClient):
+        def complete(self, context: HypothesisContext) -> ModelCompletion:
+            completion = super().complete(context)
+            return ModelCompletion(
+                content=completion.content,
+                usage=completion.usage,
+                artifact_path="/tmp/fake_prompt_artifact.json",
+            )
+
+    generator = LlmHypothesisGenerator(
+        model_client=ArtifactModelClient(_valid_response()),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
+    )
+
+    generator.generate(context)
+
+    events = knowledge_base.get_run_events("abc123def456")
+    artifact_events = [event for event in events if event["event_type"] == "llm_prompt_artifact_saved"]
+    proposal_events = [event for event in events if event["event_type"] == "llm_proposal_selected"]
+    assert artifact_events
+    assert artifact_events[0]["payload"]["artifact_path"] == "/tmp/fake_prompt_artifact.json"
+    assert proposal_events
+    assert proposal_events[0]["payload"]["artifact_path"] == "/tmp/fake_prompt_artifact.json"
 
 
 def test_llm_hypothesis_generator_logs_prompt_and_response_in_debug() -> None:

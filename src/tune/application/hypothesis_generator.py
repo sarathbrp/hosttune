@@ -144,6 +144,22 @@ class LlmHypothesisGenerator:
             },
         )
         response = self.model_client.complete(context)
+        self._record_kb_event(
+            context=context,
+            component="hybrid_llm",
+            event_type="llm_prompt_artifact_saved",
+            payload={
+                "artifact_path": response.artifact_path,
+                "token_usage": None
+                if response.usage is None
+                else {
+                    "model_name": response.usage.model_name,
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                },
+            },
+        )
         self._debug_log("LLM raw response", response.content)
         try:
             raw = json.loads(response.content)
@@ -154,7 +170,11 @@ class LlmHypothesisGenerator:
                 context=context,
                 component="hybrid_llm",
                 event_type="llm_invalid_response",
-                payload={"error": msg, "response_snippet": snippet},
+                payload={
+                    "error": msg,
+                    "response_snippet": snippet,
+                    "artifact_path": response.artifact_path,
+                },
             )
             raise ValueError(msg) from exc
         try:
@@ -179,7 +199,11 @@ class LlmHypothesisGenerator:
                 context=context,
                 component="hybrid_llm",
                 event_type="llm_invalid_response",
-                payload={"error": str(exc), "response": raw},
+                payload={
+                    "error": str(exc),
+                    "response": raw,
+                    "artifact_path": response.artifact_path,
+                },
             )
             raise
         self._record_kb_event(
@@ -194,6 +218,7 @@ class LlmHypothesisGenerator:
                 "rationale": rationale,
                 "expected_benchmark_impact": expected_benchmark_impact,
                 "rollback_plan": rollback_plan,
+                "artifact_path": response.artifact_path,
                 "token_usage": None
                 if response.usage is None
                 else {

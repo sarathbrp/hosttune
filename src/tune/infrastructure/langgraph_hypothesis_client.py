@@ -32,8 +32,14 @@ class LangGraphHypothesisClient:
             prompt=prompt,
         )
         self._log_response("hybrid_hypothesizer", content)
-        self._save_agent_artifact(context, "hybrid_hypothesizer", prompt, content)
-        return ModelCompletion(content=content, usage=usage)
+        artifact_path = self._save_agent_artifact(
+            context,
+            "hybrid_hypothesizer",
+            prompt,
+            content,
+            usage,
+        )
+        return ModelCompletion(content=content, usage=usage, artifact_path=artifact_path)
 
     def _log_prompt(self, agent: str, prompt: str) -> None:
         self.logger.stage_detail(
@@ -55,25 +61,59 @@ class LangGraphHypothesisClient:
         agent: str,
         prompt: str,
         response: str,
-    ) -> None:
+        usage: ModelUsage | None,
+    ) -> str | None:
         artifacts = context.tune_context.artifacts
         if artifacts is None:
-            return
+            return None
         iteration = context.iteration_number
         out_dir = artifacts.session_directory / "hypotheses"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"iter{iteration:03d}_{agent}.json"
+        index_path = out_dir / f"prompt_artifacts_{artifacts.session_id}.jsonl"
         try:
+            token_usage = (
+                None
+                if usage is None
+                else {
+                    "model_name": usage.model_name,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "total_tokens": usage.total_tokens,
+                }
+            )
             data = {
                 "iteration": iteration,
                 "phase": context.phase.value,
                 "agent": agent,
                 "prompt": prompt,
                 "response": response,
+                "token_usage": token_usage,
             }
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError as exc:
             _log.warning("Failed to save hypothesis artifact %s: %s", path, exc)
+            return None
+        try:
+            with index_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "iteration": iteration,
+                            "phase": context.phase.value,
+                            "agent": agent,
+                            "artifact_path": str(path),
+                            "prompt_chars": len(prompt),
+                            "response_chars": len(response),
+                            "token_usage": token_usage,
+                        }
+                    )
+                )
+                handle.write("\n")
+            artifacts.stage_files["prompt_artifacts"] = index_path
+        except OSError as exc:
+            _log.warning("Failed to update hypothesis index %s: %s", index_path, exc)
+        return str(path)
 
     def _call_llm_with_usage(
         self, *, caller: str, system: str, prompt: str

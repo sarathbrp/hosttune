@@ -61,6 +61,7 @@ class ModelUsage:
 class ModelCompletion:
     content: str
     usage: ModelUsage | None = None
+    artifact_path: str | None = None
 
 
 @dataclass(frozen=True)
