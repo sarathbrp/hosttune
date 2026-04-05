@@ -1,3 +1,7 @@
+import subprocess
+import tempfile
+from pathlib import Path
+
 from preflight.domain.models import CommandResult
 from tune.application.apply_coordinator import (
     ApplyCoordinator,
@@ -137,6 +141,35 @@ def test_nginx_directive_applier_inserts_missing_events_directive() -> None:
     assert "multi_accept" in applied.apply_command
     assert applied.rollback_command.startswith("python3 -c ")
     assert "multi_accept" in applied.rollback_command
+
+
+def test_nginx_insert_command_executes_for_worker_cpu_affinity() -> None:
+    config_text = """user nginx;
+worker_processes auto;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    sendfile on;
+}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "nginx.conf"
+        config_path.write_text(config_text)
+        command = NginxDirectiveApplier()._build_insert_command(
+            str(config_path),
+            "worker_cpu_affinity",
+            "auto",
+        )
+
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+
+        assert result.returncode == 0, result.stderr
+        updated = config_path.read_text()
+        assert "worker_cpu_affinity auto;\n" in updated
+        assert updated.index("worker_cpu_affinity auto;") < updated.index("events {")
 
 
 def test_apply_coordinator_routes_by_parameter_prefix() -> None:

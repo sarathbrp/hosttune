@@ -261,13 +261,13 @@ class NginxDirectiveApplier:
     ) -> str:
         context_name = self._directive_context(directive_name)
         python_script = (
-            "import pathlib,sys; "
-            "path=pathlib.Path(sys.argv[1]); "
-            "name=sys.argv[2]; "
-            "value=sys.argv[3]; "
-            "context=sys.argv[4]; "
-            "lines=path.read_text().splitlines(); "
-            "entry=f'{name} {value};'; "
+            "import pathlib,sys\n"
+            "path=pathlib.Path(sys.argv[1])\n"
+            "name=sys.argv[2]\n"
+            "value=sys.argv[3]\n"
+            "context=sys.argv[4]\n"
+            "lines=path.read_text().splitlines()\n"
+            "entry=f'{name} {value};'\n"
             "def block_bounds(block):\n"
             "    start=None; depth=0\n"
             "    for idx,line in enumerate(lines):\n"
@@ -299,7 +299,7 @@ class NginxDirectiveApplier:
             "            indent=probe[:len(probe)-len(probe.lstrip())] or '    '\n"
             "            break\n"
             "    lines.insert(end, f'{indent}{entry}')\n"
-            "path.write_text('\\n'.join(lines)+'\\n')"
+            "path.write_text('\\n'.join(lines)+'\\n')\n"
         )
         return " ".join(
             (
