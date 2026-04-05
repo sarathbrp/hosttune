@@ -48,6 +48,30 @@ kernel_os_baseline:
     min_logical_cores: 32
     floor_value: 8192
 
+  - id: recommend_rmem_max_high_core
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    candidate_key: sysctl.net.core.rmem_max
+    min_logical_cores: 32
+    floor_value: 16777216
+
+  - id: recommend_wmem_max_high_core
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    candidate_key: sysctl.net.core.wmem_max
+    min_logical_cores: 32
+    floor_value: 16777216
+
+  - id: recommend_swappiness_low_memory_pressure
+    enabled: true
+    action: recommend
+    kind: candidate_ceiling
+    candidate_key: sysctl.vm.swappiness
+    min_ram_gb: 64
+    ceiling_value: 10
+
   - id: signal_irqbalance_state
     enabled: true
     action: signal
@@ -111,7 +135,26 @@ application_discovery_sanity:
     service_name: nginx
     candidate_key: service.directive.worker_connections
     min_logical_cores: 32
-    floor_value: 8192
+    floor_value: 65535
+
+  - id: nginx_keepalive_requests_floor
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    service_name: nginx
+    candidate_key: service.directive.keepalive_requests
+    min_logical_cores: 32
+    floor_value: 10000
+
+  - id: nginx_enable_open_file_cache
+    enabled: true
+    action: recommend
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.open_file_cache
+    proposed_value: "max=200000"
+    only_when_current_in:
+      - "off"
 
   - id: signal_nginx_cpu_affinity_on_dual_numa
     enabled: true

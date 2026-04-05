@@ -225,6 +225,7 @@ def format_runtime_config_snippet(snapshot: str | None) -> str:
         "worker_rlimit_nofile",
         "access_log",
         "keepalive_",
+        "open_file_cache",
         "sendfile",
         "net.core.",
         "listen",

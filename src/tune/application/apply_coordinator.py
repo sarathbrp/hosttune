@@ -117,7 +117,7 @@ class NginxDirectiveApplier:
     )
     _EVENTS_CONTEXT_DIRECTIVES = frozenset({"worker_connections", "multi_accept"})
     _HTTP_CONTEXT_DIRECTIVES = frozenset(
-        {"access_log", "sendfile", "keepalive_timeout", "keepalive_requests"}
+        {"access_log", "sendfile", "keepalive_timeout", "keepalive_requests", "open_file_cache"}
     )
 
     def apply(

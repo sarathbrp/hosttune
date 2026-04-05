@@ -79,6 +79,12 @@ tunable_surface:
       max_value: 100000
       apply_mode: reload
       forbidden_values: []
+    open_file_cache:
+      value_type: string
+      priority_tier: medium
+      apply_mode: reload
+      forbidden_values:
+        - "off"
     worker_processes:
       value_type: integer
       priority_tier: high

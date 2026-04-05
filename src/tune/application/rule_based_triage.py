@@ -131,6 +131,7 @@ class RuleBasedTriage:
             "align_worker_rlimit_to_unit_limit": self._rule_align_worker_rlimit_to_unit_limit,
             "queue_scale_up": self._rule_queue_scale_up,
             "candidate_floor": self._rule_candidate_floor,
+            "candidate_ceiling": self._rule_candidate_ceiling,
             "candidate_scale_outlier": self._rule_candidate_scale_outlier,
             "host_fact_signal": self._rule_host_fact_signal,
         }.get(kind)
@@ -402,6 +403,45 @@ class RuleBasedTriage:
             ),
             None,
         )
+
+    def _rule_candidate_ceiling(
+        self,
+        rule_id: str,
+        section: str,
+        rule: dict[str, Any],
+        context: HypothesisContext,
+        candidates_by_key: dict[str, CandidateParameter],
+    ) -> tuple[TriggeredRule, TriageRecommendation | None] | None:
+        _ = context
+        candidate_key = str(rule.get("candidate_key", ""))
+        candidate = candidates_by_key.get(candidate_key)
+        ceiling_value = rule.get("ceiling_value")
+        if candidate is None or not isinstance(ceiling_value, int):
+            return None
+        current_value = _to_int(candidate.current_value)
+        if current_value is None or current_value <= ceiling_value:
+            return None
+        proposed = ceiling_value
+        if candidate.min_value is not None:
+            proposed = max(proposed, candidate.min_value)
+        if proposed >= current_value:
+            return None
+        trigger = TriggeredRule(
+            rule_id=rule_id,
+            section=section,
+            outcome="recommend",
+            detail=(
+                f"{candidate_key} is above deterministic ceiling {ceiling_value} "
+                f"for this host shape"
+            ),
+        )
+        recommendation = TriageRecommendation(
+            rule_id=rule_id,
+            parameter_key=candidate_key,
+            proposed_value=str(proposed),
+            reason=trigger.detail,
+        )
+        return trigger, recommendation
 
     def _rule_host_fact_signal(
         self,

@@ -174,6 +174,57 @@ kernel_os_baseline:
     assert result.recommended_action.proposed_value == "8192"
 
 
+def test_triage_recommends_candidate_ceiling_when_above_threshold(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    rules_yaml = """
+kernel_os_baseline:
+  - id: recommend_swappiness_low_memory_pressure
+    enabled: true
+    action: recommend
+    kind: candidate_ceiling
+    candidate_key: sysctl.vm.swappiness
+    ceiling_value: 10
+    """
+    rules_path = tmp_path / "swappiness-rules.yaml"
+    rules_path.write_text(rules_yaml, encoding="utf-8")
+    base = build_hypothesis_context()
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.hypothesis_models import CandidateParameter, CandidateSource
+    from tune.domain.tuning_layer import TuningLayer
+
+    swappiness_candidate = CandidateParameter(
+        parameter_key="sysctl.vm.swappiness",
+        domain="kernel_sysctl",
+        tuning_layer=TuningLayer.KERNEL,
+        parameter_name="vm.swappiness",
+        source=CandidateSource.HOST_SYSCTL,
+        value_type=DirectiveValueType.STRING,
+        apply_mode=ApplyMode.RELOAD,
+        priority_tier=PriorityTier.LOW,
+        allowed_values=(),
+        forbidden_values=(),
+        min_value=None,
+        max_value=None,
+        rationale_hint="Reduce kernel swap preference",
+        current_value="30",
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=base.candidates + (swappiness_candidate,),
+        deferred_candidates=base.deferred_candidates,
+        history=base.history,
+        active_parameter_keys=base.active_parameter_keys,
+        best_parameter_values=base.best_parameter_values,
+    )
+
+    result = RuleBasedTriage(TriageRulesLoader().load(rules_path)).evaluate(context)
+
+    assert result.recommended_action is not None
+    assert result.recommended_action.parameter_key == "sysctl.vm.swappiness"
+    assert result.recommended_action.proposed_value == "10"
+
+
 def test_triage_can_recommend_worker_rlimit_alignment(tmp_path) -> None:  # type: ignore[no-untyped-def]
     rules_yaml = """
 application_discovery_sanity:
@@ -211,3 +262,57 @@ application_discovery_sanity:
     assert result.recommended_action is not None
     assert result.recommended_action.parameter_key == "service.directive.worker_rlimit_nofile"
     assert result.recommended_action.proposed_value == "32768"
+
+
+def test_triage_can_recommend_open_file_cache_string_value(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    rules_yaml = """
+application_discovery_sanity:
+  - id: nginx_enable_open_file_cache
+    enabled: true
+    action: recommend
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.open_file_cache
+    proposed_value: "max=200000"
+    only_when_current_in:
+      - "off"
+"""
+    rules_path = tmp_path / "open-file-cache-rules.yaml"
+    rules_path.write_text(rules_yaml, encoding="utf-8")
+    base = build_hypothesis_context()
+    from tune.domain.hypothesis_models import CandidateParameter, CandidateSource
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.tuning_layer import TuningLayer
+
+    open_file_cache_candidate = CandidateParameter(
+        parameter_key="service.directive.open_file_cache",
+        domain="service_config",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="open_file_cache",
+        source=CandidateSource.SERVICE_DIRECTIVE,
+        value_type=DirectiveValueType.STRING,
+        apply_mode=ApplyMode.RELOAD,
+        priority_tier=PriorityTier.MEDIUM,
+        allowed_values=(),
+        forbidden_values=("off",),
+        min_value=None,
+        max_value=None,
+        rationale_hint="Allowed nginx directive from service plugin for nginx",
+        current_value="off",
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=base.candidates + (open_file_cache_candidate,),
+        deferred_candidates=base.deferred_candidates,
+        history=base.history,
+        active_parameter_keys=base.active_parameter_keys,
+        best_parameter_values=base.best_parameter_values,
+    )
+
+    result = RuleBasedTriage(TriageRulesLoader().load(rules_path)).evaluate(context)
+
+    assert result.recommended_action is not None
+    assert result.recommended_action.parameter_key == "service.directive.open_file_cache"
+    assert result.recommended_action.proposed_value == "max=200000"
