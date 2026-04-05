@@ -4,6 +4,8 @@ import json
 import re
 from dataclasses import asdict
 
+from prettytable import PrettyTable
+
 from baseline.domain.models import BaselineResult
 from onboard.domain.models import OnboardResult
 from preflight.domain.kernel_sysctl_profile import format_sysctl_profile_compact
@@ -16,6 +18,25 @@ ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class ConsoleReporter:
+    def _truncate_cell(self, value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[: limit - 3]}..."
+
+    def _render_pretty_table(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        *,
+        align: str = "l",
+    ) -> list[str]:
+        table = PrettyTable()
+        table.field_names = headers
+        table.align = align
+        for row in rows:
+            table.add_row(row)
+        return [f"  {line}" for line in str(table).splitlines()]
+
     def render_json(self, snapshot: DiscoverySnapshot) -> str:
         return json.dumps(asdict(snapshot), indent=2, default=str)
 
@@ -103,6 +124,15 @@ class ConsoleReporter:
     def _render_baseline(self, baseline: BaselineResult | None) -> str:
         if baseline is None:
             return ""
+        workload_rows = [
+            [
+                result.workload_name,
+                f"{result.requests_per_second:.2f}",
+                str(result.total_requests),
+                f"{result.average_latency_ms:.2f}",
+            ]
+            for result in baseline.workload_results
+        ]
         lines = [
             "Baseline",
             f"  Target: {baseline.benchmark_target}",
@@ -111,16 +141,12 @@ class ConsoleReporter:
                 f"Warmup: {baseline.warmup_seconds}s"
             ),
             "  Workloads:",
-            "    name       rps         total        latency_ms",
         ]
         lines.extend(
-            (
-                f"    {result.workload_name:<10} "
-                f"{result.requests_per_second:>10.2f} "
-                f"{result.total_requests:>12} "
-                f"{result.average_latency_ms:>12.2f}"
+            self._render_pretty_table(
+                ["name", "rps", "total", "latency_ms"],
+                workload_rows,
             )
-            for result in baseline.workload_results
         )
         comparison_table = self._render_comparison_table(baseline.comparison_output)
         if comparison_table:
@@ -147,12 +173,13 @@ class ConsoleReporter:
         if not rows:
             return []
 
-        rendered = ["  workload   baseline_rps   current_rps   change    status"]
-        rendered.extend(
-            f"  {name:<10} {baseline_rps:>12} {current_rps:>12} {change:>8} {status:>9}"
-            for name, baseline_rps, current_rps, change, status in rows
+        return self._render_pretty_table(
+            ["workload", "baseline_rps", "current_rps", "change", "status"],
+            [
+                [name, baseline_rps, current_rps, change, status]
+                for name, baseline_rps, current_rps, change, status in rows
+            ],
         )
-        return rendered
 
     def _render_best_iteration_table(
         self,
@@ -196,11 +223,71 @@ class ConsoleReporter:
         rendered = [
             f"  Best iteration: {tune.best_configuration.iteration_number}",
             "  Best comparison",
-            "    workload   baseline_rps     best_rps   change",
         ]
         rendered.extend(
-            f"    {name:<10} {baseline_rps:>12} {best_rps:>12} {change:>8}"
-            for name, baseline_rps, best_rps, change in rows
+            self._render_pretty_table(
+                ["workload", "baseline_rps", "best_rps", "change"],
+                [
+                    [name, baseline_rps, best_rps, change]
+                    for name, baseline_rps, best_rps, change in rows
+                ],
+            )
+        )
+        return rendered
+
+    def _render_iteration_history_table(
+        self,
+        tune: TuneState,
+        baseline: BaselineResult | None,
+    ) -> list[str]:
+        if not tune.iteration_records:
+            return []
+
+        baseline_summary = "n/a"
+        if baseline is not None and baseline.workload_results:
+            baseline_summary = "; ".join(
+                f"{item.workload_name}={item.requests_per_second:.2f}"
+                for item in baseline.workload_results
+            )
+        history_by_iteration = {
+            item.iteration_number: item.status.value
+            for item in tune.history
+            if hasattr(item, "iteration_number")
+        }
+        rows: list[list[str]] = []
+        for record in tune.iteration_records:
+            benchmark_summary = "n/a"
+            if record.benchmark_result is not None and record.benchmark_result.workload_summaries:
+                benchmark_summary = "; ".join(
+                    f"{item.workload_name}={item.median_requests_per_second:.2f}"
+                    for item in record.benchmark_result.workload_summaries
+                )
+            status = history_by_iteration.get(record.iteration_number, "unknown")
+            rows.append(
+                [
+                    str(record.iteration_number),
+                    record.phase.value,
+                    self._truncate_cell(record.hypothesis.parameter_key, 28),
+                    self._truncate_cell(record.hypothesis.proposed_value, 12),
+                    status,
+                    self._truncate_cell(baseline_summary, 30),
+                    self._truncate_cell(benchmark_summary, 30),
+                ]
+            )
+        rendered = ["  Iteration history"]
+        rendered.extend(
+            self._render_pretty_table(
+                [
+                    "iter",
+                    "phase",
+                    "parameter",
+                    "value",
+                    "status",
+                    "baseline_rps",
+                    "benchmarked_rps",
+                ],
+                rows,
+            )
         )
         return rendered
 
@@ -259,4 +346,5 @@ class ConsoleReporter:
             f"  Drift detected: {tune.drift_detected}",
         ]
         lines.extend(self._render_best_iteration_table(tune, baseline))
+        lines.extend(self._render_iteration_history_table(tune, baseline))
         return "\n".join(lines)

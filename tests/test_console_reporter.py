@@ -174,12 +174,12 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
         type(
             "HistoryRecord",
             (),
-            {"status": HypothesisStatus.ACCEPTED},
+            {"iteration_number": 1, "status": HypothesisStatus.ACCEPTED},
         )(),
         type(
             "HistoryRecord",
             (),
-            {"status": HypothesisStatus.REJECTED},
+            {"iteration_number": 2, "status": HypothesisStatus.REJECTED},
         )(),
     ]
     tune.best_configuration = type(
@@ -216,7 +216,15 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
         TuneIterationRecord(
             iteration_number=1,
             phase=TunePhase.WIDE_SWEEP,
-            hypothesis=type("Hypothesis", (), {"model_usage": None})(),
+            hypothesis=type(
+                "Hypothesis",
+                (),
+                {
+                    "model_usage": None,
+                    "parameter_key": "service.directive.access_log",
+                    "proposed_value": "off",
+                },
+            )(),
             applied_change=None,
             validation_result=None,
             benchmark_result=TuneBenchmarkResult(
@@ -256,9 +264,14 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     assert "Tune" in rendered
     assert "homepage" in rendered
     assert "Comparison" in rendered
-    assert "baseline_rps" in rendered
+    assert "| baseline_rps " in rendered
     assert "Best iteration: 1" in rendered
     assert "Best comparison" in rendered
-    assert "best_rps" in rendered
+    assert "| best_rps " in rendered
     assert "Best iteration config: service.directive.access_log=off" in rendered
     assert "Final retained config: service.directive.access_log=off" in rendered
+    assert "Iteration history" in rendered
+    assert "service.directive.access_log" in rendered
+    assert "homepage=1234.50" in rendered
+    assert "homepage=1085909.00" in rendered
+    assert "+----" in rendered
