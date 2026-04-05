@@ -269,6 +269,7 @@ class ConsoleReporter:
                     record.phase.value,
                     self._truncate_cell(record.hypothesis.parameter_key, 28),
                     self._truncate_cell(record.hypothesis.proposed_value, 12),
+                    f"{record.duration_seconds:.2f}s",
                     status,
                     self._truncate_cell(baseline_summary, 30),
                     self._truncate_cell(benchmark_summary, 30),
@@ -282,6 +283,7 @@ class ConsoleReporter:
                     "phase",
                     "parameter",
                     "value",
+                    "duration",
                     "status",
                     "baseline_rps",
                     "benchmarked_rps",
@@ -315,6 +317,7 @@ class ConsoleReporter:
             for record in tune.iteration_records
             if record.hypothesis.model_usage is not None
         )
+        total_duration_seconds = sum(record.duration_seconds for record in tune.iteration_records)
         best_config = "none"
         best_score = "n/a"
         final_retained_config = "none"
@@ -339,6 +342,7 @@ class ConsoleReporter:
             f"  Iterations: {tune.total_iterations}",
             f"  Accepted hypotheses: {accepted}",
             f"  Active changes: {active}",
+            f"  Total duration: {total_duration_seconds:.2f}s",
             f"  Model tokens: input={input_tokens} output={output_tokens} total={total_tokens}",
             f"  Best score: {best_score}",
             f"  Best iteration config: {best_config}",

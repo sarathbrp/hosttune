@@ -264,6 +264,7 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     assert "Tune" in rendered
     assert "homepage" in rendered
     assert "Comparison" in rendered
+    assert "Total duration: 1.00s" in rendered
     assert "| baseline_rps " in rendered
     assert "Best iteration: 1" in rendered
     assert "Best comparison" in rendered
@@ -271,6 +272,8 @@ def test_console_reporter_renders_human_readable_runtime() -> None:
     assert "Best iteration config: service.directive.access_log=off" in rendered
     assert "Final retained config: service.directive.access_log=off" in rendered
     assert "Iteration history" in rendered
+    assert "| duration " in rendered
+    assert "1.00s" in rendered
     assert "service.directive.access_log" in rendered
     assert "homepage=1234.50" in rendered
     assert "homepage=1085909.00" in rendered
