@@ -12,7 +12,9 @@ import sqlite3
 
 def main():
     parser = argparse.ArgumentParser(description="KB iteration details")
-    parser.add_argument("--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite")
+    parser.add_argument(
+        "--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite"
+    )
     parser.add_argument("--run", default=None, help="Run ID (default: latest)")
     args = parser.parse_args()
 
@@ -46,7 +48,9 @@ def main():
     print(f"Service: {svc} | Platform: {plat} | Cores: {cores}")
     print(f"Best score: {(score or 0) * 100:.1f}% at iter {best_iter} | Stop: {stop}")
     if cfg_json:
-        print(f"Best config: {', '.join(f'{k.split(chr(46))[-1]}={v}' for k, v in json.loads(cfg_json).items())}")
+        print(
+            f"Best config: {', '.join(f'{k.split(chr(46))[-1]}={v}' for k, v in json.loads(cfg_json).items())}"
+        )
     print()
 
     # All events per iteration
@@ -86,7 +90,7 @@ def main():
         elif et == "best_config_updated":
             detail = f"NEW BEST score={p.get('score', '?')}"
         elif et == "change_applied":
-            detail = f"{p.get('parameter', p.get('parameter_key', '?'))}: {p.get('previous', '?')} -> {p.get('applied', p.get('value', '?'))}"
+            detail = f"{p.get('parameter_key', '?')}: {p.get('previous_value', '?')} -> {p.get('applied_value', '?')}"
         else:
             detail = str(p)[:60]
 
@@ -102,7 +106,9 @@ def main():
         rp = json.loads(rc[0])
         tokens = rp.get("token_usage", {})
         if tokens:
-            print(f"\nTokens: input={tokens.get('input', 0):,} output={tokens.get('output', 0):,} total={tokens.get('total', 0):,}")
+            print(
+                f"\nTokens: input={tokens.get('input', 0):,} output={tokens.get('output', 0):,} total={tokens.get('total', 0):,}"
+            )
 
     conn.close()
 

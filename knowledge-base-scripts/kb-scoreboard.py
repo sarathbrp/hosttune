@@ -12,7 +12,9 @@ import sqlite3
 
 def main():
     parser = argparse.ArgumentParser(description="KB parameter scoreboard")
-    parser.add_argument("--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite")
+    parser.add_argument(
+        "--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite"
+    )
     parser.add_argument("--run", default=None, help="Run ID (default: all runs)")
     args = parser.parse_args()
 

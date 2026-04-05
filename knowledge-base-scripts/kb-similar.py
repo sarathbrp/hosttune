@@ -15,7 +15,9 @@ import sqlite3
 
 def main():
     parser = argparse.ArgumentParser(description="Find similar KB runs")
-    parser.add_argument("--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite")
+    parser.add_argument(
+        "--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite"
+    )
     parser.add_argument("--service", default="nginx", help="Service name filter")
     parser.add_argument("--nic-driver", default=None, help="Optional NIC driver filter")
     args = parser.parse_args()
@@ -58,9 +60,13 @@ def main():
     cur.execute(query, params)
     rows = cur.fetchall()
 
-    print(f"Similar runs: {len(rows)} ({args.service} / {ref_plat} / {ref_cores} / NUMA={ref_numa})")
+    print(
+        f"Similar runs: {len(rows)} ({args.service} / {ref_plat} / {ref_cores} / NUMA={ref_numa})"
+    )
     print()
-    print(f"{'#':<3} {'Run ID':<16} {'Score':>7} {'Iter':>5} {'NIC':<12} {'Stop':<16} {'Best Config'}")
+    print(
+        f"{'#':<3} {'Run ID':<16} {'Score':>7} {'Iter':>5} {'NIC':<12} {'Stop':<16} {'Best Config'}"
+    )
     print("-" * 110)
 
     for i, r in enumerate(rows, 1):

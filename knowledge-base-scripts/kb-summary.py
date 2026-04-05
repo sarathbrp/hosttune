@@ -12,7 +12,9 @@ import sqlite3
 
 def main():
     parser = argparse.ArgumentParser(description="KB run summary")
-    parser.add_argument("--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite")
+    parser.add_argument(
+        "--db", default="artifacts/knowledge_base.sqlite", help="Path to knowledge_base.sqlite"
+    )
     args = parser.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -28,7 +30,9 @@ def main():
 
     print(f"Total runs: {len(rows)}")
     print()
-    print(f"{'Run ID':<16} {'Score':>7} {'Iter':>5} {'Cores':<8} {'NUMA':>4} {'Stop':<16} {'Config'}")
+    print(
+        f"{'Run ID':<16} {'Score':>7} {'Iter':>5} {'Cores':<8} {'NUMA':>4} {'Stop':<16} {'Config'}"
+    )
     print("-" * 110)
 
     for r in rows:
@@ -46,7 +50,9 @@ def main():
     print()
     scores = [r[7] for r in rows if r[7] is not None]
     if scores:
-        print(f"Best score: {max(scores) * 100:.1f}%  |  Avg: {sum(scores) / len(scores) * 100:.1f}%  |  Runs: {len(rows)}")
+        print(
+            f"Best score: {max(scores) * 100:.1f}%  |  Avg: {sum(scores) / len(scores) * 100:.1f}%  |  Runs: {len(rows)}"
+        )
 
     # Event counts
     cur.execute("SELECT count(*) FROM events")
