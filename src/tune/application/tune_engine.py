@@ -153,6 +153,21 @@ class TuneEngine:
             deferred_catalog = tuple(
                 c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
             )
+        # KB-driven batch: apply all medium+ confidence params at once, benchmark once.
+        self._run_knowledge_driven_batch(
+            context,
+            state,
+            all_candidates,
+            confidence_scores,
+            target_executor,
+            benchmark_executor,
+        )
+        if state.active_changes:
+            # Rebuild catalog after batch so current_values are fresh.
+            all_candidates = self.candidate_catalog_builder.build(context, target_executor)
+            deferred_catalog = tuple(
+                c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
+            )
         # KB-driven blocked pairs: load prior-run failures to avoid re-trying.
         prior_blocked = self._load_prior_blocked_pairs(context)
         if prior_blocked:
@@ -1025,6 +1040,173 @@ class TuneEngine:
                     f"parameter(s): {', '.join(sorted(auto_applied))}"
                 ),
             )
+
+    def _run_knowledge_driven_batch(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        all_candidates: tuple[CandidateParameter, ...],
+        confidence_scores: dict[str, tuple[int, int, float]],
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+    ) -> None:
+        """Batch-apply all medium+ confidence KB candidates, benchmark once.
+
+        Applies all candidates with KB confidence >= 50% in a single
+        iteration. One benchmark validates the entire batch. This saves
+        (N-1) × ~320s compared to per-candidate iterations.
+        """
+        if not confidence_scores:
+            self.logger.stage_detail("tune", "KB batch: no confidence data; skipping.")
+            return
+        catalog_index = {c.parameter_key: c for c in all_candidates}
+        # Collect candidates with 50%+ confidence, not already active.
+        batch: list[tuple[CandidateParameter, str, float]] = []
+        for param_key, (tests, _accepted, confidence) in confidence_scores.items():
+            if confidence < 0.50 or tests < 1:
+                continue
+            if param_key in state.active_changes:
+                continue
+            candidate = catalog_index.get(param_key)
+            if candidate is None:
+                continue
+            # Find best-known value from prior config.
+            kb = getattr(context, "knowledge_base", None)
+            artifacts = context.artifacts
+            proposed_value = None
+            if kb is not None and artifacts is not None:
+                prior_config = kb.get_prior_best_config(
+                    service_name=context.onboard.service_name,
+                    cpu_logical_cores=context.preflight.cpu.logical_cores,
+                    numa_nodes=context.preflight.cpu.numa_nodes,
+                    platform_summary=context.preflight.platform_summary,
+                    nic_driver=context.preflight.network.driver_name,
+                    exclude_run_id=artifacts.session_id,
+                )
+                if prior_config:
+                    proposed_value = prior_config.get(param_key)
+            if proposed_value is None or proposed_value == candidate.current_value:
+                continue
+            batch.append((candidate, proposed_value, confidence))
+        if not batch:
+            self.logger.stage_detail("tune", "KB batch: no applicable candidates.")
+            return
+        # Sort by confidence desc.
+        batch.sort(key=lambda x: x[2], reverse=True)
+        self.logger.stage_detail(
+            "tune",
+            (
+                f"KB batch: applying {len(batch)} candidate(s) in one iteration: "
+                + ", ".join(f"{c.parameter_key}={v} ({conf:.0%})" for c, v, conf in batch)
+            ),
+        )
+        # Apply all.
+        iteration_number = state.total_iterations + 1
+        started_at = datetime.now(UTC)
+        started_timer = perf_counter()
+        applied: dict[str, AppliedChange] = {}
+        primary_hypothesis: TuningHypothesis | None = None
+        for candidate, proposed_value, confidence in batch:
+            hypothesis = TuningHypothesis(
+                phase=TunePhase.KNOWLEDGE_DRIVEN,
+                parameter_key=candidate.parameter_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value=proposed_value,
+                source=candidate.source,
+                apply_mode=candidate.apply_mode,
+                rationale=f"KB batch: {confidence:.0%} confidence",
+            )
+            if primary_hypothesis is None:
+                primary_hypothesis = hypothesis
+            try:
+                ac = self.apply_coordinator.apply(context, hypothesis, target_executor)
+                applied[candidate.parameter_key] = ac
+                state.active_changes[candidate.parameter_key] = ac
+            except Exception as exc:
+                self.logger.stage_detail(
+                    "tune",
+                    f"KB batch: failed {candidate.parameter_key}={proposed_value}: {exc}",
+                )
+        if not applied or primary_hypothesis is None:
+            self.logger.stage_detail("tune", "KB batch: no params applied successfully.")
+            return
+        # Health check.
+        primary_ac = next(iter(applied.values()))
+        validation_result = self.health_validator.validate(context, primary_ac, target_executor)
+        if not validation_result.healthy:
+            self.logger.stage_detail("tune", "KB batch: health check failed; rolling back all.")
+            self._rollback_all(applied, target_executor)
+            for key in applied:
+                state.active_changes.pop(key, None)
+            return
+        # Single benchmark for the entire batch.
+        benchmark_result = self.benchmark_executor.run(
+            context=context,
+            iteration_number=iteration_number,
+            validation_result=validation_result,
+            benchmark_executor=benchmark_executor,
+            telemetry_executor=target_executor,
+        )
+        self._log_benchmark(benchmark_result)
+        evaluation_result = self.result_evaluator.evaluate(
+            context, benchmark_result, phase=TunePhase.KNOWLEDGE_DRIVEN
+        )
+        self._log_evaluation(evaluation_result)
+        # Record iteration.
+        completed_at = datetime.now(UTC)
+        duration_seconds = perf_counter() - started_timer
+        status = self._resolve_status(evaluation_result)
+        if status not in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING):
+            self.logger.stage_detail(
+                "tune",
+                f"KB batch: evaluation={status.value}; rolling back all.",
+            )
+            self._rollback_all(applied, target_executor)
+            for key in applied:
+                state.active_changes.pop(key, None)
+            status = HypothesisStatus.INCONCLUSIVE
+        else:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"KB batch: {status.value}; retaining {len(applied)} "
+                    f"parameter(s): {sorted(applied)}"
+                ),
+            )
+        record = TuneIterationRecord(
+            iteration_number=iteration_number,
+            phase=TunePhase.KNOWLEDGE_DRIVEN,
+            hypothesis=primary_hypothesis,
+            applied_change=primary_ac,
+            validation_result=validation_result,
+            benchmark_result=benchmark_result,
+            evaluation_result=evaluation_result,
+            attribution_verification=None,
+            active_parameter_keys=tuple(sorted(state.active_changes)),
+            started_at_utc=started_at.isoformat(),
+            completed_at_utc=completed_at.isoformat(),
+            duration_seconds=duration_seconds,
+        )
+        history_record = HypothesisRecord(
+            iteration_number=iteration_number,
+            phase=TunePhase.KNOWLEDGE_DRIVEN,
+            hypothesis=primary_hypothesis,
+            status=status,
+            evaluation_summary=evaluation_result.summary,
+        )
+        state.record_iteration(record, history_record)
+        self.recorder.record(context, record)
+        self.recorder.record_scoreboard(context, state.scoreboard)
+        self.logger.stage_detail(
+            "tune",
+            (
+                f"KB batch iteration {iteration_number}: "
+                f"{len(applied)} params, {duration_seconds:.1f}s, "
+                f"status={status.value}"
+            ),
+        )
 
     def _restore_best_configuration(
         self,
