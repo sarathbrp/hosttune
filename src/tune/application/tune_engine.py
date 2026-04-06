@@ -264,6 +264,7 @@ class TuneEngine:
                 ),
             )
         state.stop_reason = stop_reason or "completed"
+        self._restore_best_configuration(state, target_executor)
         self._record_kb_event(
             context=context,
             component="convergence_logic",
@@ -776,6 +777,104 @@ class TuneEngine:
             self.logger.stage_detail(
                 "tune",
                 f"CRITICAL: partial rollback — still applied: {failures}",
+            )
+
+    def _restore_best_configuration(
+        self,
+        state: TuneState,
+        target_executor: CommandExecutor,
+    ) -> None:
+        """Ensure the target system is left at the best-known configuration on exit.
+
+        1. Roll back any active change whose key is NOT in best config.
+        2. Re-apply any best config value that differs from the current active value.
+        """
+        best = state.best_configuration
+        if best is None:
+            # No accepted iteration — roll back everything to baseline.
+            if state.active_changes:
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "No best configuration found; rolling back all "
+                        f"{len(state.active_changes)} active change(s) to baseline."
+                    ),
+                )
+                self._rollback_all(state.active_changes, target_executor)
+                state.active_changes.clear()
+            return
+
+        best_values = best.parameter_values
+        active = state.active_changes
+
+        # Step 1: Roll back active changes not in the best config.
+        to_rollback = {key: ac for key, ac in active.items() if key not in best_values}
+        if to_rollback:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"Rolling back {len(to_rollback)} change(s) not in best config: "
+                    f"{sorted(to_rollback)}"
+                ),
+            )
+            self._rollback_all(to_rollback, target_executor)
+            for key in to_rollback:
+                del active[key]
+
+        # Step 2: Re-apply best config values that differ from current active.
+        restored: list[str] = []
+        for key, best_value in best_values.items():
+            current_ac = active.get(key)
+            if current_ac is not None and current_ac.applied_value == best_value:
+                continue  # Already at best value.
+            # Need to re-apply. Find the apply command from the best iteration
+            # or from any iteration record that applied this key with this value.
+            source_record = next(
+                (
+                    record
+                    for record in state.iteration_records
+                    if record.applied_change is not None
+                    and record.applied_change.hypothesis.parameter_key == key
+                    and record.applied_change.applied_value == best_value
+                ),
+                None,
+            )
+            if source_record is None or source_record.applied_change is None:
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        f"Cannot restore {key}={best_value}: "
+                        "no matching apply record found in iteration history."
+                    ),
+                )
+                continue
+            apply_cmd = source_record.applied_change.apply_command
+            self.logger.stage_detail(
+                "tune",
+                f"Restoring best config: {key}={best_value}",
+            )
+            result = target_executor.run(apply_cmd)
+            if result.exit_code != 0:
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        f"RESTORE FAILED for {key}={best_value}: "
+                        f"{result.stderr or result.stdout}"
+                    ),
+                )
+            else:
+                active[key] = source_record.applied_change
+                restored.append(f"{key}={best_value}")
+
+        if restored:
+            self.logger.stage_detail(
+                "tune",
+                f"Best configuration restored: {', '.join(sorted(restored))}",
+            )
+        else:
+            self.logger.stage_detail(
+                "tune",
+                "Best configuration already active; no re-apply needed.",
             )
 
     def _find_candidate(
