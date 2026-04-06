@@ -170,6 +170,7 @@ def build_tune_engine(
     logger: ExecutionLogger | None = None,
     *,
     prompt_compression: bool = False,
+    kb_batch_apply: bool = False,
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
@@ -193,6 +194,7 @@ def build_tune_engine(
         candidate_catalog_builder=CandidateCatalogBuilder(),
         phase_controller=PhaseController(),
         hypothesis_generator=hypothesis_generator,
+        kb_batch_apply=kb_batch_apply,
         apply_coordinator=ApplyCoordinator(
             service_directive_applier=NginxDirectiveApplier(),
             sysctl_applier=SysctlApplier(),
@@ -267,6 +269,7 @@ def main() -> int:
                 build_tune_engine(
                     tune_logger,
                     prompt_compression=loaded_config.prompt_compression,
+                    kb_batch_apply=loaded_config.kb_batch_apply,
                 ),
             )
     except ValueError as error:

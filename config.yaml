@@ -10,15 +10,16 @@ service:
   name: nginx
 
 policy:
-  allow_reload: false
-  allow_restart: false
+  allow_reload: true
+  allow_restart: true
   allow_reboot: false
   rollback_required: true
   max_iterations: 10
   benchmark_stability_threshold: 0.10
 
 tune:
-  prompt_compression: false
+  prompt_compression: true
+  kb_batch_apply: true
 
 benchmark:
   runner:

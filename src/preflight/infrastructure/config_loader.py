@@ -23,6 +23,7 @@ class LoadedConfig:
     benchmark_config: BenchmarkConfig | None
     host_profile_name: str | None = None
     prompt_compression: bool = False
+    kb_batch_apply: bool = False
 
 
 class ConfigLoader:
@@ -55,6 +56,7 @@ class ConfigLoader:
 
         tune_section = content.get("tune") or {}
         prompt_compression = bool(tune_section.get("prompt_compression", False))
+        kb_batch_apply = bool(tune_section.get("kb_batch_apply", False))
 
         return LoadedConfig(
             target=target,
@@ -63,6 +65,7 @@ class ConfigLoader:
             benchmark_config=benchmark_config,
             host_profile_name=host_profile_name,
             prompt_compression=prompt_compression,
+            kb_batch_apply=kb_batch_apply,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

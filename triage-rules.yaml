@@ -168,7 +168,7 @@ application_discovery_sanity:
 
   - id: nginx_disable_limit_rate
     enabled: true
-    action: recommend
+    action: autofix
     kind: service_current_not
     service_name: nginx
     candidate_key: service.directive.limit_rate
