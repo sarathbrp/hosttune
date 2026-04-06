@@ -52,11 +52,11 @@ tunable_surface:
   # Probed during pre-tune diagnostic; fixed if policy allows.
   environment_blockers:
     - name: iptables_connlimit
-      probe_command: "iptables -L INPUT --line-numbers -n 2>/dev/null | grep -ci connlimit || echo 0"
+      probe_command: "iptables -L INPUT -n 2>/dev/null | grep -ciE 'connlimit|#conn' || echo 0"
       threshold_above: 0
       fix_command: >-
         iptables -L INPUT --line-numbers -n 2>/dev/null
-        | awk '/connlimit/ {print $1}'
+        | awk '/connlimit|#conn/ {print $1}'
         | sort -rn
         | xargs -I{} iptables -D INPUT {}
       priority: critical

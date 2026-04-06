@@ -225,6 +225,103 @@ class HostTuneInstance:
             knowledge_base=self.knowledge_base,
         )
 
+    def clear_environment_blockers(self, config_path: Path) -> None:
+        """Detect and fix environment blockers before baseline.
+
+        Reads blocker definitions from the host profile and probes the
+        target system. Fixes are applied only when the engagement policy
+        allows environment cleanup.
+        """
+        if self.host_profile is None:
+            return
+        blockers = getattr(
+            self.host_profile.tunable_surface, "environment_blockers", ()
+        )
+        if not blockers:
+            return
+        loaded_config = self.config_loader.load(config_path)
+        allow_fix = loaded_config.policy.allow_environment_cleanup
+        executor = self._build_stage_executor(loaded_config.target, "env_diagnostic")
+        if self.preflight is None:
+            return
+        interface_name = self.preflight.network.interface_name
+        self.logger.stage_start("env_diagnostic")
+        detected: list[str] = []
+        fixed: list[str] = []
+        for blocker in blockers:
+            probe_cmd = blocker.probe_command.replace(
+                "{interface}", interface_name
+            )
+            result = executor.run(probe_cmd)
+            output = result.stdout.strip()
+            triggered = False
+            if blocker.threshold_above is not None:
+                try:
+                    value = int(output.splitlines()[0].strip())
+                    triggered = value > blocker.threshold_above
+                except (ValueError, IndexError):
+                    pass
+            elif blocker.threshold_below is not None:
+                try:
+                    value = int(output.splitlines()[0].strip())
+                    triggered = value < blocker.threshold_below
+                except (ValueError, IndexError):
+                    pass
+            else:
+                triggered = bool(output)
+            if not triggered:
+                continue
+            detected.append(blocker.name)
+            self.logger.stage_detail(
+                "env_diagnostic",
+                f"Blocker detected: {blocker.name} ({blocker.priority}) "
+                f"— {blocker.detail}",
+            )
+            if blocker.fix_command is None:
+                self.logger.stage_detail(
+                    "env_diagnostic",
+                    f"  {blocker.name}: no autofix (signal only).",
+                )
+                continue
+            if not allow_fix:
+                self.logger.stage_detail(
+                    "env_diagnostic",
+                    f"  {blocker.name}: fix available but "
+                    "policy.allow_environment_cleanup=false.",
+                )
+                continue
+            fix_cmd = blocker.fix_command.replace(
+                "{interface}", interface_name
+            )
+            self.logger.stage_detail(
+                "env_diagnostic", f"  Fixing: {fix_cmd}"
+            )
+            fix_result = executor.run(fix_cmd)
+            if fix_result.exit_code == 0:
+                fixed.append(blocker.name)
+                self.logger.stage_detail(
+                    "env_diagnostic",
+                    f"  {blocker.name}: fixed successfully.",
+                )
+            else:
+                detail = fix_result.stderr.strip() or fix_result.stdout.strip()
+                self.logger.stage_detail(
+                    "env_diagnostic",
+                    f"  {blocker.name}: fix failed "
+                    f"(exit={fix_result.exit_code}): {detail}",
+                )
+        if detected:
+            self.logger.stage_detail(
+                "env_diagnostic",
+                f"Summary: {len(detected)} blocker(s) detected, "
+                f"{len(fixed)} fixed.",
+            )
+        else:
+            self.logger.stage_detail(
+                "env_diagnostic", "No blockers detected."
+            )
+        self.logger.stage_end("env_diagnostic")
+
     def run_tune(
         self,
         config_path: Path,

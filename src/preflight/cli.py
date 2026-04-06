@@ -262,6 +262,7 @@ def main() -> int:
         baseline = None
         tune = None
         if loaded_config.benchmark_config is not None:
+            instance.clear_environment_blockers(args.config)
             baseline = instance.load_baseline(args.config)
             tune_logger = getattr(instance, "logger", None)
             tune = instance.run_tune(

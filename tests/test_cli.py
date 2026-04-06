@@ -185,6 +185,9 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
         def load_host_profile(self, _config_path: Path) -> None:
             return None
 
+        def clear_environment_blockers(self, _config_path: Path) -> None:
+            return None
+
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
             self.preflight = build_snapshot()
             return self.preflight
@@ -278,6 +281,9 @@ def test_main_returns_clean_error_for_tune_failure(
         def load_host_profile(self, _config_path: Path) -> None:
             return None
 
+        def clear_environment_blockers(self, _config_path: Path) -> None:
+            return None
+
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
             self.preflight = build_snapshot()
             return self.preflight
@@ -369,6 +375,9 @@ def test_main_defaults_to_config_yaml_and_accepts_short_verbose(
         def load_host_profile(self, _config_path: Path) -> None:
             return None
 
+        def clear_environment_blockers(self, _config_path: Path) -> None:
+            return None
+
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
             return build_snapshot()
 
@@ -429,6 +438,9 @@ def test_main_debug_enables_debug_instance(monkeypatch, capsys, tmp_path: Path) 
             )()
 
         def load_host_profile(self, _config_path: Path) -> None:
+            return None
+
+        def clear_environment_blockers(self, _config_path: Path) -> None:
             return None
 
         def load_preflight(self, _config_path: Path) -> DiscoverySnapshot:
