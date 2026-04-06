@@ -323,22 +323,22 @@ class ConsoleReporter:
             if record.hypothesis.model_usage is not None
         )
         total_duration_seconds = sum(record.duration_seconds for record in tune.iteration_records)
-        best_config = "none"
+        best_iteration_config = "none"
         best_score = "n/a"
         final_retained_config = "none"
         if tune.best_configuration is not None:
             best_score = f"{tune.best_configuration.score:.2%}"
-            best_config = (
+            best_iteration_config = (
                 ", ".join(
                     f"{key}={value}"
-                    for key, value in sorted(tune.best_configuration.parameter_values.items())
+                    for key, value in sorted(tune.best_iteration_config_values().items())
                 )
                 or "none"
             )
-        if tune.active_changes:
+        retained_values = tune.final_retained_config_values()
+        if retained_values:
             final_retained_config = ", ".join(
-                f"{key}={change.applied_value}"
-                for key, change in sorted(tune.active_changes.items())
+                f"{key}={value}" for key, value in sorted(retained_values.items())
             )
         active = ", ".join(sorted(tune.active_changes)) or "none"
         lines = [
@@ -350,7 +350,7 @@ class ConsoleReporter:
             f"  Total duration: {total_duration_seconds:.2f}s",
             f"  Model tokens: input={input_tokens} output={output_tokens} total={total_tokens}",
             f"  Best score: {best_score}",
-            f"  Best iteration config: {best_config}",
+            f"  Best iteration config: {best_iteration_config}",
             f"  Final retained config: {final_retained_config}",
             f"  Drift detected: {tune.drift_detected}",
         ]

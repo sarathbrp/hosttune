@@ -3,6 +3,7 @@ from pathlib import Path
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
 from preflight.domain.runtime_artifacts import RuntimeArtifacts
 from tune.application.hypothesis_prompt_layer import (
+    discover_unmodeled_directives,
     format_blocked_prior_pairs,
     format_candidate_line_for_llm,
     format_compact_history_lines,
@@ -65,6 +66,7 @@ def test_candidate_line_truncates_long_hint() -> None:
         current_value="5",
     )
     line = format_candidate_line_for_llm(candidate)
+    assert "current_source=unknown" in line
     assert "truncated" in line
     assert len(line) < len(long_hint) + 200
 
@@ -137,6 +139,7 @@ def test_prior_run_memory_is_compact(tmp_path) -> None:  # type: ignore[no-untyp
         best_score=0.25,
         best_iteration=2,
         best_config={"service.directive.access_log": "off"},
+        final_retained_config={"service.directive.access_log": "off"},
     )
     tune_context = tune_context.__class__(
         preflight=tune_context.preflight,
@@ -230,3 +233,41 @@ def test_hybrid_prompt_includes_triage_section() -> None:
     assert "do not repeat a parameter/value pair" in prompt
     assert "do not invent unsupported knobs mentioned only in signal text" in prompt
     assert "rollback_plan" in prompt
+    assert "Unmodeled directives" in prompt
+
+
+def test_discover_unmodeled_directives_finds_gaps() -> None:
+    runtime_output = (
+        "worker_processes auto;\n"
+        "events {\n"
+        "    worker_connections 1024;\n"
+        "}\n"
+        "http {\n"
+        "    sendfile on;\n"
+        "    gzip_comp_level 6;\n"
+        "    proxy_buffering on;\n"
+        "}\n"
+    )
+    modeled = {"worker_processes", "worker_connections", "sendfile"}
+
+    lines = discover_unmodeled_directives(runtime_output, modeled)
+
+    assert any("gzip_comp_level" in line for line in lines)
+    assert any("proxy_buffering" in line for line in lines)
+    assert not any("worker_processes" in line for line in lines)
+    assert not any("sendfile" in line for line in lines)
+
+
+def test_discover_unmodeled_directives_no_gaps() -> None:
+    runtime_output = "worker_processes auto;\nsendfile on;\n"
+    modeled = {"worker_processes", "sendfile"}
+
+    lines = discover_unmodeled_directives(runtime_output, modeled)
+
+    assert lines == ["- (all detected directives are already modeled)"]
+
+
+def test_discover_unmodeled_directives_no_runtime() -> None:
+    lines = discover_unmodeled_directives(None, {"worker_processes"})
+
+    assert "no runtime state" in lines[0]

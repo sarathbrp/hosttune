@@ -29,6 +29,10 @@ def test_knowledge_base_records_and_queries_similar_runs(tmp_path) -> None:  # t
         best_score=0.25,
         best_iteration=2,
         best_config={"service.directive.access_log": "off"},
+        final_retained_config={
+            "service.directive.access_log": "off",
+            "sysctl.net.core.somaxconn": "8192",
+        },
     )
 
     knowledge_base.record_run(
@@ -62,6 +66,7 @@ def test_knowledge_base_records_and_queries_similar_runs(tmp_path) -> None:  # t
     assert "service.directive.access_log=off" in summary
     assert run_summary is not None
     assert run_summary["stop_reason"] == "converged"
+    assert run_summary["final_retained_config"]["sysctl.net.core.somaxconn"] == "8192"
     assert best_config is not None
     assert best_config["best_iteration"] == 2
 

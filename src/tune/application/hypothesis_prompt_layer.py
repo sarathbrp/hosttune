@@ -131,7 +131,7 @@ def format_contract_digest_lines(tune_context: TuneContext) -> list[str]:
         f"- relevant_sysctls={relevant_sysctls or 'none'}",
         f"- runtime_limits={runtime_limit_names or 'none'}",
         f"- systemd_unit_limits={systemd_unit_limit_names or 'none'}",
-        f"- cgroup_resource_controls={cgroup_control_names or 'none'} (cgroup v2; no applier yet)",
+        f"- cgroup_resource_controls={cgroup_control_names or 'none'}",
         f"- health_probe={svc.health_check.probe_type.value}",
         f"- primary_metric={hints.primary_metric}",
         f"- guardrails={guardrails or 'none'}",
@@ -227,6 +227,9 @@ def format_runtime_config_snippet(snapshot: str | None) -> str:
         "keepalive_",
         "open_file_cache",
         "sendfile",
+        "gzip",
+        "tcp_nopush",
+        "limit_rate",
         "net.core.",
         "listen",
     )
@@ -391,6 +394,63 @@ def format_host_profile_digest_lines(context: HypothesisContext) -> list[str]:
     return lines
 
 
+def discover_unmodeled_directives(
+    runtime_state_output: str | None,
+    modeled_directives: set[str],
+    *,
+    max_results: int = 10,
+) -> list[str]:
+    """Parse nginx -T output and surface directives not in the YAML model.
+
+    Returns prompt lines describing candidate gaps the operator may want
+    to add to the service YAML for future tuning.
+    """
+    if not runtime_state_output or not runtime_state_output.strip():
+        return ["- (no runtime state available for directive discovery)"]
+    import re
+
+    # Match top-level directives: `name value;` (not nested in location/upstream).
+    directive_pattern = re.compile(r"^\s{0,4}(\w+)\s+[^;]+;", re.MULTILINE)
+    found: set[str] = set()
+    for match in directive_pattern.finditer(runtime_state_output):
+        name = match.group(1)
+        # Skip structural keywords and common non-tunable directives.
+        if name in {
+            "server",
+            "location",
+            "upstream",
+            "include",
+            "listen",
+            "root",
+            "index",
+            "error_page",
+            "return",
+            "proxy_pass",
+            "try_files",
+            "server_name",
+            "charset",
+            "default_type",
+            "log_format",
+            "pid",
+            "user",
+            "error_log",
+            "types",
+            "mime",
+        }:
+            continue
+        found.add(name)
+    unmodeled = sorted(found - modeled_directives)
+    if not unmodeled:
+        return ["- (all detected directives are already modeled)"]
+    lines = [
+        f"- {name} (found in runtime config but not in service YAML)"
+        for name in unmodeled[:max_results]
+    ]
+    if len(unmodeled) > max_results:
+        lines.append(f"- ... and {len(unmodeled) - max_results} more")
+    return lines
+
+
 def format_hybrid_hypothesis_prompt(
     context: HypothesisContext,
     triage: TriageResult,
@@ -457,6 +517,11 @@ def format_hybrid_hypothesis_prompt(
         *format_compact_history_lines(context.history),
         "Blocked prior parameter/value pairs:",
         *format_blocked_prior_pairs(context.history),
+        "Unmodeled directives (found in runtime config but not in YAML):",
+        *discover_unmodeled_directives(
+            tune_context.snapshot.runtime_state_output,
+            set(tune_context.onboard.service.tunable_surface.allowed_directives),
+        ),
         "Selectable candidates:",
         *(candidate_lines or ["- none"]),
         "Deferred candidates (visibility only):",
@@ -496,5 +561,6 @@ def format_candidate_line_for_llm(candidate: CandidateParameter) -> str:
         f"value_type={candidate.value_type.value}; "
         f"min={candidate.min_value}; max={candidate.max_value}; "
         f"allowed={candidate.allowed_values}; current={candidate.current_value}; "
+        f"current_source={candidate.current_value_source}; "
         f"hint={hint}"
     )

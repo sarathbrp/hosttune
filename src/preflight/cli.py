@@ -55,6 +55,7 @@ from tune.application.apply_coordinator import (
     NicQueueApplier,
     PrlimitApplier,
     SysctlApplier,
+    SystemdCgroupControlApplier,
     SystemdUnitLimitApplier,
 )
 from tune.application.attribution_verifier import AttributionVerifier
@@ -187,6 +188,7 @@ def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
             network_ring_applier=NetworkRingApplier(),
             runtime_limit_applier=PrlimitApplier(),
             systemd_unit_limit_applier=SystemdUnitLimitApplier(),
+            cgroup_resource_control_applier=SystemdCgroupControlApplier(),
             nic_queue_applier=NicQueueApplier(),
             cpu_governor_applier=CpuGovernorApplier(),
         ),

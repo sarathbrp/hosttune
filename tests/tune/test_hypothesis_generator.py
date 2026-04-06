@@ -227,7 +227,7 @@ def test_llm_hypothesis_generator_rejects_noop_value() -> None:
         triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
-    with pytest.raises(ValueError, match="no-op value"):
+    with pytest.raises(ValueError, match="no-op value .*current_value_source="):
         generator.generate(context)
 
 
@@ -265,7 +265,7 @@ def test_llm_hypothesis_generator_rejects_duplicate_parameter_value_pair() -> No
         triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
     )
 
-    with pytest.raises(ValueError, match="duplicate parameter/value pair"):
+    with pytest.raises(ValueError, match="duplicate parameter/value pair .*current_value_source="):
         generator.generate(context)
 
 
@@ -368,3 +368,72 @@ def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:
     hypothesis = DeterministicHypothesisGenerator().generate(context)[0]
 
     assert hypothesis.parameter_key != first_candidate.parameter_key
+
+
+def test_diminishing_return_blocks_re_escalation_without_gain() -> None:
+    """Escalating a boundary-push sysctl after REJECTED should be blocked."""
+    from onboard.domain.models import ApplyMode
+    from tune.domain.hypothesis_models import CandidateSource, TuningHypothesis
+    from tune.domain.tuning_layer import tuning_layer_for_parameter_key
+
+    base_context = build_hypothesis_context()
+    somaxconn_candidate = next(
+        (c for c in base_context.candidates if c.parameter_key == "sysctl.net.core.somaxconn"),
+        None,
+    )
+    if somaxconn_candidate is None:
+        pytest.skip("somaxconn candidate not in test catalog")
+
+    prior_hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="sysctl.net.core.somaxconn",
+        parameter_name="net.core.somaxconn",
+        domain="kernel_sysctl",
+        tuning_layer=tuning_layer_for_parameter_key("sysctl.net.core.somaxconn"),
+        proposed_value="8192",
+        source=CandidateSource.SERVICE_SYSCTL,
+        apply_mode=ApplyMode.RELOAD,
+        rationale="test escalation",
+    )
+    history = (
+        HypothesisRecord(
+            iteration_number=1,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=prior_hypothesis,
+            status=HypothesisStatus.REJECTED,
+            evaluation_summary="No improvement",
+        ),
+    )
+
+    class EscalatingModelClient:
+        def complete(self, context: HypothesisContext) -> ModelCompletion:
+            return ModelCompletion(
+                content=json.dumps({
+                    "parameter_key": "sysctl.net.core.somaxconn",
+                    "proposed_value": "16384",
+                    "rationale": "push higher",
+                    "tuning_layer": "kernel",
+                    "apply_mode": "reload",
+                    "expected_benchmark_impact": "marginal",
+                    "rollback_plan": "revert to 8192",
+                }),
+                usage=None,
+            )
+
+    context = HypothesisContext(
+        tune_context=base_context.tune_context,
+        phase=TunePhase.BOUNDARY_PUSH,
+        iteration_number=2,
+        candidates=base_context.candidates,
+        deferred_candidates=base_context.deferred_candidates,
+        history=history,
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+    generator = LlmHypothesisGenerator(
+        model_client=EscalatingModelClient(),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
+    )
+
+    with pytest.raises(ValueError, match="Diminishing-return suppression"):
+        generator.generate(context)

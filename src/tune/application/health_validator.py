@@ -39,6 +39,20 @@ def _systemd_unit_limit_observation_matches(observed: str, expected_applied: str
         return False
 
 
+def _systemd_cgroup_observation_matches(prop: str, observed: str, expected_applied: str) -> bool:
+    obs = observed.strip()
+    exp = expected_applied.strip()
+    if prop == "CPUQuota":
+        return obs.removesuffix("%") == exp
+    if prop == "MemoryMax":
+        if obs == "infinity":
+            return exp == "infinity"
+        if obs.isdigit() and exp.isdigit():
+            return int(obs) == int(exp) * 1024 * 1024
+        return obs.removesuffix("M") == exp
+    return obs == exp
+
+
 @dataclass
 class HealthValidator:
     def validate_baseline(
@@ -244,6 +258,23 @@ class HealthValidator:
             result = executor.run(command)
             observed = result.stdout.strip()
             passed = result.exit_code == 0 and _systemd_unit_limit_observation_matches(
+                observed,
+                applied_change.applied_value,
+            )
+            detail = f"observed={observed or 'unknown'}"
+            return ValidationCheck(
+                name="effective_value",
+                passed=passed,
+                detail=detail,
+            )
+
+        if applied_change.hypothesis.parameter_key.startswith("systemd.cgroup."):
+            unit, prop = applied_change.target_path.rsplit(":", maxsplit=1)
+            command = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(prop)} --value"
+            result = executor.run(command)
+            observed = result.stdout.strip()
+            passed = result.exit_code == 0 and _systemd_cgroup_observation_matches(
+                prop,
                 observed,
                 applied_change.applied_value,
             )

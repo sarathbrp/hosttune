@@ -24,6 +24,7 @@ class CandidateSource(StrEnum):
     PLATFORM_CAPABILITY = "platform_capability"
     RUNTIME_PRLIMIT = "runtime_prlimit"
     SYSTEMD_UNIT_LIMIT = "systemd_unit_limit"
+    SYSTEMD_CGROUP_CONTROL = "systemd_cgroup_control"
     HOST_NIC_QUEUE = "host_nic_queue"  # ethtool -L combined N from host profile
     HOST_CPU_GOVERNOR = "host_cpu_governor"  # cpupower frequency-set -g from host profile
     HOST_SYSCTL = "host_sysctl"  # host-level sysctl from host profile
@@ -80,6 +81,7 @@ class CandidateParameter:
     max_value: int | None
     rationale_hint: str
     current_value: str | None = None
+    current_value_source: str = "unknown"
     availability: CandidateAvailability = CandidateAvailability.ACTIVE
 
 

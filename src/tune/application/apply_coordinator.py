@@ -8,6 +8,7 @@ from typing import Protocol
 from onboard.domain.models import ApplyMode
 from preflight.domain.models import CommandExecutor
 from tune.application.candidate_value_reads import (
+    directive_source_path_from_nginx_dump,
     grep_directive_from_config_file,
     try_read_network_ring_current,
 )
@@ -18,6 +19,11 @@ from tune.domain.tune_context import TuneContext
 _SYSTEMD_LIMIT_PROPERTIES: dict[str, str] = {
     "limit_nofile": "LimitNOFILE",
     "limit_nproc": "LimitNPROC",
+}
+
+_SYSTEMD_CGROUP_PROPERTIES: dict[str, str] = {
+    "cpu_quota_percent": "CPUQuota",
+    "memory_max_mib": "MemoryMax",
 }
 
 
@@ -77,6 +83,7 @@ class ApplyCoordinator:
     network_ring_applier: ChangeApplier
     runtime_limit_applier: ChangeApplier
     systemd_unit_limit_applier: ChangeApplier
+    cgroup_resource_control_applier: ChangeApplier | None = None
     nic_queue_applier: ChangeApplier | None = None
     cpu_governor_applier: ChangeApplier | None = None
 
@@ -106,6 +113,14 @@ class ApplyCoordinator:
             return self.runtime_limit_applier.apply(context, hypothesis, executor)
         if hypothesis.parameter_key.startswith("systemd.unit."):
             return self.systemd_unit_limit_applier.apply(context, hypothesis, executor)
+        if hypothesis.parameter_key.startswith("systemd.cgroup."):
+            if self.cgroup_resource_control_applier is None:
+                msg = (
+                    "Cgroup resource control candidate proposed but "
+                    "cgroup_resource_control_applier not configured."
+                )
+                raise ValueError(msg)
+            return self.cgroup_resource_control_applier.apply(context, hypothesis, executor)
         msg = f"No applier available for parameter_key: {hypothesis.parameter_key}"
         raise ValueError(msg)
 
@@ -117,7 +132,17 @@ class NginxDirectiveApplier:
     )
     _EVENTS_CONTEXT_DIRECTIVES = frozenset({"worker_connections", "multi_accept"})
     _HTTP_CONTEXT_DIRECTIVES = frozenset(
-        {"access_log", "sendfile", "keepalive_timeout", "keepalive_requests", "open_file_cache"}
+        {
+            "access_log",
+            "sendfile",
+            "keepalive_timeout",
+            "keepalive_requests",
+            "aio",
+            "open_file_cache",
+            "gzip",
+            "tcp_nopush",
+            "limit_rate",
+        }
     )
 
     def apply(
@@ -126,7 +151,7 @@ class NginxDirectiveApplier:
         hypothesis: TuningHypothesis,
         executor: CommandExecutor,
     ) -> AppliedChange:
-        config_path = self._resolve_config_path(context)
+        config_path = self._resolve_config_path(context, hypothesis.parameter_name)
         current_value = self._read_directive_value(
             executor=executor,
             config_path=config_path,
@@ -199,7 +224,11 @@ class NginxDirectiveApplier:
             rollback_command=rollback_command,
         )
 
-    def _resolve_config_path(self, context: TuneContext) -> str:
+    def _resolve_config_path(self, context: TuneContext, directive_name: str) -> str:
+        runtime_state_output = context.snapshot.runtime_state_output
+        dump_path = directive_source_path_from_nginx_dump(directive_name, runtime_state_output)
+        if dump_path is not None:
+            return dump_path
         for path in context.onboard.service.identity.config_paths:
             if PurePosixPath(path).suffix == ".conf":
                 return path
@@ -592,6 +621,98 @@ class SystemdUnitLimitApplier:
             hypothesis=hypothesis,
             target_path=f"{unit}:{prop}",
             previous_value=previous_raw,
+            applied_value=new_value,
+            apply_mode=hypothesis.apply_mode,
+            apply_command=apply_command,
+            rollback_command=rollback_command,
+        )
+
+
+@dataclass
+class SystemdCgroupControlApplier:
+    """Apply systemd cgroup resource controls via systemctl set-property."""
+
+    @staticmethod
+    def property_name(control_name: str) -> str:
+        prop = _SYSTEMD_CGROUP_PROPERTIES.get(control_name)
+        if prop is None:
+            msg = f"Unsupported cgroup resource control: {control_name!r}"
+            raise ValueError(msg)
+        return prop
+
+    @staticmethod
+    def read_property_value(executor: CommandExecutor, unit: str, prop: str) -> str:
+        cmd = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(prop)} --value"
+        result = executor.run(cmd)
+        if result.exit_code != 0:
+            msg = f"Failed to read {prop} for unit {unit!r}"
+            raise ValueError(msg)
+        return result.stdout.strip()
+
+    @staticmethod
+    def normalize_property_value(prop: str, raw_value: str) -> str | None:
+        value = raw_value.strip()
+        if not value or value == "infinity":
+            return None
+        if prop == "CPUQuota":
+            return value.removesuffix("%")
+        if prop == "MemoryMax":
+            if value.isdigit():
+                return str(int(value) // (1024 * 1024))
+            stripped = value.removesuffix("M").strip()
+            return stripped if stripped.isdigit() else value
+        return value
+
+    @staticmethod
+    def property_assignment(prop: str, proposed_value: str) -> str:
+        value = proposed_value.strip()
+        if prop == "CPUQuota":
+            return f"{prop}={value}%"
+        if prop == "MemoryMax":
+            return f"{prop}={value}M"
+        return f"{prop}={value}"
+
+    def apply(
+        self,
+        context: TuneContext,
+        hypothesis: TuningHypothesis,
+        executor: CommandExecutor,
+    ) -> AppliedChange:
+        control_name = hypothesis.parameter_name
+        prop = self.property_name(control_name)
+        unit = context.onboard.service.identity.systemd_unit_name
+        previous_raw = self.read_property_value(executor, unit, prop)
+        previous_value = self.normalize_property_value(prop, previous_raw) or "infinity"
+        new_value = hypothesis.proposed_value.strip()
+        set_cmd = (
+            f"systemctl set-property {shlex.quote(unit)} "
+            f"{shlex.quote(self.property_assignment(prop, new_value))}"
+        )
+        apply_parts = [
+            set_cmd,
+            *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode),
+        ]
+        apply_command = " && ".join(apply_parts)
+        apply_result = executor.run(apply_command)
+        if apply_result.exit_code != 0:
+            msg = (
+                "Failed to apply systemd cgroup control: "
+                f"{apply_result.stderr or apply_result.stdout}"
+            )
+            raise ValueError(msg)
+        rollback_set = (
+            f"systemctl set-property {shlex.quote(unit)} "
+            f"{shlex.quote(f'{prop}={previous_raw}')}"
+        )
+        rollback_parts = [
+            rollback_set,
+            *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode),
+        ]
+        rollback_command = " && ".join(rollback_parts)
+        return AppliedChange(
+            hypothesis=hypothesis,
+            target_path=f"{unit}:{prop}",
+            previous_value=previous_value,
             applied_value=new_value,
             apply_mode=hypothesis.apply_mode,
             apply_command=apply_command,

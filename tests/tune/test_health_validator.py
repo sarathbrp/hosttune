@@ -43,6 +43,8 @@ class HealthyExecutor:
             )
         if "systemctl show" in command and "LimitNPROC" in command:
             return CommandResult(command=command, exit_code=0, stdout="8000\n", stderr="")
+        if "systemctl show" in command and "CPUQuota" in command:
+            return CommandResult(command=command, exit_code=0, stdout="125%\n", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
@@ -132,6 +134,29 @@ def build_systemd_unit_limit_change() -> AppliedChange:
         target_path="nginx.service:LimitNPROC",
         previous_value="1000",
         applied_value="8000",
+        apply_mode=ApplyMode.RESTART,
+        apply_command="systemctl set-property ...",
+        rollback_command="systemctl set-property ...",
+    )
+
+
+def build_systemd_cgroup_control_change() -> AppliedChange:
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="systemd.cgroup.cpu_quota_percent",
+        parameter_name="cpu_quota_percent",
+        domain="runtime",
+        tuning_layer=tuning_layer_for_parameter_key("systemd.cgroup.cpu_quota_percent"),
+        proposed_value="125",
+        source=CandidateSource.SYSTEMD_CGROUP_CONTROL,
+        apply_mode=ApplyMode.RESTART,
+        rationale="Raise unit CPUQuota.",
+    )
+    return AppliedChange(
+        hypothesis=hypothesis,
+        target_path="nginx.service:CPUQuota",
+        previous_value="50",
+        applied_value="125",
         apply_mode=ApplyMode.RESTART,
         apply_command="systemctl set-property ...",
         rollback_command="systemctl set-property ...",
@@ -242,4 +267,18 @@ def test_health_validator_accepts_healthy_systemd_unit_limit_change() -> None:
     assert result.healthy is True
     assert any(
         check.name == "effective_value" and check.detail == "observed=8000" for check in result.checks
+    )
+
+
+def test_health_validator_accepts_healthy_systemd_cgroup_control_change() -> None:
+    validator = HealthValidator()
+    result = validator.validate(
+        context=build_tune_context(),
+        applied_change=build_systemd_cgroup_control_change(),
+        executor=HealthyExecutor(),
+    )
+
+    assert result.healthy is True
+    assert any(
+        check.name == "effective_value" and check.detail == "observed=125%" for check in result.checks
     )

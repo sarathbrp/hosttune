@@ -284,8 +284,21 @@ class LlmHypothesisGenerator:
             msg = f"Value {numeric_value} is above maximum for {candidate.parameter_key}"
             raise ValueError(msg)
         if candidate.current_value is not None and proposed_value == candidate.current_value:
-            msg = f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key}"
+            msg = (
+                f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key} "
+                f"(current_value_source={candidate.current_value_source})"
+            )
             raise ValueError(msg)
+
+    _BOUNDARY_PUSH_KEYS = frozenset(
+        {
+            "sysctl.net.core.somaxconn",
+            "sysctl.net.core.netdev_max_backlog",
+            "sysctl.net.ipv4.tcp_max_syn_backlog",
+            "sysctl.net.core.rmem_max",
+            "sysctl.net.core.wmem_max",
+        }
+    )
 
     def _validate_against_history(
         self,
@@ -302,8 +315,48 @@ class LlmHypothesisGenerator:
                 raise ValueError(
                     "Model proposed duplicate parameter/value pair "
                     f"{candidate.parameter_key}={proposed_value!r} already tried in "
-                    f"iteration {record.iteration_number}"
+                    f"iteration {record.iteration_number} "
+                    f"(current_value_source={candidate.current_value_source})"
                 )
+        self._validate_diminishing_returns(context, candidate, proposed_value)
+
+    def _validate_diminishing_returns(
+        self,
+        context: HypothesisContext,
+        candidate: CandidateParameter,
+        proposed_value: str,
+    ) -> None:
+        """Block re-escalation of boundary-push sysctls without prior verified gain."""
+        if candidate.parameter_key not in self._BOUNDARY_PUSH_KEYS:
+            return
+        try:
+            proposed_int = int(proposed_value)
+        except ValueError:
+            return
+        prior_attempts = [
+            record
+            for record in context.history
+            if record.hypothesis.parameter_key == candidate.parameter_key
+        ]
+        if not prior_attempts:
+            return
+        last_attempt = prior_attempts[-1]
+        try:
+            last_proposed_int = int(last_attempt.hypothesis.proposed_value)
+        except ValueError:
+            return
+        # Only block if the new proposal is a further escalation (higher value).
+        if proposed_int <= last_proposed_int:
+            return
+        # Allow re-escalation if the last attempt was accepted or promising.
+        if last_attempt.status.value in ("accepted", "promising"):
+            return
+        raise ValueError(
+            f"Diminishing-return suppression: {candidate.parameter_key} was "
+            f"escalated to {last_proposed_int} in iteration "
+            f"{last_attempt.iteration_number} with status={last_attempt.status.value}; "
+            f"blocking further escalation to {proposed_int} without prior verified gain"
+        )
 
     def _validate_contract_fields(
         self,

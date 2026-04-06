@@ -279,8 +279,9 @@ class HostTuneInstance:
                 best_config=(
                     None
                     if result.best_configuration is None
-                    else result.best_configuration.parameter_values
+                    else result.best_iteration_config_values()
                 ),
+                final_retained_config=result.final_retained_config_values(),
             )
         return result
 

@@ -134,6 +134,7 @@ class RuleBasedTriage:
             "candidate_ceiling": self._rule_candidate_ceiling,
             "candidate_scale_outlier": self._rule_candidate_scale_outlier,
             "host_fact_signal": self._rule_host_fact_signal,
+            "environment_blocker": self._rule_environment_blocker,
         }.get(kind)
         if handler is None:
             return None
@@ -465,6 +466,62 @@ class RuleBasedTriage:
             ),
             None,
         )
+
+    def _rule_environment_blocker(
+        self,
+        rule_id: str,
+        section: str,
+        rule: dict[str, Any],
+        context: HypothesisContext,
+        candidates_by_key: dict[str, CandidateParameter],
+    ) -> tuple[TriggeredRule, TriageRecommendation | None] | None:
+        """Detect external throttles by probing system state via telemetry digest."""
+        _ = candidates_by_key
+        detail = rule.get("detail")
+        if not isinstance(detail, str) or detail == "":
+            return None
+        telemetry = context.last_benchmark_runtime_telemetry_digest
+        probe_command = rule.get("probe_command")
+        signal_key = rule.get("signal_key", "")
+        # Check telemetry digest for indicators when no live probe is available.
+        # These keywords are produced by the telemetry collector (ss -s, softnet_stat).
+        keyword_indicators: dict[str, tuple[str, ...]] = {
+            "conntrack_pressure": ("conntrack", "nf_conntrack"),
+            "firewall_connlimit": ("connlimit", "iptables", "nftables"),
+            "tc_shaping": ("tc qdisc", "tbf", "htb", "netem"),
+            "cgroup_cpu_throttle": ("nr_throttled", "cpu.stat"),
+        }
+        indicators = keyword_indicators.get(signal_key, ())
+        if indicators and telemetry:
+            telemetry_lower = telemetry.lower()
+            if any(indicator in telemetry_lower for indicator in indicators):
+                return (
+                    TriggeredRule(
+                        rule_id=rule_id,
+                        section=section,
+                        outcome="signal",
+                        detail=f"[env_blocker] {detail}",
+                    ),
+                    None,
+                )
+        # If a probe_command is defined, the actual probe runs at the host level
+        # via the preflight executor. The triage layer only detects based on
+        # available telemetry; the probe_command is documented for operators
+        # to run manually or for future live-probe integration.
+        if not telemetry and probe_command:
+            return (
+                TriggeredRule(
+                    rule_id=rule_id,
+                    section=section,
+                    outcome="signal",
+                    detail=(
+                        f"[env_blocker] {detail} "
+                        f"(no telemetry available; run manually: {probe_command})"
+                    ),
+                ),
+                None,
+            )
+        return None
 
     def _suppressed_candidates(
         self,

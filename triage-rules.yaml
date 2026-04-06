@@ -186,6 +186,43 @@ application_discovery_sanity:
       - "off"
     min_logical_cores: 32
 
+environment_blockers:
+  - id: detect_conntrack_pressure
+    enabled: true
+    action: signal
+    kind: environment_blocker
+    signal_key: conntrack_pressure
+    probe_command: "sysctl -n net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max 2>/dev/null"
+    threshold_ratio: 0.8
+    detail: "Conntrack table is above 80% capacity; external connection tracking may throttle new connections before tuning can help. Consider raising nf_conntrack_max or reviewing firewall rules."
+
+  - id: detect_iptables_connection_limit
+    enabled: true
+    action: signal
+    kind: environment_blocker
+    signal_key: firewall_connlimit
+    probe_command: "iptables -L -n 2>/dev/null | grep -ci connlimit || echo 0"
+    threshold_count: 1
+    detail: "iptables connlimit rules detected; firewall may be rate-limiting connections independently of service tuning."
+
+  - id: detect_tc_shaping
+    enabled: true
+    action: signal
+    kind: environment_blocker
+    signal_key: tc_shaping
+    probe_command: "tc qdisc show 2>/dev/null | grep -cv 'noqueue\\|pfifo_fast\\|fq_codel\\|mq' || echo 0"
+    threshold_count: 1
+    detail: "Non-default tc qdisc detected; traffic shaping may impose bandwidth or latency limits that mask tuning gains."
+
+  - id: detect_cgroup_cpu_throttle
+    enabled: true
+    action: signal
+    kind: environment_blocker
+    signal_key: cgroup_cpu_throttle
+    probe_command: "cat /sys/fs/cgroup/cpu.stat 2>/dev/null | awk '/nr_throttled/ {print $2}' || echo 0"
+    threshold_count: 100
+    detail: "Significant cgroup CPU throttling detected (nr_throttled > 100); the service may be hitting a hard CPU quota before tuning gains are visible."
+
 postcheck_escalation:
   - id: fallback_to_llm
     enabled: true

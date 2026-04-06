@@ -85,6 +85,39 @@ tunable_surface:
       apply_mode: reload
       forbidden_values:
         - "off"
+    gzip:
+      value_type: enum
+      priority_tier: medium
+      allowed_values:
+        - "on"
+        - "off"
+      apply_mode: reload
+      forbidden_values:
+        - "off"
+    tcp_nopush:
+      value_type: enum
+      priority_tier: medium
+      allowed_values:
+        - "on"
+        - "off"
+      apply_mode: reload
+      forbidden_values:
+        - "off"
+    limit_rate:
+      value_type: string
+      priority_tier: high
+      apply_mode: reload
+      forbidden_values: []
+    aio:
+      value_type: enum
+      priority_tier: low
+      allowed_values:
+        - "on"
+        - "off"
+        - "threads"
+      apply_mode: reload
+      forbidden_values:
+        - "off"
     worker_processes:
       value_type: integer
       priority_tier: high
@@ -181,7 +214,6 @@ tunable_surface:
       forbidden_values: []
   # systemd cgroup resource controls (systemctl set-property). Requires cgroup v2.
   # cpu_quota_percent -> CPUQuota=N%, memory_max_mib -> MemoryMax=NM.
-  # No applier implemented yet; YAML declares the contract surface for future use.
   cgroup_resource_controls:
     cpu_quota_percent:
       value_type: integer

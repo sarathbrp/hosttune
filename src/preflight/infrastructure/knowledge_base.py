@@ -124,6 +124,7 @@ class KnowledgeBase:
         best_score: float | None,
         best_iteration: int | None,
         best_config: dict[str, str] | None,
+        final_retained_config: dict[str, str] | None,
     ) -> None:
         with sqlite3.connect(self.path) as connection:
             connection.execute(
@@ -134,7 +135,8 @@ class KnowledgeBase:
                     stop_reason=?,
                     best_score=?,
                     best_iteration=?,
-                    best_config_json=?
+                    best_config_json=?,
+                    final_retained_config_json=?
                 WHERE run_id=?
                 """,
                 (
@@ -144,6 +146,7 @@ class KnowledgeBase:
                     best_score,
                     best_iteration,
                     json.dumps(best_config or {}, sort_keys=True),
+                    json.dumps(final_retained_config or {}, sort_keys=True),
                     run_id,
                 ),
             )
@@ -212,7 +215,9 @@ class KnowledgeBase:
             return None
         payload = dict(row)
         best_config_json = payload.pop("best_config_json", None)
+        final_retained_config_json = payload.pop("final_retained_config_json", None)
         payload["best_config"] = json.loads(best_config_json or "{}")
+        payload["final_retained_config"] = json.loads(final_retained_config_json or "{}")
         return payload
 
     def get_best_config(self, run_id: str) -> dict[str, Any] | None:
@@ -324,10 +329,14 @@ class KnowledgeBase:
                     stop_reason TEXT,
                     best_score REAL,
                     best_iteration INTEGER,
-                    best_config_json TEXT
+                    best_config_json TEXT,
+                    final_retained_config_json TEXT
                 )
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)").fetchall()}
+            if "final_retained_config_json" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN final_retained_config_json TEXT")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS events (

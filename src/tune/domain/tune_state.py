@@ -37,6 +37,14 @@ class TuneState:
     scoreboard: TuneScoreboard = field(default_factory=TuneScoreboard)
     stop_reason: str | None = None
 
+    def best_iteration_config_values(self) -> dict[str, str]:
+        if self.best_configuration is None:
+            return {}
+        return dict(self.best_configuration.parameter_values)
+
+    def final_retained_config_values(self) -> dict[str, str]:
+        return {key: change.applied_value for key, change in self.active_changes.items()}
+
     @classmethod
     def initialize(cls: type[TuneState], max_iterations: int) -> TuneState:
         budgets = cls._allocate_budget(max_iterations)

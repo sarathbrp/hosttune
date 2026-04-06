@@ -6,11 +6,16 @@ from dataclasses import dataclass
 
 from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
 from preflight.domain.models import CommandExecutor
-from tune.application.apply_coordinator import PrlimitApplier, SystemdUnitLimitApplier
+from tune.application.apply_coordinator import (
+    PrlimitApplier,
+    SystemdCgroupControlApplier,
+    SystemdUnitLimitApplier,
+)
 from tune.application.candidate_value_reads import (
-    read_network_ring_catalog_current,
-    read_service_directive_catalog_current,
+    read_network_ring_catalog_current_with_source,
+    read_service_directive_catalog_current_with_source,
     read_sysctl_catalog_current,
+    read_sysctl_catalog_current_with_source,
 )
 from tune.domain.hypothesis_models import (
     CandidateAvailability,
@@ -45,6 +50,7 @@ class CandidateCatalogBuilder:
             ("network_rings", self._build_network_ring_candidates),
             ("runtime_prlimit", self._build_runtime_prlimit_candidates),
             ("systemd_unit_limits", self._build_systemd_unit_limit_candidates),
+            ("cgroup_resource_controls", self._build_cgroup_resource_control_candidates),
             ("host_profile", self._build_host_profile_candidates),
         ]
         for builder_name, builder in builders:
@@ -92,6 +98,14 @@ class CandidateCatalogBuilder:
                 continue
             domain = "runtime" if directive_name == "worker_rlimit_nofile" else "service_config"
             parameter_key = f"service.directive.{directive_name}"
+            current_value, current_value_source = (
+                read_service_directive_catalog_current_with_source(
+                    executor=executor,
+                    config_path=self._resolve_config_path(context),
+                    directive_name=directive_name,
+                    runtime_state_output=context.snapshot.runtime_state_output,
+                )
+            )
             candidates.append(
                 CandidateParameter(
                     parameter_key=parameter_key,
@@ -110,12 +124,8 @@ class CandidateCatalogBuilder:
                         f"Allowed nginx directive from service plugin for "
                         f"{context.onboard.service_name}"
                     ),
-                    current_value=read_service_directive_catalog_current(
-                        executor=executor,
-                        config_path=self._resolve_config_path(context),
-                        directive_name=directive_name,
-                        runtime_state_output=context.snapshot.runtime_state_output,
-                    ),
+                    current_value=current_value,
+                    current_value_source=current_value_source,
                 )
             )
         return candidates
@@ -170,6 +180,11 @@ class CandidateCatalogBuilder:
                         executor,
                         context.preflight.kernel.sysctl_profile,
                     ),
+                    current_value_source=read_sysctl_catalog_current_with_source(
+                        sysctl_name,
+                        executor,
+                        context.preflight.kernel.sysctl_profile,
+                    )[1],
                     availability=availability,
                 )
             )
@@ -201,7 +216,7 @@ class CandidateCatalogBuilder:
         ):
             if max_value <= preflight_current:
                 continue
-            catalog_current = read_network_ring_catalog_current(
+            catalog_current, current_value_source = read_network_ring_catalog_current_with_source(
                 parameter_name,
                 interface_name,
                 executor,
@@ -234,6 +249,7 @@ class CandidateCatalogBuilder:
                         f"for {parameter_name} from {current_int} to {max_value}"
                     ),
                     current_value=catalog_current,
+                    current_value_source=current_value_source,
                 )
             )
         return candidates
@@ -277,6 +293,7 @@ class CandidateCatalogBuilder:
                         f"{context.onboard.service_name} main PID (pid_file={pid_file})"
                     ),
                     current_value=self._read_current_nofile_soft(executor, context),
+                    current_value_source="live_prlimit" if executor is not None else "unavailable",
                 )
             )
         return candidates
@@ -319,6 +336,57 @@ class CandidateCatalogBuilder:
                     current_value=self._read_systemd_unit_limit_current(
                         executor, context, limit_name
                     ),
+                    current_value_source="live_systemctl"
+                    if executor is not None
+                    else "unavailable",
+                )
+            )
+        return candidates
+
+    def _build_cgroup_resource_control_candidates(
+        self,
+        context: TuneContext,
+        executor: CommandExecutor | None,
+    ) -> list[CandidateParameter]:
+        if not self._capability_available(context, "cgroup_resource_control"):
+            return []
+        unit = context.onboard.service.identity.systemd_unit_name
+        controls = context.onboard.service.tunable_surface.cgroup_resource_controls
+        if not unit or not controls:
+            return []
+        cgroup = context.preflight.cgroup
+        candidates: list[CandidateParameter] = []
+        for control_name, constraint in controls.items():
+            if control_name == "cpu_quota_percent" and not cgroup.cpu_controller_available:
+                continue
+            if control_name == "memory_max_mib" and not cgroup.memory_controller_available:
+                continue
+            if constraint.apply_mode is ApplyMode.REBOOT:
+                continue
+            parameter_key = f"systemd.cgroup.{control_name}"
+            candidates.append(
+                CandidateParameter(
+                    parameter_key=parameter_key,
+                    domain="runtime",
+                    tuning_layer=resolve_tuning_layer(parameter_key, constraint.tuning_layer),
+                    parameter_name=control_name,
+                    source=CandidateSource.SYSTEMD_CGROUP_CONTROL,
+                    value_type=constraint.value_type,
+                    apply_mode=constraint.apply_mode,
+                    priority_tier=constraint.priority_tier,
+                    allowed_values=constraint.allowed_values,
+                    forbidden_values=constraint.forbidden_values,
+                    min_value=constraint.min_value,
+                    max_value=constraint.max_value,
+                    rationale_hint=f"systemd cgroup control {control_name} on {unit}",
+                    current_value=self._read_cgroup_resource_control_current(
+                        executor,
+                        unit,
+                        control_name,
+                    ),
+                    current_value_source="live_systemctl"
+                    if executor is not None
+                    else "unavailable",
                 )
             )
         return candidates
@@ -356,6 +424,25 @@ class CandidateCatalogBuilder:
                 "Failed to read current NOFILE soft limit; no-op check will be skipped"
             )
             return None
+
+    def _read_cgroup_resource_control_current(
+        self,
+        executor: CommandExecutor | None,
+        unit: str,
+        control_name: str,
+    ) -> str | None:
+        if executor is None:
+            return None
+        prop = SystemdCgroupControlApplier.property_name(control_name)
+        try:
+            raw_value = SystemdCgroupControlApplier.read_property_value(executor, unit, prop)
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Failed to read systemd cgroup control %s; no-op check may be skipped",
+                control_name,
+            )
+            return None
+        return SystemdCgroupControlApplier.normalize_property_value(prop, raw_value)
 
     def _capability_available(self, context: TuneContext, flag_name: str) -> bool:
         return any(
@@ -440,6 +527,9 @@ class CandidateCatalogBuilder:
                             f"currently {current_queues} — expand to parallelize packet processing"
                         ),
                         current_value=current_val,
+                        current_value_source="live_ethtool"
+                        if executor is not None
+                        else "preflight_network_probe",
                     )
                 )
 
@@ -473,6 +563,7 @@ class CandidateCatalogBuilder:
                         f"preferred={cg.preferred_governor}"
                     ),
                     current_value=current_gov,
+                    current_value_source="live_sysfs" if executor is not None else "unavailable",
                 )
             )
 
@@ -486,8 +577,10 @@ class CandidateCatalogBuilder:
             if pkey in service_sysctl_keys or pkey in existing_keys:
                 continue  # already in catalog from service YAML
             existing_keys.add(pkey)
-            current_val = read_sysctl_catalog_current(
-                entry.name, executor, context.preflight.kernel.sysctl_profile
+            current_val, current_value_source = read_sysctl_catalog_current_with_source(
+                entry.name,
+                executor,
+                context.preflight.kernel.sysctl_profile,
             )
             candidates.append(
                 CandidateParameter(
@@ -505,6 +598,7 @@ class CandidateCatalogBuilder:
                     max_value=None,
                     rationale_hint=entry.rationale_hint,
                     current_value=current_val,
+                    current_value_source=current_value_source,
                 )
             )
 

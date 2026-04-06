@@ -316,3 +316,64 @@ application_discovery_sanity:
     assert result.recommended_action is not None
     assert result.recommended_action.parameter_key == "service.directive.open_file_cache"
     assert result.recommended_action.proposed_value == "max=200000"
+
+
+def test_environment_blocker_triggers_on_telemetry_keyword() -> None:
+    from tune.application.rule_based_triage import TriageRuleset
+
+    rules = TriageRuleset(
+        sections={
+            "env_blockers": (
+                {
+                    "id": "test_conntrack",
+                    "enabled": True,
+                    "action": "signal",
+                    "kind": "environment_blocker",
+                    "signal_key": "conntrack_pressure",
+                    "detail": "Conntrack table near capacity.",
+                },
+            ),
+        }
+    )
+    base = build_hypothesis_context()
+    context = replace(
+        base,
+        last_benchmark_runtime_telemetry_digest=(
+            "ss -s summary: TCP established=500\n"
+            "conntrack entries: 95000/100000\n"
+        ),
+    )
+
+    result = RuleBasedTriage(rules).evaluate(context)
+
+    triggered_ids = {t.rule_id for t in result.triggered_rules}
+    assert "test_conntrack" in triggered_ids
+    assert any("env_blocker" in t.detail for t in result.triggered_rules)
+
+
+def test_environment_blocker_skips_when_no_keyword_match() -> None:
+    from tune.application.rule_based_triage import TriageRuleset
+
+    rules = TriageRuleset(
+        sections={
+            "env_blockers": (
+                {
+                    "id": "test_tc",
+                    "enabled": True,
+                    "action": "signal",
+                    "kind": "environment_blocker",
+                    "signal_key": "tc_shaping",
+                    "detail": "TC shaping detected.",
+                },
+            ),
+        }
+    )
+    base = build_hypothesis_context()
+    context = replace(
+        base,
+        last_benchmark_runtime_telemetry_digest="ss -s summary: TCP established=500",
+    )
+
+    result = RuleBasedTriage(rules).evaluate(context)
+
+    assert not any(t.rule_id == "test_tc" for t in result.triggered_rules)

@@ -8,6 +8,7 @@ _NETWORK_RING_PREFIX = "network.ring."
 _NETWORK_QUEUE_PREFIX = "network.queue."
 _RUNTIME_PRLIMIT_PREFIX = "runtime.prlimit."
 _SYSTEMD_UNIT_PREFIX = "systemd.unit."
+_SYSTEMD_CGROUP_PREFIX = "systemd.cgroup."
 _PLATFORM_PREFIX = "platform."
 
 _RUNTIME_DIRECTIVES = frozenset({"worker_rlimit_nofile"})
@@ -48,6 +49,8 @@ def tuning_layer_for_parameter_key(parameter_key: str) -> TuningLayer:
     if parameter_key.startswith(_RUNTIME_PRLIMIT_PREFIX):
         return TuningLayer.RUNTIME
     if parameter_key.startswith(_SYSTEMD_UNIT_PREFIX):
+        return TuningLayer.RUNTIME
+    if parameter_key.startswith(_SYSTEMD_CGROUP_PREFIX):
         return TuningLayer.RUNTIME
     if parameter_key.startswith(_SERVICE_DIRECTIVE_PREFIX):
         directive = parameter_key.removeprefix(_SERVICE_DIRECTIVE_PREFIX)

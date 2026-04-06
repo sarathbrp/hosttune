@@ -57,6 +57,10 @@ class FakeExecutor:
             )
         if "systemctl show" in command and "LimitNPROC" in command:
             return CommandResult(command=command, exit_code=0, stdout="32768\n", stderr="")
+        if "systemctl show" in command and "CPUQuota" in command:
+            return CommandResult(command=command, exit_code=0, stdout="75%\n", stderr="")
+        if "systemctl show" in command and "MemoryMax" in command:
+            return CommandResult(command=command, exit_code=0, stdout="2147483648\n", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
@@ -153,9 +157,11 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
     )
     assert prlimit_nofile.tuning_layer is TuningLayer.RUNTIME
     assert prlimit_nofile.source is CandidateSource.RUNTIME_PRLIMIT
+    assert prlimit_nofile.current_value_source == "live_prlimit"
     nproc = next(c for c in candidates if c.parameter_key == "systemd.unit.limit_nproc")
     assert nproc.source is CandidateSource.SYSTEMD_UNIT_LIMIT
     assert nproc.current_value == "32768"
+    assert nproc.current_value_source == "live_systemctl"
     assert prlimit_nofile.current_value == "8192"
     assert "service.directive.worker_rlimit_nofile" in candidate_keys
     assert any(
@@ -169,6 +175,7 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
         if candidate.parameter_key == "service.directive.worker_processes"
     )
     assert worker_processes.current_value == "112"
+    assert worker_processes.current_value_source == "live_config_grep"
     assert worker_processes.priority_tier is PriorityTier.HIGH
     worker_rlimit = next(
         candidate
@@ -184,6 +191,34 @@ def test_candidate_catalog_builder_includes_service_directives_and_sysctls() -> 
     assert port_range.priority_tier is PriorityTier.MEDIUM
     rx_ring = next(candidate for candidate in candidates if candidate.parameter_key == "network.ring.rx")
     assert rx_ring.priority_tier is PriorityTier.MEDIUM
+
+
+def test_candidate_catalog_builder_includes_cgroup_controls_when_supported() -> None:
+    base = build_tune_context()
+    preflight = replace(
+        base.preflight,
+        cgroup=CgroupInfo(
+            cgroup_version="v2",
+            cpu_controller_available=True,
+            memory_controller_available=True,
+        ),
+        capability_map=CapabilityMap(
+            flags=(
+                *base.preflight.capability_map.flags,
+                CapabilityFlag("cgroup_resource_control", True, "supported"),
+            )
+        ),
+    )
+    context = replace(base, preflight=preflight)
+
+    candidates = CandidateCatalogBuilder().build(context, FakeExecutor())
+
+    cpu_quota = next(c for c in candidates if c.parameter_key == "systemd.cgroup.cpu_quota_percent")
+    memory_max = next(c for c in candidates if c.parameter_key == "systemd.cgroup.memory_max_mib")
+    assert cpu_quota.source is CandidateSource.SYSTEMD_CGROUP_CONTROL
+    assert memory_max.source is CandidateSource.SYSTEMD_CGROUP_CONTROL
+    assert cpu_quota.current_value == "75"
+    assert memory_max.current_value == "2048"
 
 
 def test_candidate_catalog_applies_yaml_tuning_layer_overrides() -> None:
@@ -228,6 +263,7 @@ def test_catalog_sysctl_current_from_preflight_when_live_sysctl_empty() -> None:
     candidates = CandidateCatalogBuilder().build(ctx, cast(CommandExecutor, EmptySysctl()))
     somaxconn = next(c for c in candidates if c.parameter_key == "sysctl.net.core.somaxconn")
     assert somaxconn.current_value == "8000"
+    assert somaxconn.current_value_source == "preflight_sysctl_profile"
 
 
 def test_catalog_network_ring_prefers_live_ethtool_over_preflight() -> None:

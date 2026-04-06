@@ -16,6 +16,10 @@ from preflight.domain.models import CommandExecutor
 _VALID_RING_NAMES = frozenset({"rx", "tx", "rx-mini", "rx-jumbo"})
 
 
+def _with_source(value: str | None, source: str) -> tuple[str | None, str]:
+    return value, source
+
+
 def sysctl_value_from_profile(
     sysctl_profile: tuple[tuple[str, str], ...],
     sysctl_name: str,
@@ -32,12 +36,20 @@ def read_sysctl_catalog_current(
     executor: CommandExecutor | None,
     sysctl_profile: tuple[tuple[str, str], ...],
 ) -> str | None:
+    return read_sysctl_catalog_current_with_source(sysctl_name, executor, sysctl_profile)[0]
+
+
+def read_sysctl_catalog_current_with_source(
+    sysctl_name: str,
+    executor: CommandExecutor | None,
+    sysctl_profile: tuple[tuple[str, str], ...],
+) -> tuple[str | None, str]:
     if executor is not None:
         result = executor.run(f"sysctl -n {shlex.quote(sysctl_name)}")
         if result.exit_code == 0:
             out = result.stdout.strip()
             if out:
-                return out
+                return _with_source(out, "live_sysctl")
             logging.getLogger(__name__).debug(
                 "sysctl -n %s returned empty; falling back to preflight profile",
                 sysctl_name,
@@ -49,7 +61,10 @@ def read_sysctl_catalog_current(
                 result.exit_code,
                 result.stderr.strip(),
             )
-    return sysctl_value_from_profile(sysctl_profile, sysctl_name)
+    return _with_source(
+        sysctl_value_from_profile(sysctl_profile, sysctl_name),
+        "preflight_sysctl_profile",
+    )
 
 
 def try_read_network_ring_current(
@@ -81,11 +96,25 @@ def read_network_ring_catalog_current(
     executor: CommandExecutor | None,
     preflight_current: int,
 ) -> str:
+    return read_network_ring_catalog_current_with_source(
+        ring_name,
+        interface_name,
+        executor,
+        preflight_current,
+    )[0]
+
+
+def read_network_ring_catalog_current_with_source(
+    ring_name: str,
+    interface_name: str,
+    executor: CommandExecutor | None,
+    preflight_current: int,
+) -> tuple[str, str]:
     if executor is not None and interface_name:
         live = try_read_network_ring_current(executor, interface_name, ring_name)
         if live is not None:
-            return live
-    return str(preflight_current)
+            return live, "live_ethtool"
+    return str(preflight_current), "preflight_network_probe"
 
 
 def parse_directive_from_nginx_dump(
@@ -101,6 +130,27 @@ def parse_directive_from_nginx_dump(
     if not match:
         return None
     return match.group(1).strip()
+
+
+def directive_source_path_from_nginx_dump(
+    directive_name: str,
+    runtime_state_output: str | None,
+) -> str | None:
+    """Return the config file path containing the last matching directive in `nginx -T`."""
+    if not runtime_state_output or not runtime_state_output.strip():
+        return None
+    file_marker = re.compile(r"^# configuration file (?P<path>.+?):$")
+    directive_pattern = re.compile(rf"^\s*{re.escape(directive_name)}\s+[^;]+;")
+    current_path: str | None = None
+    matched_path: str | None = None
+    for line in runtime_state_output.splitlines():
+        marker = file_marker.match(line.strip())
+        if marker:
+            current_path = marker.group("path").strip()
+            continue
+        if current_path is not None and directive_pattern.match(line):
+            matched_path = current_path
+    return matched_path
 
 
 def grep_directive_from_config_file(
@@ -127,13 +177,30 @@ def read_service_directive_catalog_current(
     directive_name: str,
     runtime_state_output: str | None,
 ) -> str | None:
+    return read_service_directive_catalog_current_with_source(
+        executor,
+        config_path,
+        directive_name,
+        runtime_state_output,
+    )[0]
+
+
+def read_service_directive_catalog_current_with_source(
+    executor: CommandExecutor | None,
+    config_path: str,
+    directive_name: str,
+    runtime_state_output: str | None,
+) -> tuple[str | None, str]:
     if executor is not None:
         from_file = grep_directive_from_config_file(executor, config_path, directive_name)
         if from_file is not None:
-            return from_file
+            return _with_source(from_file, "live_config_grep")
         logging.getLogger(__name__).warning(
             "directive live read fell back to runtime snapshot for %s from %s",
             directive_name,
             config_path,
         )
-    return parse_directive_from_nginx_dump(directive_name, runtime_state_output)
+    return _with_source(
+        parse_directive_from_nginx_dump(directive_name, runtime_state_output),
+        "runtime_snapshot_nginx_t",
+    )

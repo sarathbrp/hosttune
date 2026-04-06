@@ -22,6 +22,7 @@ from tests.tune.test_candidate_catalog_builder import FakeExecutor, build_tune_c
         ("runtime.prlimit.nofile_soft", TuningLayer.RUNTIME),
         ("systemd.unit.limit_nproc", TuningLayer.RUNTIME),
         ("systemd.unit.limit_nofile", TuningLayer.RUNTIME),
+        ("systemd.cgroup.cpu_quota_percent", TuningLayer.RUNTIME),
     ],
 )
 def test_tuning_layer_for_parameter_key_maps_known_prefixes(
