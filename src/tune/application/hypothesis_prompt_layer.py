@@ -549,9 +549,84 @@ def format_hybrid_hypothesis_prompt(
     return "\n".join(sections)
 
 
+_PERFORMANCE_SEMANTICS: dict[str, str] = {
+    # ── Hard throttles / caps ────────────────────────────────────────────
+    "service.directive.limit_rate": (
+        "THROTTLE: per-connection bandwidth cap; any non-zero value "
+        "(e.g. 5m=5MB/s) is a hard throughput limiter. Set 0 to disable."
+    ),
+    "service.directive.limit_rate_after": (
+        "THROTTLE: bandwidth cap kicks in after this many bytes per response."
+    ),
+    "systemd.unit.cpu_quota_percent": (
+        "THROTTLE: values <100% impose a hard CPU ceiling via cgroup; "
+        "the service is forcibly throttled regardless of available cores."
+    ),
+    "systemd.unit.memory_max_mib": (
+        "HARD CEILING: exceeded = OOM kill by the kernel; "
+        "this is a capacity wall, not a performance tuning knob."
+    ),
+    "sysctl.net.core.somaxconn": (
+        "BACKLOG CAP: TCP listen queue; low values silently drop SYN "
+        "packets under load. Raise to match worker_connections."
+    ),
+    "sysctl.net.core.netdev_max_backlog": (
+        "PACKET DROP WALL: per-CPU NIC RX queue; exceeded = silent packet "
+        "drops before the kernel even sees the connection."
+    ),
+    "sysctl.net.ipv4.ip_local_port_range": (
+        "PORT EXHAUSTION: narrow range limits concurrent outbound connections; "
+        "exhaustion = 'Cannot assign requested address' errors."
+    ),
+    # ── I/O and overhead ─────────────────────────────────────────────────
+    "service.directive.access_log": (
+        "I/O OVERHEAD: disk writes per request; 'off' eliminates logging I/O."
+    ),
+    "service.directive.open_file_cache": (
+        "CACHE: caches file descriptors and metadata; " "'off' means re-open on every request."
+    ),
+    # ── Counterintuitive tradeoffs ───────────────────────────────────────
+    "service.directive.gzip": (
+        "CPU-BANDWIDTH TRADEOFF: 'on' trades CPU cycles for smaller "
+        "responses; beneficial on slow links, overhead on fast local networks."
+    ),
+    "service.directive.tcp_nopush": (
+        "LATENCY TRADEOFF: 'on' delays sending to pack full frames; "
+        "reduces syscalls but adds micro-latency per response."
+    ),
+    "service.directive.keepalive_requests": (
+        "CONNECTION REUSE: higher = fewer TCP handshakes but longer-lived "
+        "connections consuming memory. Balance with worker_connections."
+    ),
+    "service.directive.worker_connections": (
+        "PER-WORKER LIMIT: this is per worker process, not global. "
+        "Effective max = worker_processes * worker_connections."
+    ),
+    "service.directive.aio": (
+        "ASYNC I/O MODE: 'threads' = userspace thread pool (recommended); "
+        "'on' = kernel AIO (Linux only, limited). 'off' = synchronous."
+    ),
+    "sysctl.vm.swappiness": (
+        "MEMORY PRESSURE: higher values swap more aggressively, "
+        "adding latency to memory-bound workloads."
+    ),
+    # ── Shadow limits ────────────────────────────────────────────────────
+    "systemd.unit.limit_nofile": (
+        "SHADOW LIMIT: effective fd limit = MIN(systemd LimitNOFILE, "
+        "prlimit nofile_soft). Both must be raised together."
+    ),
+    "runtime.prlimit.nofile_soft": (
+        "SHADOW LIMIT: effective fd limit = MIN(systemd LimitNOFILE, "
+        "prlimit nofile_soft). Both must be raised together."
+    ),
+}
+
+
 def format_candidate_line_for_llm(candidate: CandidateParameter) -> str:
     """Compact candidate row; rationale hint truncated for prompt size."""
     hint = truncate_for_prompt(candidate.rationale_hint, _LLM_CANDIDATE_HINT_MAX_CHARS)
+    semantic = _PERFORMANCE_SEMANTICS.get(candidate.parameter_key, "")
+    semantic_tag = f" ⚠ {semantic}" if semantic else ""
     return (
         f"- key={candidate.parameter_key}; domain={candidate.domain}; "
         f"tuning_layer={candidate.tuning_layer.value}; "
@@ -562,5 +637,5 @@ def format_candidate_line_for_llm(candidate: CandidateParameter) -> str:
         f"min={candidate.min_value}; max={candidate.max_value}; "
         f"allowed={candidate.allowed_values}; current={candidate.current_value}; "
         f"current_source={candidate.current_value_source}; "
-        f"hint={hint}"
+        f"hint={hint}{semantic_tag}"
     )

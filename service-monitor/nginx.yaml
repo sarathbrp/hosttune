@@ -108,6 +108,10 @@ tunable_surface:
       priority_tier: high
       apply_mode: reload
       forbidden_values: []
+      rationale_hint: >-
+        Per-connection bandwidth throttle. Any non-zero value (e.g. 5m = 5 MB/s cap)
+        directly limits throughput per client. Set to 0 to disable the cap for
+        benchmarking. This is a hard external throttle, not a tuning knob.
     aio:
       value_type: enum
       priority_tier: low

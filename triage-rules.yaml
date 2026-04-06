@@ -166,6 +166,18 @@ application_discovery_sanity:
     min_logical_cores: 64
     min_numa_nodes: 2
 
+  - id: nginx_disable_limit_rate
+    enabled: true
+    action: recommend
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.limit_rate
+    proposed_value: "0"
+    detail: >-
+      limit_rate is a per-connection bandwidth cap (e.g. 5m = 5 MB/s per client).
+      Any non-zero value is a hard external throttle that masks tuning gains.
+      Set to 0 to remove the cap during performance benchmarking.
+
   - id: signal_nginx_reuseport_consideration
     enabled: true
     action: signal
