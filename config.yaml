@@ -13,6 +13,7 @@ policy:
   allow_reload: true
   allow_restart: true
   allow_reboot: false
+  allow_environment_cleanup: true
   rollback_required: true
   max_iterations: 10
   benchmark_stability_threshold: 0.10

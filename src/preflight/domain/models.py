@@ -33,6 +33,7 @@ class EngagementPolicy:
     rollback_required: bool
     max_iterations: int
     benchmark_stability_threshold: float
+    allow_environment_cleanup: bool = False
 
 
 @dataclass(frozen=True)

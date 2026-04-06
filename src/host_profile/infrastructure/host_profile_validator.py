@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from host_profile.domain.models import (
     CpuGovernorConstraint,
+    EnvironmentBlocker,
     HostProfile,
     HostProfileIdentity,
     HostSysctlTunable,
@@ -33,6 +34,7 @@ class HostProfileValidator:
         nq_raw = data.get("network_queues")
         cg_raw = data.get("cpu_governor")
         sysctls_raw = data.get("host_sysctls", [])
+        blockers_raw = data.get("environment_blockers", [])
         return HostTunableSurface(
             network_queues=(
                 self._parse_network_queues(cast(dict[str, Any], nq_raw)) if nq_raw else None
@@ -41,6 +43,7 @@ class HostProfileValidator:
                 self._parse_cpu_governor(cast(dict[str, Any], cg_raw)) if cg_raw else None
             ),
             host_sysctls=self._parse_host_sysctls(sysctls_raw),
+            environment_blockers=self._parse_environment_blockers(blockers_raw),
         )
 
     def _parse_network_queues(self, data: dict[str, Any]) -> NetworkQueueConstraint:
@@ -78,6 +81,40 @@ class HostProfileValidator:
                     name=self._require_str(item, "name"),
                     priority_tier=PriorityTier(self._require_str(item, "priority_tier")),
                     rationale_hint=item.get("rationale_hint", ""),
+                )
+            )
+        return tuple(result)
+
+    def _parse_environment_blockers(
+        self, items: object
+    ) -> tuple[EnvironmentBlocker, ...]:
+        if not isinstance(items, list):
+            return ()
+        result: list[EnvironmentBlocker] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            raw_fix = item.get("fix_command")
+            fix_command = str(raw_fix) if raw_fix is not None else None
+            raw_above = item.get("threshold_above")
+            if raw_above is not None and not isinstance(raw_above, int):
+                msg = f"threshold_above must be an integer, got {raw_above!r}"
+                raise ValueError(msg)
+            threshold_above = int(raw_above) if raw_above is not None else None
+            raw_below = item.get("threshold_below")
+            if raw_below is not None and not isinstance(raw_below, int):
+                msg = f"threshold_below must be an integer, got {raw_below!r}"
+                raise ValueError(msg)
+            threshold_below = int(raw_below) if raw_below is not None else None
+            result.append(
+                EnvironmentBlocker(
+                    name=self._require_str(item, "name"),
+                    probe_command=self._require_str(item, "probe_command"),
+                    fix_command=fix_command,
+                    priority=item.get("priority", "high"),
+                    detail=item.get("detail", ""),
+                    threshold_above=threshold_above,
+                    threshold_below=threshold_below,
                 )
             )
         return tuple(result)

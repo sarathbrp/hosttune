@@ -98,6 +98,7 @@ class ConfigLoader:
             rollback_required=bool(data.get("rollback_required", True)),
             max_iterations=int(data.get("max_iterations", 10)),
             benchmark_stability_threshold=float(data.get("benchmark_stability_threshold", 0.10)),
+            allow_environment_cleanup=bool(data.get("allow_environment_cleanup", False)),
         )
 
     def _load_benchmark(self, data: dict[str, Any]) -> BenchmarkConfig | None:

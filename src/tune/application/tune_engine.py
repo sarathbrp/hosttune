@@ -136,6 +136,8 @@ class TuneEngine:
                 ],
             },
         )
+        # Pre-tune diagnostic: detect and clear environment blockers.
+        self._clear_environment_blockers(context, target_executor)
         if deferred_catalog:
             self.logger.stage_detail(
                 "tune",
@@ -852,6 +854,117 @@ class TuneEngine:
             self.logger.stage_detail(
                 "tune",
                 f"CRITICAL: partial rollback — still applied: {failures}",
+            )
+
+    def _clear_environment_blockers(
+        self,
+        context: TuneContext,
+        target_executor: CommandExecutor,
+    ) -> None:
+        """Probe for environment blockers and fix them if policy allows."""
+        host_profile = context.host_profile
+        if host_profile is None:
+            return
+        blockers = getattr(host_profile.tunable_surface, "environment_blockers", ())
+        if not blockers:
+            return
+        allow_fix = context.preflight.policy.allow_environment_cleanup
+        net = context.preflight.network
+        detected: list[str] = []
+        fixed: list[str] = []
+        for blocker in blockers:
+            probe_cmd = blocker.probe_command.replace(
+                "{interface}", net.interface_name
+            )
+            result = target_executor.run(probe_cmd)
+            output = result.stdout.strip()
+            # Determine if blocker is triggered.
+            triggered = False
+            if blocker.threshold_above is not None:
+                try:
+                    value = int(output.splitlines()[0].strip())
+                    triggered = value > blocker.threshold_above
+                except (ValueError, IndexError):
+                    pass
+            elif blocker.threshold_below is not None:
+                try:
+                    value = int(output.splitlines()[0].strip())
+                    triggered = value < blocker.threshold_below
+                except (ValueError, IndexError):
+                    pass
+            else:
+                # No threshold — trigger if output is non-empty.
+                triggered = bool(output)
+            if not triggered:
+                continue
+            detected.append(f"{blocker.name}: {blocker.detail}")
+            self.logger.stage_detail(
+                "tune",
+                f"Environment blocker detected: {blocker.name} "
+                f"({blocker.priority}) — {blocker.detail}",
+            )
+            self._record_kb_event(
+                context=context,
+                component="environment_diagnostic",
+                event_type="blocker_detected",
+                payload={
+                    "name": blocker.name,
+                    "priority": blocker.priority,
+                    "detail": blocker.detail,
+                    "probe_output": output[:500],
+                },
+            )
+            if blocker.fix_command is None:
+                self.logger.stage_detail(
+                    "tune",
+                    f"Environment blocker {blocker.name}: "
+                    "no autofix available (signal only).",
+                )
+                continue
+            if not allow_fix:
+                self.logger.stage_detail(
+                    "tune",
+                    f"Environment blocker {blocker.name}: "
+                    "fix available but policy.allow_environment_cleanup=false.",
+                )
+                continue
+            # Resolve {interface} placeholder in fix_command.
+            fix_cmd = blocker.fix_command.replace(
+                "{interface}", net.interface_name
+            )
+            self.logger.stage_detail(
+                "tune",
+                f"Environment blocker {blocker.name}: "
+                f"applying fix: {fix_cmd}",
+            )
+            fix_result = target_executor.run(fix_cmd)
+            if fix_result.exit_code == 0:
+                fixed.append(blocker.name)
+                self._record_kb_event(
+                    context=context,
+                    component="environment_diagnostic",
+                    event_type="blocker_fixed",
+                    payload={
+                        "name": blocker.name,
+                        "fix_command": fix_cmd,
+                    },
+                )
+            else:
+                self.logger.stage_detail(
+                    "tune",
+                    f"Environment blocker {blocker.name}: "
+                    f"fix failed (exit={fix_result.exit_code}): "
+                    f"{fix_result.stderr.strip() or fix_result.stdout.strip()}",
+                )
+        if detected:
+            self.logger.stage_detail(
+                "tune",
+                f"Environment diagnostic: {len(detected)} blocker(s) detected, "
+                f"{len(fixed)} fixed.",
+            )
+        else:
+            self.logger.stage_detail(
+                "tune", "Environment diagnostic: no blockers detected."
             )
 
     def _warm_start_from_prior_runs(
