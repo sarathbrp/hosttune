@@ -634,6 +634,131 @@ _PERFORMANCE_SEMANTICS: dict[str, str] = {
 }
 
 
+def _format_compressed_triage_lines(result: TriageResult) -> list[str]:
+    """Triage lines with signal-only rules and safe_candidate_subset stripped."""
+    autofix = (
+        f"- autofix={result.autofix_action.parameter_key} -> "
+        f"{result.autofix_action.proposed_value}; {result.autofix_action.reason}"
+        if result.autofix_action is not None
+        else "- autofix=none"
+    )
+    recommendation = (
+        f"- recommend={result.recommended_action.parameter_key} -> "
+        f"{result.recommended_action.proposed_value}; "
+        f"{result.recommended_action.reason}"
+        if result.recommended_action is not None
+        else "- recommend=none"
+    )
+    alternates = (
+        "- alternates="
+        + ", ".join(
+            f"{item.parameter_key} -> {item.proposed_value}"
+            for item in result.alternate_recommendations
+        )
+        if result.alternate_recommendations
+        else "- alternates=none"
+    )
+    # Only include recommend/autofix rules, skip signals.
+    actionable_rules = [
+        f"- {rule.section}:{rule.rule_id}; {rule.detail}"
+        for rule in result.triggered_rules
+        if rule.outcome in ("recommend", "autofix")
+    ]
+    lines = [autofix, recommendation, alternates]
+    if result.suppressed_candidates:
+        lines.append(f"- suppressed={', '.join(result.suppressed_candidates)}")
+    if actionable_rules:
+        lines.append("Actionable rules:")
+        lines.extend(actionable_rules)
+    return lines
+
+
+def _format_compressed_candidate(candidate: CandidateParameter) -> str:
+    """Compact candidate: key, current, priority, constraints, hint + semantics."""
+    hint = truncate_for_prompt(candidate.rationale_hint, _LLM_CANDIDATE_HINT_MAX_CHARS)
+    semantic = _PERFORMANCE_SEMANTICS.get(candidate.parameter_key, "")
+    semantic_tag = f" \u26a0 {semantic}" if semantic else ""
+    parts = [f"- {candidate.parameter_key}"]
+    parts.append(f"current={candidate.current_value}")
+    parts.append(f"priority={candidate.priority_tier.value}")
+    parts.append(f"layer={candidate.tuning_layer.value}")
+    parts.append(f"mode={candidate.apply_mode.value}")
+    if candidate.value_type.value != "string":
+        parts.append(f"type={candidate.value_type.value}")
+    if candidate.min_value is not None or candidate.max_value is not None:
+        parts.append(f"range=[{candidate.min_value},{candidate.max_value}]")
+    if candidate.allowed_values:
+        parts.append(f"allowed={candidate.allowed_values}")
+    parts.append(f"hint={hint}{semantic_tag}")
+    return "; ".join(parts)
+
+
+def format_compressed_hypothesis_prompt(
+    context: HypothesisContext,
+    triage: TriageResult,
+) -> str:
+    """Token-optimized prompt: strips static/redundant sections, compresses candidates."""
+    tune_context = context.tune_context
+    phase_obj = _PHASE_OBJECTIVES.get(context.phase, "")
+    candidate_lines = [_format_compressed_candidate(c) for c in context.candidates]
+    telemetry_body = (
+        context.last_benchmark_runtime_telemetry_digest
+        if context.last_benchmark_runtime_telemetry_digest
+        else format_runtime_telemetry_digest((), max_chars_per_section=_TELEMETRY_MAX_SECTION)
+    )
+    # Compact host summary: single line instead of full breakdown.
+    cpu = tune_context.preflight.cpu
+    net = tune_context.preflight.network
+    host_summary = (
+        f"- host={tune_context.preflight.platform_summary}; "
+        f"cpu={cpu.logical_cores}c/{cpu.numa_nodes}n; "
+        f"nic={net.interface_name}/{net.driver_name}; "
+        f"kernel_sysctl_writable={tune_context.preflight.kernel.sysctl_writable}"
+    )
+    sections = [
+        "You are the hybrid hypothesizer for HostTune. "
+        "Return strict JSON: "
+        '{"parameter_key", "proposed_value", "tuning_layer", '
+        '"apply_mode", "rationale", "expected_benchmark_impact", '
+        '"rollback_plan"}',
+        f"Phase: {context.phase.value} — {phase_obj}",
+        f"Iteration: {context.iteration_number}",
+        "Triage:",
+        *_format_compressed_triage_lines(triage),
+        "Host:",
+        host_summary,
+        "Contract:",
+        f"- service={tune_context.onboard.service_name}; "
+        f"metric={tune_context.onboard.service.benchmark_hints.primary_metric}",
+        "Runtime config:",
+        format_runtime_config_snippet(tune_context.snapshot.runtime_state_output),
+        "Prior runs:",
+        format_prior_run_memory(tune_context),
+        "Baseline:",
+        *format_baseline_digest_lines(tune_context),
+        "Telemetry:",
+        telemetry_body,
+        "State:",
+        f"- active={', '.join(context.active_parameter_keys) or 'none'}",
+        (f"- best=" f"{', '.join(f'{k}={v}' for k, v in context.best_parameter_values) or 'none'}"),
+        "History:",
+        *format_compact_history_lines(context.history),
+        "Blocked pairs:",
+        *format_blocked_prior_pairs(context.history, context.prior_blocked_pairs),
+        "Candidates:",
+        *(candidate_lines or ["- none"]),
+        "Deferred candidates (reboot_batch only):",
+        *(
+            [f"- {c.parameter_key}; current={c.current_value}" for c in context.deferred_candidates]
+            or ["- none"]
+        ),
+        "Rules: pick one candidate; follow triage recommend; "
+        "no blocked pairs; no suppressed; "
+        "predict metric impact; give rollback plan.",
+    ]
+    return "\n".join(sections)
+
+
 def format_candidate_line_for_llm(candidate: CandidateParameter) -> str:
     """Compact candidate row; rationale hint truncated for prompt size."""
     hint = truncate_for_prompt(candidate.rationale_hint, _LLM_CANDIDATE_HINT_MAX_CHARS)

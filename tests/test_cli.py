@@ -243,7 +243,7 @@ def test_main_renders_combined_runtime(monkeypatch, capsys, tmp_path: Path) -> N
         "build_instance",
         lambda verbose=False, debug=False, color=True: FakeInstance(config_loader=fake_config_loader),
     )
-    monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None: object())
+    monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None, **_kw: object())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
 
     exit_code = cli.main()
@@ -332,7 +332,7 @@ def test_main_returns_clean_error_for_tune_failure(
         "build_instance",
         lambda verbose=False, debug=False, color=True: FakeInstance(config_loader=fake_config_loader),
     )
-    monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None: object())
+    monkeypatch.setattr(cli, "build_tune_engine", lambda logger=None, **_kw: object())
     monkeypatch.setattr("sys.argv", ["preflight", str(config_path)])
 
     exit_code = cli.main()

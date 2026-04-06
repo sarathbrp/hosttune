@@ -22,6 +22,7 @@ class LoadedConfig:
     service_name: str
     benchmark_config: BenchmarkConfig | None
     host_profile_name: str | None = None
+    prompt_compression: bool = False
 
 
 class ConfigLoader:
@@ -52,12 +53,16 @@ class ConfigLoader:
             raw_name = host_profile_section.get("name")
             host_profile_name = str(raw_name) if isinstance(raw_name, str) and raw_name else None
 
+        tune_section = content.get("tune") or {}
+        prompt_compression = bool(tune_section.get("prompt_compression", False))
+
         return LoadedConfig(
             target=target,
             policy=policy,
             service_name=service_name,
             benchmark_config=benchmark_config,
             host_profile_name=host_profile_name,
+            prompt_compression=prompt_compression,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

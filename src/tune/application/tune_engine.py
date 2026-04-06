@@ -1060,6 +1060,22 @@ class TuneEngine:
             self.logger.stage_detail("tune", "KB batch: no confidence data; skipping.")
             return
         catalog_index = {c.parameter_key: c for c in all_candidates}
+        # Fetch prior best config once (not per-candidate).
+        kb = getattr(context, "knowledge_base", None)
+        artifacts = context.artifacts
+        prior_config: dict[str, str] = {}
+        if kb is not None and artifacts is not None:
+            prior_config = (
+                kb.get_prior_best_config(
+                    service_name=context.onboard.service_name,
+                    cpu_logical_cores=context.preflight.cpu.logical_cores,
+                    numa_nodes=context.preflight.cpu.numa_nodes,
+                    platform_summary=context.preflight.platform_summary,
+                    nic_driver=context.preflight.network.driver_name,
+                    exclude_run_id=artifacts.session_id,
+                )
+                or {}
+            )
         # Collect candidates with 50%+ confidence, not already active.
         batch: list[tuple[CandidateParameter, str, float]] = []
         for param_key, (tests, _accepted, confidence) in confidence_scores.items():
@@ -1070,21 +1086,7 @@ class TuneEngine:
             candidate = catalog_index.get(param_key)
             if candidate is None:
                 continue
-            # Find best-known value from prior config.
-            kb = getattr(context, "knowledge_base", None)
-            artifacts = context.artifacts
-            proposed_value = None
-            if kb is not None and artifacts is not None:
-                prior_config = kb.get_prior_best_config(
-                    service_name=context.onboard.service_name,
-                    cpu_logical_cores=context.preflight.cpu.logical_cores,
-                    numa_nodes=context.preflight.cpu.numa_nodes,
-                    platform_summary=context.preflight.platform_summary,
-                    nic_driver=context.preflight.network.driver_name,
-                    exclude_run_id=artifacts.session_id,
-                )
-                if prior_config:
-                    proposed_value = prior_config.get(param_key)
+            proposed_value = prior_config.get(param_key)
             if proposed_value is None or proposed_value == candidate.current_value:
                 continue
             batch.append((candidate, proposed_value, confidence))

@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
-from tune.application.hypothesis_prompt_layer import format_hybrid_hypothesis_prompt
+from tune.application.hypothesis_prompt_layer import (
+    format_compressed_hypothesis_prompt,
+    format_hybrid_hypothesis_prompt,
+)
 from tune.application.rule_based_triage import RuleBasedTriage
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
@@ -29,6 +32,19 @@ class HypothesisPromptBuilder:
 
     def build(self, context: HypothesisContext) -> str:
         return format_hybrid_hypothesis_prompt(
+            context=context,
+            triage=self.triage.evaluate(context),
+        )
+
+
+@dataclass
+class CompressedPromptBuilder:
+    """Token-optimized prompt builder that strips redundant/static sections."""
+
+    triage: RuleBasedTriage
+
+    def build(self, context: HypothesisContext) -> str:
+        return format_compressed_hypothesis_prompt(
             context=context,
             triage=self.triage.evaluate(context),
         )

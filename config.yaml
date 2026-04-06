@@ -17,6 +17,9 @@ policy:
   max_iterations: 10
   benchmark_stability_threshold: 0.10
 
+tune:
+  prompt_compression: false
+
 benchmark:
   runner:
     mode: local

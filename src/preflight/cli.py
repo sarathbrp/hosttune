@@ -166,11 +166,22 @@ def build_baseline_runner(
     )
 
 
-def build_tune_engine(logger: ExecutionLogger | None = None) -> TuneEngine:
+def build_tune_engine(
+    logger: ExecutionLogger | None = None,
+    *,
+    prompt_compression: bool = False,
+) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
-        hypothesis_generator = build_langgraph_hypothesis_generator(logger=execution_logger)
-        execution_logger.stage_detail("tune", "Using LangGraph-backed hypothesis generation.")
+        hypothesis_generator = build_langgraph_hypothesis_generator(
+            logger=execution_logger,
+            prompt_compression=prompt_compression,
+        )
+        mode_label = "compressed" if prompt_compression else "standard"
+        execution_logger.stage_detail(
+            "tune",
+            f"Using LangGraph-backed hypothesis generation (prompt={mode_label}).",
+        )
     except (ImportError, ModuleNotFoundError, ValueError) as error:
         execution_logger.stage_detail(
             "tune",
@@ -251,7 +262,13 @@ def main() -> int:
         if loaded_config.benchmark_config is not None:
             baseline = instance.load_baseline(args.config)
             tune_logger = getattr(instance, "logger", None)
-            tune = instance.run_tune(args.config, build_tune_engine(tune_logger))
+            tune = instance.run_tune(
+                args.config,
+                build_tune_engine(
+                    tune_logger,
+                    prompt_compression=loaded_config.prompt_compression,
+                ),
+            )
     except ValueError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
