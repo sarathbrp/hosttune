@@ -286,6 +286,7 @@ def format_prior_run_memory(tune_context: TuneContext) -> str:
 _TELEMETRY_MAX_SECTION = 420
 
 _PHASE_OBJECTIVES: dict[TunePhase, str] = {
+    TunePhase.KNOWLEDGE_DRIVEN: "Apply KB-validated parameters with highest confidence first.",
     TunePhase.WIDE_SWEEP: "Explore broadly across domains with maximum diversity.",
     TunePhase.DOMAIN_FOCUS: "Focus on domains that have shown positive signal.",
     TunePhase.INTERACTION: "Explore interactions between promising parameters.",

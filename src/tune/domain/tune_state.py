@@ -49,7 +49,7 @@ class TuneState:
     def initialize(cls: type[TuneState], max_iterations: int) -> TuneState:
         budgets = cls._allocate_budget(max_iterations)
         return cls(
-            current_phase=TunePhase.WIDE_SWEEP,
+            current_phase=TunePhase.KNOWLEDGE_DRIVEN,
             total_iterations=0,
             phase_iterations={phase: 0 for phase in TunePhase},
             remaining_budget=budgets,
@@ -64,7 +64,8 @@ class TuneState:
                 phase: 1 if index < max_iterations else 0 for index, phase in enumerate(TunePhase)
             }
         seeds = {
-            TunePhase.WIDE_SWEEP: 3,
+            TunePhase.KNOWLEDGE_DRIVEN: 3,
+            TunePhase.WIDE_SWEEP: 2,
             TunePhase.DOMAIN_FOCUS: 2,
             TunePhase.INTERACTION: 1,
             TunePhase.BOUNDARY_PUSH: 1,

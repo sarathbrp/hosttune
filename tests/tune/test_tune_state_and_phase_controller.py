@@ -152,7 +152,7 @@ def test_tune_state_tracks_iterations_since_best_update() -> None:
 def test_tune_state_allocates_small_budget_cleanly() -> None:
     state = TuneState.initialize(1)
 
-    assert state.remaining_budget[TunePhase.WIDE_SWEEP] == 1
+    assert state.remaining_budget[TunePhase.KNOWLEDGE_DRIVEN] == 1
     assert sum(state.remaining_budget.values()) == 1
 
 

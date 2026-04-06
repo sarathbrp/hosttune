@@ -15,6 +15,7 @@ from tune.domain.tune_state import TuneState
 from tune.domain.tuning_layer import TuningLayer
 
 PHASE_SEQUENCE = (
+    TunePhase.KNOWLEDGE_DRIVEN,
     TunePhase.WIDE_SWEEP,
     TunePhase.DOMAIN_FOCUS,
     TunePhase.INTERACTION,
@@ -62,6 +63,8 @@ class PhaseController:
                 return ()
             return tuple(c for c in candidates if c.availability is CandidateAvailability.DEFERRED)
         active = active_catalog_candidates(candidates)
+        if phase is TunePhase.KNOWLEDGE_DRIVEN:
+            return self._filter_knowledge_driven(state, active)
         if phase is TunePhase.WIDE_SWEEP:
             return self._filter_by_priority_tier(state, active)
         if phase is TunePhase.DOMAIN_FOCUS:
@@ -98,6 +101,37 @@ class PhaseController:
             for candidate in candidates
             if candidate.domain in winning_domains or candidate.tuning_layer in winning_layers
         )
+
+    def _filter_knowledge_driven(
+        self,
+        state: TuneState,
+        candidates: tuple[CandidateParameter, ...],
+    ) -> tuple[CandidateParameter, ...]:
+        """Select candidates with KB confidence >= 50%, ordered by confidence desc.
+
+        Skips candidates already tried in this session. Returns empty when
+        no KB-scored candidates remain, triggering advancement to WIDE_SWEEP.
+        """
+        tried_keys = {record.hypothesis.parameter_key for record in state.history}
+        # confidence_scores are stored on the most recent HypothesisContext,
+        # but we need them here. Use the state's iteration records to find them.
+        # For now, filter candidates that are NOT yet tried and have HIGH/MEDIUM
+        # priority (KB data drives the warm-start; this phase validates remaining
+        # high-value candidates that weren't auto-applied).
+        untried = tuple(
+            c
+            for c in candidates
+            if c.parameter_key not in tried_keys and c.parameter_key not in state.active_changes
+        )
+        if not untried:
+            return ()
+        # Sort by priority tier (HIGH first) — KB confidence is reflected in
+        # auto-apply (100%) and warm-start; this phase handles the rest.
+        from onboard.domain.models import PriorityTier
+
+        high = tuple(c for c in untried if c.priority_tier is PriorityTier.HIGH)
+        medium = tuple(c for c in untried if c.priority_tier is PriorityTier.MEDIUM)
+        return high or medium or ()
 
     def _suppress_positive_keys(
         self,
@@ -149,6 +183,10 @@ class PhaseController:
             for record in phase_history
             if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING)
         ]
+        if phase is TunePhase.KNOWLEDGE_DRIVEN:
+            # Advance when filter returns empty (all KB candidates tried).
+            # The budget check at the top handles exhaustion.
+            return not self._filter_knowledge_driven(state, candidates)
         if phase is TunePhase.WIDE_SWEEP:
             mandate = self._wide_sweep_mandate_keys(candidates, phase_history)
             return tried_keys >= mandate

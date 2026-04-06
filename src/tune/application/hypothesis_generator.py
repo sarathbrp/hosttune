@@ -11,6 +11,7 @@ from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateParameter,
     ModelCompletion,
+    TunePhase,
     TuningHypothesis,
 )
 
@@ -40,6 +41,9 @@ class LlmHypothesisGenerator:
     logger: ExecutionLogger = NullExecutionLogger()
 
     def generate(self, context: HypothesisContext) -> tuple[TuningHypothesis, ...]:
+        # KNOWLEDGE_DRIVEN phase: skip LLM, pick highest-confidence KB candidate.
+        if context.phase is TunePhase.KNOWLEDGE_DRIVEN:
+            return self._generate_knowledge_driven(context)
         triage_result = self.triage.evaluate(context) if self.triage is not None else None
         if triage_result is not None:
             self._record_kb_event(
@@ -245,6 +249,87 @@ class LlmHypothesisGenerator:
                 rollback_plan=rollback_plan,
             ),
         )
+
+    def _generate_knowledge_driven(
+        self,
+        context: HypothesisContext,
+    ) -> tuple[TuningHypothesis, ...]:
+        """Pick highest-confidence untried candidate using KB scores. No LLM call."""
+        tried_keys = {record.hypothesis.parameter_key for record in context.history}
+        # Build confidence lookup from context.
+        conf_lookup = {
+            key: (tests, accepted, ratio)
+            for key, tests, accepted, ratio in context.confidence_scores
+        }
+        # Sort candidates by confidence desc, then priority tier.
+        scored_candidates = []
+        for candidate in context.candidates:
+            if candidate.parameter_key in tried_keys:
+                continue
+            if candidate.parameter_key in context.active_parameter_keys:
+                continue
+            conf = conf_lookup.get(candidate.parameter_key, (0, 0, 0.0))
+            scored_candidates.append((conf[2], candidate))
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        if not scored_candidates:
+            msg = "No KB-scored untried candidates remain for knowledge_driven phase."
+            raise ValueError(msg)
+        _confidence, best_candidate = scored_candidates[0]
+        # Use the best-known value from prior config if available.
+        kb = getattr(context.tune_context, "knowledge_base", None)
+        artifacts = context.tune_context.artifacts
+        proposed_value = None
+        if kb is not None and artifacts is not None:
+            prior_config = kb.get_prior_best_config(
+                service_name=context.tune_context.onboard.service_name,
+                cpu_logical_cores=context.tune_context.preflight.cpu.logical_cores,
+                numa_nodes=context.tune_context.preflight.cpu.numa_nodes,
+                platform_summary=context.tune_context.preflight.platform_summary,
+                nic_driver=context.tune_context.preflight.network.driver_name,
+                exclude_run_id=artifacts.session_id,
+            )
+            if prior_config:
+                proposed_value = prior_config.get(best_candidate.parameter_key)
+        if proposed_value is None:
+            proposed_value = self._kb_default_value(best_candidate)
+        conf_info = conf_lookup.get(best_candidate.parameter_key, (0, 0, 0.0))
+        self.logger.stage_detail(
+            "tune",
+            (
+                f"KB-driven: {best_candidate.parameter_key}={proposed_value} "
+                f"(confidence={conf_info[2]:.0%}, "
+                f"tests={conf_info[0]}, accepted={conf_info[1]})"
+            ),
+        )
+        return (
+            TuningHypothesis(
+                phase=context.phase,
+                parameter_key=best_candidate.parameter_key,
+                parameter_name=best_candidate.parameter_name,
+                domain=best_candidate.domain,
+                tuning_layer=best_candidate.tuning_layer,
+                proposed_value=proposed_value,
+                source=best_candidate.source,
+                apply_mode=best_candidate.apply_mode,
+                rationale=(
+                    f"KB knowledge_driven: confidence={conf_info[2]:.0%} "
+                    f"({conf_info[1]}/{conf_info[0]} accepted in prior runs)"
+                ),
+                model_usage=None,
+            ),
+        )
+
+    def _kb_default_value(self, candidate: CandidateParameter) -> str:
+        """Fallback value when KB has no prior best config for this key."""
+        if candidate.allowed_values:
+            for v in candidate.allowed_values:
+                if v not in candidate.forbidden_values:
+                    return v
+        if candidate.max_value is not None:
+            return str(candidate.max_value)
+        if candidate.min_value is not None:
+            return str(candidate.min_value)
+        return "0"
 
     def _debug_log(self, title: str, content: str) -> None:
         if not self.logger.debug_enabled():

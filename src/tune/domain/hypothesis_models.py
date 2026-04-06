@@ -10,6 +10,7 @@ from tune.domain.tuning_layer import TuningLayer
 class TunePhase(StrEnum):
     """Tune loop phases. See phase controller for TuningLayer usage."""
 
+    KNOWLEDGE_DRIVEN = "knowledge_driven"
     WIDE_SWEEP = "wide_sweep"
     DOMAIN_FOCUS = "domain_focus"
     INTERACTION = "interaction"
