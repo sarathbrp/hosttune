@@ -391,6 +391,60 @@ class KnowledgeBase:
             return None
         return config
 
+    def get_parameter_confidence_scores(
+        self,
+        *,
+        service_name: str,
+        cpu_logical_cores: int,
+        numa_nodes: int,
+        platform_summary: str,
+        nic_driver: str | None,
+        exclude_run_id: str | None = None,
+        limit_runs: int = 10,
+    ) -> dict[str, tuple[int, int, float]]:
+        """Per-parameter confidence from prior similar runs.
+
+        Returns {parameter_key: (tests, accepted, confidence_ratio)}.
+        Aggregates evaluation_completed events across similar runs.
+        """
+        runs = self.find_similar_runs(
+            service_name=service_name,
+            cpu_logical_cores=cpu_logical_cores,
+            numa_nodes=numa_nodes,
+            platform_summary=platform_summary,
+            nic_driver=nic_driver,
+            exclude_run_id=exclude_run_id,
+            limit=limit_runs,
+        )
+        if not runs:
+            return {}
+        run_ids = [run["run_id"] for run in runs]
+        placeholders = ", ".join("?" for _ in run_ids)
+        with sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT payload_json FROM events"  # noqa: S608
+                f" WHERE run_id IN ({placeholders})"
+                " AND component = 'benchmark_runner'"
+                " AND event_type = 'evaluation_completed'"
+                " ORDER BY id ASC",
+                tuple(run_ids),
+            ).fetchall()
+        counts: dict[str, list[int]] = {}  # key -> [tests, accepted]
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            key = payload.get("parameter_key", "")
+            if not key:
+                continue
+            entry = counts.setdefault(key, [0, 0])
+            entry[0] += 1
+            if payload.get("decision") == "accept":
+                entry[1] += 1
+        return {
+            key: (tests, accepted, accepted / tests if tests > 0 else 0.0)
+            for key, (tests, accepted) in counts.items()
+        }
+
     def _ensure_schema(self) -> None:
         with sqlite3.connect(self.path) as connection:
             connection.execute(

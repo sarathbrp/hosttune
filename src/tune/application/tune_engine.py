@@ -142,6 +142,17 @@ class TuneEngine:
                 "tune",
                 f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
             )
+        # KB-driven confidence: auto-apply 100% confidence params, boost/suppress others.
+        confidence_scores = self._load_confidence_scores(context)
+        if confidence_scores:
+            self._auto_apply_high_confidence(
+                context, state, all_candidates, confidence_scores, target_executor
+            )
+            # Rebuild catalog after auto-apply so current_values are fresh.
+            all_candidates = self.candidate_catalog_builder.build(context, target_executor)
+            deferred_catalog = tuple(
+                c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
+            )
         # KB-driven blocked pairs: load prior-run failures to avoid re-trying.
         prior_blocked = self._load_prior_blocked_pairs(context)
         if prior_blocked:
@@ -224,6 +235,7 @@ class TuneEngine:
                 candidates=candidates,
                 deferred_candidates=deferred_catalog,
                 prior_blocked_pairs=tuple(prior_blocked),
+                confidence_scores=confidence_scores,
                 target_executor=target_executor,
                 benchmark_executor=benchmark_executor,
             )
@@ -298,6 +310,7 @@ class TuneEngine:
         candidates: tuple[CandidateParameter, ...],
         deferred_candidates: tuple[CandidateParameter, ...],
         prior_blocked_pairs: tuple[tuple[str, str], ...],
+        confidence_scores: dict[str, tuple[int, int, float]],
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
     ) -> tuple[TuneIterationRecord, HypothesisRecord]:
@@ -324,6 +337,7 @@ class TuneEngine:
                 state.iteration_records
             ),
             prior_blocked_pairs=prior_blocked_pairs,
+            confidence_scores=tuple((k, t, a, c) for k, (t, a, c) in confidence_scores.items()),
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
@@ -909,6 +923,108 @@ class TuneEngine:
             nic_driver=context.preflight.network.driver_name,
             exclude_run_id=artifacts.session_id,
         )
+
+    def _load_confidence_scores(
+        self,
+        context: TuneContext,
+    ) -> dict[str, tuple[int, int, float]]:
+        """Load per-parameter confidence from prior similar runs."""
+        kb = getattr(context, "knowledge_base", None)
+        artifacts = context.artifacts
+        if kb is None or artifacts is None:
+            return {}
+        scores = kb.get_parameter_confidence_scores(
+            service_name=context.onboard.service_name,
+            cpu_logical_cores=context.preflight.cpu.logical_cores,
+            numa_nodes=context.preflight.cpu.numa_nodes,
+            platform_summary=context.preflight.platform_summary,
+            nic_driver=context.preflight.network.driver_name,
+            exclude_run_id=artifacts.session_id,
+        )
+        if scores:
+            high = [k for k, (t, a, c) in scores.items() if c >= 1.0 and t >= 1]
+            mid = [k for k, (t, a, c) in scores.items() if 0.5 <= c < 1.0]
+            low = [k for k, (t, a, c) in scores.items() if c < 0.33 and t >= 2]
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"KB confidence: {len(high)} high (100%), "
+                    f"{len(mid)} medium (50-99%), "
+                    f"{len(low)} low (<33%)"
+                ),
+            )
+        return scores
+
+    def _auto_apply_high_confidence(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        all_candidates: tuple[CandidateParameter, ...],
+        confidence_scores: dict[str, tuple[int, int, float]],
+        target_executor: CommandExecutor,
+    ) -> None:
+        """Auto-apply parameters with 100% confidence from KB.
+
+        These have always been accepted in prior runs on similar hardware.
+        Skip LLM and benchmark entirely — apply the best-known value directly.
+        """
+        catalog_index = {c.parameter_key: c for c in all_candidates}
+        auto_applied: list[str] = []
+        for param_key, (tests, _accepted, confidence) in confidence_scores.items():
+            if confidence < 1.0 or tests < 1:
+                continue
+            if param_key in state.active_changes:
+                continue  # Already applied (e.g., by warm start).
+            candidate = catalog_index.get(param_key)
+            if candidate is None:
+                continue
+            # Find the best-known value from the prior best config.
+            kb = getattr(context, "knowledge_base", None)
+            if kb is None or context.artifacts is None:
+                continue
+            prior_config = kb.get_prior_best_config(
+                service_name=context.onboard.service_name,
+                cpu_logical_cores=context.preflight.cpu.logical_cores,
+                numa_nodes=context.preflight.cpu.numa_nodes,
+                platform_summary=context.preflight.platform_summary,
+                nic_driver=context.preflight.network.driver_name,
+                exclude_run_id=context.artifacts.session_id,
+            )
+            if prior_config is None or param_key not in prior_config:
+                continue
+            best_value = prior_config[param_key]
+            if candidate.current_value == best_value:
+                continue  # Already at best value.
+            hypothesis = TuningHypothesis(
+                phase=state.current_phase,
+                parameter_key=param_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value=best_value,
+                source=candidate.source,
+                apply_mode=candidate.apply_mode,
+                rationale=(
+                    f"KB auto-apply: 100% confidence " f"({tests}/{tests} accepted in prior runs)"
+                ),
+            )
+            try:
+                ac = self.apply_coordinator.apply(context, hypothesis, target_executor)
+                state.active_changes[param_key] = ac
+                auto_applied.append(f"{param_key}={best_value}")
+            except Exception as exc:
+                self.logger.stage_detail(
+                    "tune",
+                    f"KB auto-apply failed for {param_key}={best_value}: {exc}",
+                )
+        if auto_applied:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"KB auto-applied {len(auto_applied)} high-confidence "
+                    f"parameter(s): {', '.join(sorted(auto_applied))}"
+                ),
+            )
 
     def _restore_best_configuration(
         self,

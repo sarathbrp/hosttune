@@ -27,3 +27,7 @@ class HypothesisContext:
     last_benchmark_runtime_telemetry_digest: str = ""
     # Parameter/value pairs that failed in prior similar runs (from knowledge base).
     prior_blocked_pairs: tuple[tuple[str, str], ...] = ()
+    # Per-parameter confidence: {key: (tests, accepted, ratio)} from KB.
+    # Used by prompt layer to annotate candidates and by phase controller
+    # to suppress low-confidence parameters.
+    confidence_scores: tuple[tuple[str, int, int, float], ...] = ()
