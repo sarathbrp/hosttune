@@ -9,6 +9,9 @@ target:
 service:
   name: nginx
 
+host_profile:
+  name: rhel-9
+
 policy:
   allow_reload: true
   allow_restart: true
