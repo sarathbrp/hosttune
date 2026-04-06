@@ -343,9 +343,20 @@ def format_compact_history_lines(history: tuple[HypothesisRecord, ...]) -> list[
     ]
 
 
-def format_blocked_prior_pairs(history: tuple[HypothesisRecord, ...]) -> list[str]:
+def format_blocked_prior_pairs(
+    history: tuple[HypothesisRecord, ...],
+    prior_blocked_pairs: tuple[tuple[str, str], ...] = (),
+) -> list[str]:
     seen: list[str] = []
     added: set[tuple[str, str]] = set()
+    # KB-blocked pairs from prior similar runs (shown first).
+    for key, value in prior_blocked_pairs:
+        pair = (key, value)
+        if pair in added:
+            continue
+        added.add(pair)
+        seen.append(f"{key}={value} (failed in prior run)")
+    # Current-session history pairs.
     for item in history:
         pair = (item.hypothesis.parameter_key, item.hypothesis.proposed_value)
         if pair in added:
@@ -354,11 +365,11 @@ def format_blocked_prior_pairs(history: tuple[HypothesisRecord, ...]) -> list[st
         seen.append(f"{pair[0]}={pair[1]}")
     if not seen:
         return ["- none"]
-    if len(seen) <= 6:
+    if len(seen) <= 8:
         return [f"- {value}" for value in seen]
     return [
-        *(f"- {value}" for value in seen[:6]),
-        f"- ... ({len(seen) - 6} more blocked prior pair(s))",
+        *(f"- {value}" for value in seen[:8]),
+        f"- ... ({len(seen) - 8} more blocked pair(s))",
     ]
 
 
@@ -516,7 +527,7 @@ def format_hybrid_hypothesis_prompt(
         "Prior history:",
         *format_compact_history_lines(context.history),
         "Blocked prior parameter/value pairs:",
-        *format_blocked_prior_pairs(context.history),
+        *format_blocked_prior_pairs(context.history, context.prior_blocked_pairs),
         "Unmodeled directives (found in runtime config but not in YAML):",
         *discover_unmodeled_directives(
             tune_context.snapshot.runtime_state_output,

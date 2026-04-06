@@ -307,6 +307,90 @@ class KnowledgeBase:
             )
         return "\n".join(lines)
 
+    def get_prior_blocked_pairs(
+        self,
+        *,
+        service_name: str,
+        cpu_logical_cores: int,
+        numa_nodes: int,
+        platform_summary: str,
+        nic_driver: str | None,
+        exclude_run_id: str | None = None,
+        limit_runs: int = 3,
+    ) -> list[tuple[str, str]]:
+        """Parameter/value pairs that failed in prior similar runs.
+
+        Returns (parameter_key, proposed_value) tuples from evaluation_completed
+        events where the decision was reject or inconclusive.
+        """
+        runs = self.find_similar_runs(
+            service_name=service_name,
+            cpu_logical_cores=cpu_logical_cores,
+            numa_nodes=numa_nodes,
+            platform_summary=platform_summary,
+            nic_driver=nic_driver,
+            exclude_run_id=exclude_run_id,
+            limit=limit_runs,
+        )
+        if not runs:
+            return []
+        run_ids = [run["run_id"] for run in runs]
+        placeholders = ", ".join("?" for _ in run_ids)
+        with sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT payload_json FROM events"  # noqa: S608
+                f" WHERE run_id IN ({placeholders})"
+                " AND component = 'benchmark_runner'"
+                " AND event_type = 'evaluation_completed'"
+                " ORDER BY id ASC",
+                tuple(run_ids),
+            ).fetchall()
+        pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            decision = payload.get("decision", "")
+            if decision not in ("reject", "inconclusive"):
+                continue
+            key = payload.get("parameter_key", "")
+            value = payload.get("proposed_value", "")
+            if key and value and (key, value) not in seen:
+                seen.add((key, value))
+                pairs.append((key, value))
+        return pairs
+
+    def get_prior_best_config(
+        self,
+        *,
+        service_name: str,
+        cpu_logical_cores: int,
+        numa_nodes: int,
+        platform_summary: str,
+        nic_driver: str | None,
+        exclude_run_id: str | None = None,
+    ) -> dict[str, str] | None:
+        """Best config from the highest-scoring prior similar run.
+
+        Returns None if no prior run exists or none had an accepted config.
+        """
+        runs = self.find_similar_runs(
+            service_name=service_name,
+            cpu_logical_cores=cpu_logical_cores,
+            numa_nodes=numa_nodes,
+            platform_summary=platform_summary,
+            nic_driver=nic_driver,
+            exclude_run_id=exclude_run_id,
+            limit=1,
+        )
+        if not runs:
+            return None
+        best_run = runs[0]
+        config = best_run.get("best_config")
+        if not config or best_run.get("best_score") is None:
+            return None
+        return config
+
     def _ensure_schema(self) -> None:
         with sqlite3.connect(self.path) as connection:
             connection.execute(

@@ -318,6 +318,13 @@ class LlmHypothesisGenerator:
                     f"iteration {record.iteration_number} "
                     f"(current_value_source={candidate.current_value_source})"
                 )
+        # Check KB-blocked pairs from prior similar runs.
+        for blocked_key, blocked_value in context.prior_blocked_pairs:
+            if candidate.parameter_key == blocked_key and proposed_value == blocked_value:
+                raise ValueError(
+                    f"KB-blocked: {candidate.parameter_key}={proposed_value!r} "
+                    "failed in a prior similar run on this hardware"
+                )
         self._validate_diminishing_returns(context, candidate, proposed_value)
 
     def _validate_diminishing_returns(

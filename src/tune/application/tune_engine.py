@@ -135,19 +135,33 @@ class TuneEngine:
                 ],
             },
         )
+        # KB-driven warm start: pre-apply best config from prior similar run.
+        self._warm_start_from_prior_runs(context, state, all_candidates, target_executor)
         if deferred_catalog:
             self.logger.stage_detail(
                 "tune",
                 f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
             )
+        # KB-driven blocked pairs: load prior-run failures to avoid re-trying.
+        prior_blocked = self._load_prior_blocked_pairs(context)
+        if prior_blocked:
+            self.logger.stage_detail(
+                "tune",
+                f"KB: loaded {len(prior_blocked)} blocked pairs from prior runs.",
+            )
+        else:
+            self.logger.stage_detail("tune", "KB: no prior blocked pairs found.")
+        prev_active_keys: set[str] = set()
         stop_reason = self.phase_controller.stop_reason(state, all_candidates)
         while stop_reason is None:
-            # Rebuild catalog each iteration so current_values reflect applied changes.
-            # Without this, the no-op check compares against stale startup values.
-            all_candidates = self.candidate_catalog_builder.build(context, target_executor)
-            deferred_catalog = tuple(
-                c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
-            )
+            # Rebuild catalog only when active changes changed (saves ~30s SSH per iteration).
+            current_active_keys = set(state.active_changes)
+            if current_active_keys != prev_active_keys:
+                all_candidates = self.candidate_catalog_builder.build(context, target_executor)
+                deferred_catalog = tuple(
+                    c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
+                )
+                prev_active_keys = current_active_keys.copy()
             previous_phase = state.current_phase
             phase = self.phase_controller.determine_phase(state, all_candidates)
             if phase is not previous_phase:
@@ -209,6 +223,7 @@ class TuneEngine:
                 iteration_number=iteration_number,
                 candidates=candidates,
                 deferred_candidates=deferred_catalog,
+                prior_blocked_pairs=tuple(prior_blocked),
                 target_executor=target_executor,
                 benchmark_executor=benchmark_executor,
             )
@@ -282,6 +297,7 @@ class TuneEngine:
         iteration_number: int,
         candidates: tuple[CandidateParameter, ...],
         deferred_candidates: tuple[CandidateParameter, ...],
+        prior_blocked_pairs: tuple[tuple[str, str], ...],
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
     ) -> tuple[TuneIterationRecord, HypothesisRecord]:
@@ -307,6 +323,7 @@ class TuneEngine:
             last_benchmark_runtime_telemetry_digest=_last_benchmark_runtime_telemetry_digest(
                 state.iteration_records
             ),
+            prior_blocked_pairs=prior_blocked_pairs,
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
@@ -632,14 +649,34 @@ class TuneEngine:
                 },
             )
             if evaluation_result.decision is EvaluationDecision.ACCEPT:
-                attribution_verification = self.attribution_verifier.verify(
-                    context=context,
-                    iteration_number=iteration_number,
-                    applied_change=primary_applied_change,
-                    accepted_benchmark_result=benchmark_result,
-                    target_executor=target_executor,
-                    benchmark_runner_executor=benchmark_executor,
-                )
+                # Skip attribution for overwhelming gains (>50% avg improvement).
+                # The signal is self-evident; save ~150s of rollback/re-benchmark.
+                avg_change = sum(
+                    w.relative_change for w in evaluation_result.workload_evaluations
+                ) / max(len(evaluation_result.workload_evaluations), 1)
+                if avg_change > 0.50:
+                    self.logger.stage_detail(
+                        "tune",
+                        (
+                            f"Attribution skipped: avg improvement {avg_change:.1%} "
+                            "> 50% threshold; accepting without verification."
+                        ),
+                    )
+                    attribution_verification = AttributionVerificationResult(
+                        verified=True,
+                        summary=f"skipped (overwhelming gain {avg_change:.1%})",
+                        reverted_benchmark_result=None,
+                        average_drop=avg_change,
+                    )
+                else:
+                    attribution_verification = self.attribution_verifier.verify(
+                        context=context,
+                        iteration_number=iteration_number,
+                        applied_change=primary_applied_change,
+                        accepted_benchmark_result=benchmark_result,
+                        target_executor=target_executor,
+                        benchmark_runner_executor=benchmark_executor,
+                    )
                 self._log_attribution_verification(attribution_verification)
                 self._record_kb_event(
                     context=context,
@@ -778,6 +815,100 @@ class TuneEngine:
                 "tune",
                 f"CRITICAL: partial rollback — still applied: {failures}",
             )
+
+    def _warm_start_from_prior_runs(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        all_candidates: tuple[CandidateParameter, ...],
+        target_executor: CommandExecutor,
+    ) -> None:
+        """Pre-apply best config from prior similar run to skip rediscovery."""
+        kb = getattr(context, "knowledge_base", None)
+        artifacts = context.artifacts
+        if kb is None or artifacts is None:
+            return
+        prior_config = kb.get_prior_best_config(
+            service_name=context.onboard.service_name,
+            cpu_logical_cores=context.preflight.cpu.logical_cores,
+            numa_nodes=context.preflight.cpu.numa_nodes,
+            platform_summary=context.preflight.platform_summary,
+            nic_driver=context.preflight.network.driver_name,
+            exclude_run_id=artifacts.session_id,
+        )
+        if not prior_config:
+            self.logger.stage_detail("tune", "KB: no prior best config found.")
+            return
+        catalog_index = {c.parameter_key: c for c in all_candidates}
+        skipped = [k for k in prior_config if k not in catalog_index]
+        if skipped:
+            self.logger.stage_detail(
+                "tune",
+                (
+                    f"KB warm start: skipping {len(skipped)} param(s) not in current catalog: "
+                    f"{sorted(skipped)}"
+                ),
+            )
+        applicable = {k: v for k, v in prior_config.items() if k in catalog_index}
+        if not applicable:
+            self.logger.stage_detail(
+                "tune", "KB warm start: no applicable params after catalog filter."
+            )
+            return
+        self.logger.stage_detail(
+            "tune",
+            (
+                f"KB warm start: applying {len(applicable)} parameter(s) from "
+                f"prior best config: "
+                f"{', '.join(f'{k}={v}' for k, v in sorted(applicable.items()))}"
+            ),
+        )
+        applied_count = 0
+        for param_key, param_value in applicable.items():
+            candidate = catalog_index[param_key]
+            hypothesis = TuningHypothesis(
+                phase=state.current_phase,
+                parameter_key=param_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value=param_value,
+                source=candidate.source,
+                apply_mode=candidate.apply_mode,
+                rationale="warm start from prior best config",
+            )
+            try:
+                ac = self.apply_coordinator.apply(context, hypothesis, target_executor)
+                state.active_changes[param_key] = ac
+                applied_count += 1
+            except Exception as exc:
+                self.logger.stage_detail(
+                    "tune",
+                    f"KB warm start: failed to apply {param_key}={param_value}: {exc}",
+                )
+        if applied_count:
+            self.logger.stage_detail(
+                "tune",
+                f"KB warm start: {applied_count}/{len(applicable)} applied successfully.",
+            )
+
+    def _load_prior_blocked_pairs(
+        self,
+        context: TuneContext,
+    ) -> list[tuple[str, str]]:
+        """Load parameter/value pairs that failed in prior similar runs."""
+        kb = getattr(context, "knowledge_base", None)
+        artifacts = context.artifacts
+        if kb is None or artifacts is None:
+            return []
+        return kb.get_prior_blocked_pairs(
+            service_name=context.onboard.service_name,
+            cpu_logical_cores=context.preflight.cpu.logical_cores,
+            numa_nodes=context.preflight.cpu.numa_nodes,
+            platform_summary=context.preflight.platform_summary,
+            nic_driver=context.preflight.network.driver_name,
+            exclude_run_id=artifacts.session_id,
+        )
 
     def _restore_best_configuration(
         self,

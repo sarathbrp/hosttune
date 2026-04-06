@@ -25,3 +25,5 @@ class HypothesisContext:
     best_parameter_values: tuple[tuple[str, str], ...]
     # Truncated telemetry digest from the last benchmarked iteration (built in tune_engine).
     last_benchmark_runtime_telemetry_digest: str = ""
+    # Parameter/value pairs that failed in prior similar runs (from knowledge base).
+    prior_blocked_pairs: tuple[tuple[str, str], ...] = ()
