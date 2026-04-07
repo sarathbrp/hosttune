@@ -1643,8 +1643,9 @@ class TuneEngine:
             telemetry_executor=target_executor,
         )
         self._log_benchmark(benchmark_result)
+        batch_phase = primary_hypothesis.phase
         evaluation_result = self.result_evaluator.evaluate(
-            context, benchmark_result, phase=TunePhase.KNOWLEDGE_DRIVEN
+            context, benchmark_result, phase=batch_phase
         )
         self._log_evaluation(evaluation_result)
         completed_at = datetime.now(UTC)
@@ -1666,7 +1667,7 @@ class TuneEngine:
             )
         record = TuneIterationRecord(
             iteration_number=iteration_number,
-            phase=TunePhase.KNOWLEDGE_DRIVEN,
+            phase=batch_phase,
             hypothesis=primary_hypothesis,
             applied_change=primary_ac,
             validation_result=validation_result,
@@ -1680,7 +1681,7 @@ class TuneEngine:
         )
         history_record = HypothesisRecord(
             iteration_number=iteration_number,
-            phase=TunePhase.KNOWLEDGE_DRIVEN,
+            phase=batch_phase,
             hypothesis=primary_hypothesis,
             status=status,
             evaluation_summary=evaluation_result.summary,
