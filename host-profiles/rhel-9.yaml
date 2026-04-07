@@ -102,3 +102,55 @@ tunable_surface:
       fix_command: null
       priority: high
       detail: "Background process consuming >50% memory; signal only"
+
+    - name: systemd_cpu_quota
+      probe_command: >-
+        val=$(systemctl show nginx.service --property=CPUQuota --value 2>/dev/null);
+        case "$val" in infinity|"") echo 0;; *%) echo "${val%%%}";; *) echo 0;; esac
+      threshold_above: 0
+      fix_command: "systemctl set-property nginx.service CPUQuota= && systemctl daemon-reload"
+      priority: critical
+      detail: "Systemd CPUQuota caps nginx CPU below 100%; removing quota"
+
+    - name: systemd_memory_max
+      probe_command: >-
+        val=$(systemctl show nginx.service --property=MemoryMax --value 2>/dev/null);
+        case "$val" in infinity|"") echo 0;; *) echo "$val";; esac
+      threshold_above: 0
+      fix_command: "systemctl set-property nginx.service MemoryMax=infinity && systemctl daemon-reload"
+      priority: critical
+      detail: "Systemd MemoryMax restricts nginx memory; removing cap"
+
+    - name: systemd_limit_nofile
+      probe_command: >-
+        val=$(systemctl show nginx.service --property=LimitNOFILE --value 2>/dev/null);
+        case "$val" in infinity|"") echo 999999;; *) echo "$val";; esac
+      threshold_below: 65536
+      fix_command: "systemctl set-property nginx.service LimitNOFILE=524288 && systemctl daemon-reload"
+      priority: critical
+      detail: "Systemd LimitNOFILE too low; nginx will hit fd exhaustion under load"
+
+    - name: systemd_io_weight
+      probe_command: >-
+        val=$(systemctl show nginx.service --property=IOWeight --value 2>/dev/null);
+        case "$val" in ""|"[not set]") echo 100;; *) echo "$val";; esac
+      threshold_below: 50
+      fix_command: "systemctl set-property nginx.service IOWeight=100 && systemctl daemon-reload"
+      priority: high
+      detail: "Systemd IOWeight too low; nginx I/O deprioritized vs other services"
+
+    - name: systemd_cpu_weight
+      probe_command: >-
+        val=$(systemctl show nginx.service --property=CPUWeight --value 2>/dev/null);
+        case "$val" in ""|"[not set]") echo 100;; *) echo "$val";; esac
+      threshold_below: 50
+      fix_command: "systemctl set-property nginx.service CPUWeight=100 && systemctl daemon-reload"
+      priority: high
+      detail: "Systemd CPUWeight too low; nginx CPU deprioritized vs other services"
+
+    - name: nginx_not_running
+      probe_command: "systemctl is-active nginx.service 2>/dev/null | grep -c '^active$' || echo 0"
+      threshold_below: 1
+      fix_command: "systemctl restart nginx.service"
+      priority: critical
+      detail: "nginx.service is not running; restarting before baseline"
