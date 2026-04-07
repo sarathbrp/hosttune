@@ -126,7 +126,11 @@ tunable_surface:
         val=$(systemctl show nginx.service --property=LimitNOFILE --value 2>/dev/null);
         case "$val" in infinity|"") echo 999999;; *) echo "$val";; esac
       threshold_below: 65536
-      fix_command: "systemctl set-property nginx.service LimitNOFILE=524288 && systemctl daemon-reload"
+      fix_command: >-
+        mkdir -p /etc/systemd/system/nginx.service.d &&
+        printf '[Service]\nLimitNOFILE=524288\n' > /etc/systemd/system/nginx.service.d/hosttune-nofile.conf &&
+        systemctl daemon-reload &&
+        systemctl restart nginx
       priority: critical
       detail: "Systemd LimitNOFILE too low; nginx will hit fd exhaustion under load"
 
