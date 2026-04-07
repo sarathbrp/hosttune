@@ -31,3 +31,5 @@ class HypothesisContext:
     # Used by prompt layer to annotate candidates and by phase controller
     # to suppress low-confidence parameters.
     confidence_scores: tuple[tuple[str, int, int, float], ...] = ()
+    # Dependency layer statuses from unified resolver (empty in legacy mode).
+    layer_statuses: tuple[tuple[str, str], ...] = ()

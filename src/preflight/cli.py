@@ -174,6 +174,8 @@ def build_tune_engine(
     kb_batch_apply: bool = False,
     skip_marginal_attribution: bool = False,
     marginal_attribution_multiplier: float = 2.0,
+    use_unified_resolver: bool = False,
+    dependency_graph_path: str = "tuning-dependency-graph.yaml",
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
@@ -199,11 +201,28 @@ def build_tune_engine(
         if triage_path.exists()
         else None
     )
+    unified_resolver = None
+    if use_unified_resolver:
+        graph_path = Path(dependency_graph_path)
+        if graph_path.exists():
+            from tune.application.unified_resolver import UnifiedResolver
+
+            unified_resolver = UnifiedResolver(
+                graph_path=graph_path,
+                triage=triage,
+                logger=execution_logger,
+            )
+            execution_logger.stage_detail(
+                "tune", "Unified resolver enabled."
+            )
     return TuneEngine(
         candidate_catalog_builder=CandidateCatalogBuilder(),
-        phase_controller=PhaseController(),
+        phase_controller=PhaseController(
+            use_unified_resolver=use_unified_resolver,
+        ),
         hypothesis_generator=hypothesis_generator,
         triage=triage,
+        unified_resolver=unified_resolver,
         kb_batch_apply=kb_batch_apply,
         skip_marginal_attribution=skip_marginal_attribution,
         marginal_attribution_multiplier=marginal_attribution_multiplier,
@@ -285,6 +304,8 @@ def main() -> int:
                     kb_batch_apply=loaded_config.kb_batch_apply,
                     skip_marginal_attribution=loaded_config.skip_marginal_attribution,
                     marginal_attribution_multiplier=loaded_config.marginal_attribution_multiplier,
+                    use_unified_resolver=loaded_config.use_unified_resolver,
+                    dependency_graph_path=loaded_config.dependency_graph_path,
                 ),
             )
     except ValueError as error:

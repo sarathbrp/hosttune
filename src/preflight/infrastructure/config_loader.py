@@ -26,6 +26,8 @@ class LoadedConfig:
     kb_batch_apply: bool = False
     skip_marginal_attribution: bool = False
     marginal_attribution_multiplier: float = 2.0
+    use_unified_resolver: bool = False
+    dependency_graph_path: str = "tuning-dependency-graph.yaml"
 
 
 class ConfigLoader:
@@ -65,6 +67,14 @@ class ConfigLoader:
         marginal_attribution_multiplier = float(
             tune_section.get("marginal_attribution_multiplier", 2.0)
         )
+        use_unified_resolver = bool(
+            tune_section.get("use_unified_resolver", False)
+        )
+        dependency_graph_path = str(
+            tune_section.get(
+                "dependency_graph_path", "tuning-dependency-graph.yaml"
+            )
+        )
 
         return LoadedConfig(
             target=target,
@@ -76,6 +86,8 @@ class ConfigLoader:
             kb_batch_apply=kb_batch_apply,
             skip_marginal_attribution=skip_marginal_attribution,
             marginal_attribution_multiplier=marginal_attribution_multiplier,
+            use_unified_resolver=use_unified_resolver,
+            dependency_graph_path=dependency_graph_path,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

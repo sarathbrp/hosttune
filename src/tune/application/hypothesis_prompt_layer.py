@@ -293,7 +293,25 @@ _PHASE_OBJECTIVES: dict[TunePhase, str] = {
     TunePhase.BOUNDARY_PUSH: "Push promising parameters toward safe limits.",
     TunePhase.EXPLOIT: "Refine around the current best configuration.",
     TunePhase.REBOOT_BATCH: "Apply reboot-required parameters as a batch.",
+    TunePhase.RESOLVE: "Apply deterministic bottom-up fixes from dependency graph.",
+    TunePhase.OPTIMIZE: (
+        "Layers 1-4 resolved by dependency graph. "
+        "Fine-tune remaining unresolved parameters."
+    ),
 }
+
+
+def format_layer_status_lines(
+    layer_statuses: tuple[tuple[str, str], ...],
+) -> list[str]:
+    """Format dependency layer statuses for the LLM prompt."""
+    if not layer_statuses:
+        return ["- (no dependency graph active)"]
+    icons = {"ok": "OK", "fixed": "FIXED", "llm_deferred": "NEEDS_LLM"}
+    return [
+        f"- {name}: {icons.get(status, status)}"
+        for name, status in layer_statuses
+    ]
 
 
 def _format_history_lines(history: tuple[HypothesisRecord, ...]) -> list[str]:
@@ -741,6 +759,11 @@ def format_compressed_hypothesis_prompt(
         "State:",
         f"- active={', '.join(context.active_parameter_keys) or 'none'}",
         (f"- best=" f"{', '.join(f'{k}={v}' for k, v in context.best_parameter_values) or 'none'}"),
+        *(
+            ["Dependency layers (bottom-up):", *format_layer_status_lines(context.layer_statuses)]
+            if context.layer_statuses
+            else []
+        ),
         "History:",
         *format_compact_history_lines(context.history),
         "Blocked pairs:",

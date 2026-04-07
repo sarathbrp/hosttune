@@ -36,6 +36,7 @@ class TuneState:
     drift_detected: bool = False
     scoreboard: TuneScoreboard = field(default_factory=TuneScoreboard)
     stop_reason: str | None = None
+    layer_statuses: dict[str, str] = field(default_factory=dict)
 
     def best_iteration_config_values(self) -> dict[str, str]:
         if self.best_configuration is None:
@@ -46,10 +47,20 @@ class TuneState:
         return {key: change.applied_value for key, change in self.active_changes.items()}
 
     @classmethod
-    def initialize(cls: type[TuneState], max_iterations: int) -> TuneState:
-        budgets = cls._allocate_budget(max_iterations)
+    def initialize(
+        cls: type[TuneState],
+        max_iterations: int,
+        *,
+        use_unified_resolver: bool = False,
+    ) -> TuneState:
+        if use_unified_resolver:
+            budgets = cls._allocate_unified_budget(max_iterations)
+            initial_phase = TunePhase.RESOLVE
+        else:
+            budgets = cls._allocate_budget(max_iterations)
+            initial_phase = TunePhase.KNOWLEDGE_DRIVEN
         return cls(
-            current_phase=TunePhase.KNOWLEDGE_DRIVEN,
+            current_phase=initial_phase,
             total_iterations=0,
             phase_iterations={phase: 0 for phase in TunePhase},
             remaining_budget=budgets,
@@ -73,15 +84,34 @@ class TuneState:
             TunePhase.REBOOT_BATCH: 1,
         }
         total_seed = sum(seeds.values())
-        budgets = {
-            phase: max(1, round(max_iterations * seeds[phase] / total_seed)) for phase in TunePhase
-        }
+        budgets = {phase: 0 for phase in TunePhase}
+        for phase, seed in seeds.items():
+            budgets[phase] = max(1, round(max_iterations * seed / total_seed))
         while sum(budgets.values()) > max_iterations:
-            for phase in TunePhase:
+            for phase in seeds:
                 if budgets[phase] > 1 and sum(budgets.values()) > max_iterations:
                     budgets[phase] -= 1
         while sum(budgets.values()) < max_iterations:
             budgets[TunePhase.EXPLOIT] += 1
+        return budgets
+
+    @staticmethod
+    def _allocate_unified_budget(max_iterations: int) -> dict[TunePhase, int]:
+        """3-phase budget: RESOLVE(1) + OPTIMIZE(variable) + EXPLOIT(2)."""
+        budgets = {phase: 0 for phase in TunePhase}
+        if max_iterations <= 0:
+            return budgets
+        budgets[TunePhase.RESOLVE] = 1
+        remaining = max_iterations - 1
+        # Reserve at least 1 for OPTIMIZE when possible.
+        budgets[TunePhase.EXPLOIT] = min(2, max(0, remaining - 1))
+        remaining -= budgets[TunePhase.EXPLOIT]
+        budgets[TunePhase.OPTIMIZE] = max(0, remaining)
+        if max_iterations > 4:
+            budgets[TunePhase.REBOOT_BATCH] = 1
+            budgets[TunePhase.OPTIMIZE] = max(
+                0, budgets[TunePhase.OPTIMIZE] - 1
+            )
         return budgets
 
     def rebalance_budget(self, pre_applied_count: int) -> None:

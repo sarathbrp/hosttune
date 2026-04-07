@@ -24,6 +24,13 @@ PHASE_SEQUENCE = (
     TunePhase.REBOOT_BATCH,
 )
 
+UNIFIED_PHASE_SEQUENCE = (
+    TunePhase.RESOLVE,
+    TunePhase.OPTIMIZE,
+    TunePhase.EXPLOIT,
+    TunePhase.REBOOT_BATCH,
+)
+
 
 def active_catalog_candidates(
     candidates: tuple[CandidateParameter, ...],
@@ -36,6 +43,7 @@ class PhaseController:
     convergence_no_signal_limit: int = 3
     convergence_best_stability_limit: int = 2
     consecutive_failure_limit: int = 3
+    use_unified_resolver: bool = False
 
     def determine_phase(
         self,
@@ -64,6 +72,17 @@ class PhaseController:
                 return ()
             return tuple(c for c in candidates if c.availability is CandidateAvailability.DEFERRED)
         active = active_catalog_candidates(candidates)
+        # Unified resolver phases.
+        if phase is TunePhase.RESOLVE:
+            return active  # Resolver handles ordering.
+        if phase is TunePhase.OPTIMIZE:
+            # Only show candidates NOT actively applied by the resolver.
+            resolved_keys = set(state.active_changes.keys())
+            active = self._suppress_failed_keys(state, active)
+            return tuple(
+                c for c in active
+                if c.parameter_key not in resolved_keys
+            )
         # Suppress parameters that were tried with no positive signal.
         # EXPLOIT is exempt — it refines around the best config.
         if phase not in (
@@ -224,6 +243,13 @@ class PhaseController:
             for record in phase_history
             if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING)
         ]
+        # Unified resolver phases.
+        if phase is TunePhase.RESOLVE:
+            return len(phase_history) >= 1
+        if phase is TunePhase.OPTIMIZE:
+            if not candidates:
+                return True
+            return len(phase_history) >= 2 and not positive_signal
         # Adaptive: advance if all phase iterations failed (no signal).
         if (
             len(phase_history) >= 3
@@ -248,10 +274,17 @@ class PhaseController:
         return False
 
     def _next_phase(self, phase: TunePhase) -> TunePhase:
-        index = PHASE_SEQUENCE.index(phase)
-        if index + 1 >= len(PHASE_SEQUENCE):
+        seq = (
+            UNIFIED_PHASE_SEQUENCE
+            if self.use_unified_resolver
+            else PHASE_SEQUENCE
+        )
+        if phase not in seq:
             return phase
-        return PHASE_SEQUENCE[index + 1]
+        index = seq.index(phase)
+        if index + 1 >= len(seq):
+            return phase
+        return seq[index + 1]
 
     def _wide_sweep_history(self, state: TuneState) -> list[HypothesisRecord]:
         return [record for record in state.history if record.phase is TunePhase.WIDE_SWEEP]

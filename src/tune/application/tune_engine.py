@@ -101,6 +101,7 @@ class TuneEngine:
     rollback_coordinator: RollbackCoordinator
     recorder: TuneRecorder
     triage: RuleBasedTriage | None = None
+    unified_resolver: object | None = None  # UnifiedResolver (avoids circular)
     kb_batch_apply: bool = False
     skip_marginal_attribution: bool = False
     marginal_attribution_multiplier: float = 2.0
@@ -112,7 +113,10 @@ class TuneEngine:
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
     ) -> TuneState:
-        state = TuneState.initialize(context.preflight.policy.max_iterations)
+        state = TuneState.initialize(
+            context.preflight.policy.max_iterations,
+            use_unified_resolver=self.unified_resolver is not None,
+        )
         all_candidates = self.candidate_catalog_builder.build(context, target_executor)
         deferred_catalog = tuple(
             c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
@@ -145,59 +149,6 @@ class TuneEngine:
                 "tune",
                 f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
             )
-        # Recipe shortcut: if we've seen this degradation pattern before,
-        # apply the complete fix sequence and skip exploration.
-        recipe_applied = self._try_recipe_shortcut(
-            context, state, all_candidates, target_executor, benchmark_executor,
-        )
-        confidence_scores = self._load_confidence_scores(context)
-        if recipe_applied:
-            pass  # Recipe handled everything; skip KB batch.
-        elif self.kb_batch_apply:
-            # Consolidated KB batch: collect ALL KB-known params, apply once, benchmark once.
-            self._run_kb_batch_consolidated(
-                context,
-                state,
-                all_candidates,
-                confidence_scores,
-                target_executor,
-                benchmark_executor,
-            )
-        else:
-            # Legacy 3-step: warm start, auto-apply 100%, then knowledge-driven batch.
-            self._warm_start_from_prior_runs(context, state, all_candidates, target_executor)
-            if confidence_scores:
-                self._auto_apply_high_confidence(
-                    context, state, all_candidates, confidence_scores, target_executor
-                )
-                all_candidates = self.candidate_catalog_builder.build(context, target_executor)
-                deferred_catalog = tuple(
-                    c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
-                )
-            self._run_knowledge_driven_batch(
-                context,
-                state,
-                all_candidates,
-                confidence_scores,
-                target_executor,
-                benchmark_executor,
-            )
-        if state.active_changes:
-            # Rebuild catalog after KB ops so current_values are fresh.
-            all_candidates = self.candidate_catalog_builder.build(context, target_executor)
-            deferred_catalog = tuple(
-                c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
-            )
-        # Adaptive budget: rebalance if KB pre-applied many params.
-        pre_applied = len(state.active_changes)
-        if pre_applied >= 3:
-            state.rebalance_budget(pre_applied)
-            self.logger.stage_detail(
-                "tune",
-                f"Budget rebalanced: {pre_applied} params pre-applied; "
-                f"remaining={dict(state.remaining_budget)}",
-            )
-        # KB-driven blocked pairs: load prior-run failures to avoid re-trying.
         prior_blocked = self._load_prior_blocked_pairs(context)
         if prior_blocked:
             self.logger.stage_detail(
@@ -206,10 +157,73 @@ class TuneEngine:
             )
         else:
             self.logger.stage_detail("tune", "KB: no prior blocked pairs found.")
-        # Pre-loop autofix batch: apply ALL triage autofixes in one iteration.
-        self._apply_autofix_batch(
-            context, state, all_candidates, prior_blocked, target_executor, benchmark_executor,
-        )
+        confidence_scores = self._load_confidence_scores(context)
+        if self.unified_resolver is not None:
+            # --- UNIFIED PATH ---
+            from tune.application.unified_resolver import UnifiedResolver
+
+            resolver: UnifiedResolver = self.unified_resolver  # type: ignore[assignment]
+            recipe_seq = self._load_recipe_fix_sequence(context)
+            hypotheses, layer_statuses = resolver.resolve(
+                context=context,
+                state=state,
+                all_candidates=all_candidates,
+                confidence_scores=confidence_scores,
+                recipe_fix_sequence=recipe_seq,
+                prior_blocked_pairs=prior_blocked,
+            )
+            if hypotheses:
+                self._apply_and_benchmark_batch(
+                    context, state, hypotheses,
+                    target_executor, benchmark_executor,
+                    "Unified resolver",
+                )
+            state.layer_statuses = layer_statuses
+            self.logger.stage_detail(
+                "tune",
+                f"Unified resolver: {len(hypotheses)} params applied, "
+                f"layers={layer_statuses}",
+            )
+        else:
+            # --- LEGACY PATH ---
+            recipe_applied = self._try_recipe_shortcut(
+                context, state, all_candidates,
+                target_executor, benchmark_executor,
+            )
+            if recipe_applied:
+                pass
+            elif self.kb_batch_apply:
+                self._run_kb_batch_consolidated(
+                    context, state, all_candidates,
+                    confidence_scores,
+                    target_executor, benchmark_executor,
+                )
+            else:
+                self._warm_start_from_prior_runs(
+                    context, state, all_candidates, target_executor
+                )
+                if confidence_scores:
+                    self._auto_apply_high_confidence(
+                        context, state, all_candidates,
+                        confidence_scores, target_executor,
+                    )
+                    all_candidates = self.candidate_catalog_builder.build(
+                        context, target_executor
+                    )
+                    deferred_catalog = tuple(
+                        c for c in all_candidates
+                        if c.availability is CandidateAvailability.DEFERRED
+                    )
+                self._run_knowledge_driven_batch(
+                    context, state, all_candidates,
+                    confidence_scores,
+                    target_executor, benchmark_executor,
+                )
+            # Pre-loop autofix batch (legacy path only).
+            self._apply_autofix_batch(
+                context, state, all_candidates, prior_blocked,
+                target_executor, benchmark_executor,
+            )
         if state.active_changes:
             all_candidates = self.candidate_catalog_builder.build(
                 context, target_executor
@@ -446,6 +460,7 @@ class TuneEngine:
             ),
             prior_blocked_pairs=prior_blocked_pairs,
             confidence_scores=tuple((k, t, a, c) for k, (t, a, c) in confidence_scores.items()),
+            layer_statuses=tuple(sorted(state.layer_statuses.items())),
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
@@ -1339,6 +1354,44 @@ class TuneEngine:
             target_executor, benchmark_executor,
             "Autofix batch",
         )
+
+    def _load_recipe_fix_sequence(
+        self,
+        context: TuneContext,
+    ) -> list[dict[str, str]] | None:
+        """Load recipe fix sequence without applying it (for unified resolver)."""
+        from preflight.infrastructure.knowledge_base import (
+            compute_degradation_fingerprint,
+            host_fingerprint_for_snapshot,
+        )
+
+        kb = getattr(context, "knowledge_base", None)
+        artifacts = context.artifacts
+        if kb is None or artifacts is None:
+            return None
+        workload_results = context.baseline.workload_results
+        if not workload_results:
+            return None
+        names, vector = compute_degradation_fingerprint(workload_results)
+        fingerprint = host_fingerprint_for_snapshot(
+            context.preflight, context.onboard.service_name
+        )
+        recipe = kb.lookup_degradation_recipe(
+            service_name=context.onboard.service_name,
+            host_fingerprint=fingerprint,
+            current_fingerprint=vector,
+            current_workload_names=names,
+            exclude_run_id=artifacts.session_id,
+        )
+        if recipe is None:
+            return None
+        self.logger.stage_detail(
+            "tune",
+            f"Recipe found: run={recipe['run_id']} "
+            f"similarity={recipe['similarity']:.2%} "
+            f"score={recipe['best_score']:.2%}",
+        )
+        return recipe["fix_sequence"]
 
     def _try_recipe_shortcut(
         self,

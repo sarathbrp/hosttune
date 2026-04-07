@@ -17,6 +17,9 @@ class TunePhase(StrEnum):
     BOUNDARY_PUSH = "boundary_push"
     EXPLOIT = "exploit"
     REBOOT_BATCH = "reboot_batch"
+    # Unified resolver phases (coexist with legacy for backward compat).
+    RESOLVE = "resolve"
+    OPTIMIZE = "optimize"
 
 
 class CandidateSource(StrEnum):

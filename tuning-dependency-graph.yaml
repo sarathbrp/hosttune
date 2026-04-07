@@ -1,0 +1,119 @@
+# Tuning Dependency Graph
+#
+# Parameters are organized in 5 layers, resolved bottom-up.
+# Each layer's fixes unlock the next layer's effectiveness.
+#
+# Value resolution priority per parameter (resolve_from):
+#   recipe     — value from a matched degradation recipe
+#   kb         — value from KB with >= 80% confidence
+#   graph      — floor/ceiling/target defined below
+#   autofix    — value from triage autofix rules
+#   llm        — leave for LLM in OPTIMIZE phase
+#
+# Constraint expressions reference other parameter keys.
+# floor_expr supports: logical_cores, max_queues, numa_nodes.
+
+layers:
+  1_hardware_ingress:
+    description: "NIC and IRQ topology — must be correct before kernel tuning"
+    parameters:
+      network.queue.combined:
+        floor_expr: "min(max_queues, logical_cores)"
+        dependency: "Determines how many CPUs process NIC interrupts"
+        resolve_from: [graph]
+      platform.cpu_governor.scaling_governor:
+        target: "performance"
+        dependency: "Bare-metal only; ensures max CPU frequency"
+        resolve_from: [graph]
+
+  2_kernel_gateways:
+    description: "Kernel network stack — gates all userspace connection handling"
+    parameters:
+      sysctl.net.core.somaxconn:
+        floor: 65535
+        dependency: "Backs nginx listen backlog; low values drop SYN packets"
+        resolve_from: [recipe, kb, graph]
+      sysctl.net.core.netdev_max_backlog:
+        floor: 5000
+        dependency: "Per-CPU NIC RX queue depth; exceeded = silent packet drops"
+        resolve_from: [recipe, kb, graph]
+      sysctl.net.ipv4.tcp_max_syn_backlog:
+        floor: 8192
+        dependency: "SYN queue depth for burst traffic"
+        resolve_from: [recipe, kb, graph]
+      sysctl.net.core.rmem_max:
+        floor: 16777216
+        dependency: "Max receive socket buffer for high-BDP flows"
+        resolve_from: [recipe, kb, graph]
+      sysctl.net.core.wmem_max:
+        floor: 16777216
+        dependency: "Max send socket buffer; pair with rmem_max"
+        resolve_from: [recipe, kb, graph]
+      sysctl.vm.swappiness:
+        ceiling: 10
+        dependency: "High values swap aggressively, adding latency"
+        resolve_from: [recipe, kb, graph]
+
+  3_resource_valves:
+    description: "OS-level resource ceilings — must be raised before nginx can use them"
+    parameters:
+      systemd.unit.limit_nofile:
+        floor: 524288
+        dependency: "Hard ceiling for worker_rlimit_nofile"
+        resolve_from: [recipe, kb, graph]
+      runtime.prlimit.nofile_soft:
+        floor: 524288
+        dependency: "Effective fd limit = MIN(this, systemd LimitNOFILE)"
+        constraint: "MUST be <= systemd.unit.limit_nofile"
+        resolve_from: [recipe, kb, graph]
+
+  4_nginx_data_plane:
+    description: "nginx worker topology — scales only if layers 1-3 are open"
+    parameters:
+      service.directive.worker_processes:
+        floor_expr: "logical_cores // 2"
+        ceiling_expr: "logical_cores"
+        dependency: "Directly limited by CPU core count"
+        resolve_from: [recipe, kb, graph, llm]
+      service.directive.worker_rlimit_nofile:
+        floor: 524288
+        constraint: "MUST be <= systemd.unit.limit_nofile"
+        dependency: "Capped by layer 3 resource valve"
+        resolve_from: [recipe, kb, graph]
+      service.directive.worker_connections:
+        floor: 65535
+        constraint: "MUST be <= service.directive.worker_rlimit_nofile"
+        dependency: "Per-worker connection limit; needs fd headroom"
+        resolve_from: [recipe, kb, graph]
+      service.directive.keepalive_requests:
+        floor: 10000
+        dependency: "Connection reuse; reduces TCP handshake overhead"
+        resolve_from: [recipe, kb, graph]
+
+  5_optimization_switches:
+    description: "Efficiency toggles — provide 5-15% gains once layers 1-4 are open"
+    parameters:
+      service.directive.access_log:
+        target: "off"
+        dependency: "Eliminates per-request disk I/O"
+        resolve_from: [autofix]
+      service.directive.sendfile:
+        target: "on"
+        dependency: "Enables zero-copy kernel path"
+        resolve_from: [autofix]
+      service.directive.tcp_nopush:
+        target: "on"
+        dependency: "Packs full TCP frames; reduces syscalls"
+        resolve_from: [autofix]
+      service.directive.gzip:
+        target: "off"
+        dependency: "CPU overhead; disable for RPS optimization"
+        resolve_from: [autofix]
+      service.directive.open_file_cache:
+        target: "max=200000"
+        dependency: "Caches file descriptors; avoids re-open per request"
+        resolve_from: [autofix]
+      service.directive.limit_rate:
+        target: "0"
+        dependency: "Any non-zero value is a hard bandwidth throttle"
+        resolve_from: [autofix]
