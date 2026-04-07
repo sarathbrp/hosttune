@@ -185,28 +185,21 @@ class TuneEngine:
                     f"Resolver applying {layer_name}: {param_names}",
                 )
                 pre_count = len(state.active_changes)
-                self._apply_and_benchmark_batch(
+                self._apply_resolver_layer(
                     context, state, layer_hyps,
                     target_executor, benchmark_executor,
-                    f"Resolver {layer_name}",
+                    layer_name,
                 )
                 post_count = len(state.active_changes)
                 if post_count > pre_count:
                     total_applied += post_count - pre_count
-                    # Rebuild catalog so next layer sees fresh values.
                     all_candidates = (
                         self.candidate_catalog_builder.build(
                             context, target_executor
                         )
                     )
                 else:
-                    self.logger.stage_detail(
-                        "tune",
-                        f"Resolver {layer_name}: rolled back, "
-                        f"skipping remaining layers.",
-                    )
                     layer_statuses[layer_name] = LayerStatus.ROLLED_BACK.value
-                    break
             state.layer_statuses = layer_statuses
             self.logger.stage_detail(
                 "tune",
@@ -1622,6 +1615,126 @@ class TuneEngine:
         ]
         self._apply_and_benchmark_batch(
             context, state, hypotheses, target_executor, benchmark_executor, "KB consolidated"
+        )
+
+    def _apply_resolver_layer(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        hypotheses: list[TuningHypothesis],
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+        layer_name: str,
+    ) -> None:
+        """Apply a resolver layer: keep INCONCLUSIVE, only rollback REJECT.
+
+        Unlike _apply_and_benchmark_batch which rolls back on any
+        non-accept, this keeps inconclusive changes applied so higher
+        layers can build on them. The combined effect of multiple
+        layers may push marginal gains over the acceptance threshold.
+        """
+        from datetime import UTC, datetime
+        from time import perf_counter
+
+        iteration_number = state.total_iterations + 1
+        started_at = datetime.now(UTC)
+        started_timer = perf_counter()
+        applied: dict[str, AppliedChange] = {}
+        primary_hypothesis = hypotheses[0]
+        for hypothesis in hypotheses:
+            try:
+                ac = self.apply_coordinator.apply(
+                    context, hypothesis, target_executor
+                )
+                applied[hypothesis.parameter_key] = ac
+                state.active_changes[hypothesis.parameter_key] = ac
+            except Exception as exc:
+                self.logger.stage_detail(
+                    "tune",
+                    f"Resolver {layer_name}: failed "
+                    f"{hypothesis.parameter_key}="
+                    f"{hypothesis.proposed_value}: {exc}",
+                )
+        if not applied:
+            return
+        primary_ac = next(iter(applied.values()))
+        validation_result = self.health_validator.validate(
+            context, primary_ac, target_executor
+        )
+        if not validation_result.healthy:
+            self.logger.stage_detail(
+                "tune",
+                f"Resolver {layer_name}: health check failed; "
+                f"rolling back.",
+            )
+            self._rollback_all(applied, target_executor)
+            for key in applied:
+                state.active_changes.pop(key, None)
+            return
+        benchmark_result = self.benchmark_executor.run(
+            context=context,
+            iteration_number=iteration_number,
+            validation_result=validation_result,
+            benchmark_executor=benchmark_executor,
+            telemetry_executor=target_executor,
+        )
+        self._log_benchmark(benchmark_result)
+        batch_phase = primary_hypothesis.phase
+        evaluation_result = self.result_evaluator.evaluate(
+            context, benchmark_result, phase=batch_phase
+        )
+        self._log_evaluation(evaluation_result)
+        completed_at = datetime.now(UTC)
+        duration_seconds = perf_counter() - started_timer
+        status = self._resolve_status(evaluation_result)
+        if status is HypothesisStatus.REJECTED:
+            # Only roll back on clear rejection.
+            self.logger.stage_detail(
+                "tune",
+                f"Resolver {layer_name}: REJECTED; rolling back.",
+            )
+            self._rollback_all(applied, target_executor)
+            for key in applied:
+                state.active_changes.pop(key, None)
+        else:
+            # ACCEPTED, PROMISING, or INCONCLUSIVE — keep changes.
+            label = status.value
+            if status is HypothesisStatus.INCONCLUSIVE:
+                label = "inconclusive (keeping — may help higher layers)"
+            self.logger.stage_detail(
+                "tune",
+                f"Resolver {layer_name}: {label}; "
+                f"retaining {len(applied)} param(s).",
+            )
+        record = TuneIterationRecord(
+            iteration_number=iteration_number,
+            phase=batch_phase,
+            hypothesis=primary_hypothesis,
+            applied_change=primary_ac,
+            validation_result=validation_result,
+            benchmark_result=benchmark_result,
+            evaluation_result=evaluation_result,
+            attribution_verification=None,
+            active_parameter_keys=tuple(sorted(state.active_changes)),
+            started_at_utc=started_at.isoformat(),
+            completed_at_utc=completed_at.isoformat(),
+            duration_seconds=duration_seconds,
+        )
+        history_record = HypothesisRecord(
+            iteration_number=iteration_number,
+            phase=batch_phase,
+            hypothesis=primary_hypothesis,
+            status=status,
+            evaluation_summary=evaluation_result.summary,
+        )
+        state.record_iteration(record, history_record)
+        self.recorder.record(context, record)
+        self.recorder.record_scoreboard(context, state.scoreboard)
+        self.logger.stage_detail(
+            "tune",
+            f"Resolver {layer_name} iteration {iteration_number}: "
+            f"{len(applied)} params, {duration_seconds:.1f}s, "
+            f"status={status.value}",
         )
 
     def _apply_and_benchmark_batch(
