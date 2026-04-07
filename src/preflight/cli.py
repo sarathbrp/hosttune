@@ -68,6 +68,7 @@ from tune.application.phase_controller import PhaseController
 from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
+from tune.application.rule_based_triage import RuleBasedTriage, TriageRulesLoader
 from tune.application.tune_engine import TuneEngine
 from tune.application.tune_recorder import TuneRecorder
 
@@ -171,6 +172,8 @@ def build_tune_engine(
     *,
     prompt_compression: bool = False,
     kb_batch_apply: bool = False,
+    skip_marginal_attribution: bool = False,
+    marginal_attribution_multiplier: float = 2.0,
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
@@ -190,11 +193,20 @@ def build_tune_engine(
         )
         hypothesis_generator = DeterministicHypothesisGenerator()
     tune_benchmark_executor = TuneBenchmarkExecutor(logger=execution_logger)
+    triage_path = Path("triage-rules.yaml")
+    triage = (
+        RuleBasedTriage(ruleset=TriageRulesLoader().load(triage_path))
+        if triage_path.exists()
+        else None
+    )
     return TuneEngine(
         candidate_catalog_builder=CandidateCatalogBuilder(),
         phase_controller=PhaseController(),
         hypothesis_generator=hypothesis_generator,
+        triage=triage,
         kb_batch_apply=kb_batch_apply,
+        skip_marginal_attribution=skip_marginal_attribution,
+        marginal_attribution_multiplier=marginal_attribution_multiplier,
         apply_coordinator=ApplyCoordinator(
             service_directive_applier=NginxDirectiveApplier(),
             sysctl_applier=SysctlApplier(),
@@ -271,6 +283,8 @@ def main() -> int:
                     tune_logger,
                     prompt_compression=loaded_config.prompt_compression,
                     kb_batch_apply=loaded_config.kb_batch_apply,
+                    skip_marginal_attribution=loaded_config.skip_marginal_attribution,
+                    marginal_attribution_multiplier=loaded_config.marginal_attribution_multiplier,
                 ),
             )
     except ValueError as error:

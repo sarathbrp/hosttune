@@ -24,6 +24,8 @@ class LoadedConfig:
     host_profile_name: str | None = None
     prompt_compression: bool = False
     kb_batch_apply: bool = False
+    skip_marginal_attribution: bool = False
+    marginal_attribution_multiplier: float = 2.0
 
 
 class ConfigLoader:
@@ -57,6 +59,12 @@ class ConfigLoader:
         tune_section = content.get("tune") or {}
         prompt_compression = bool(tune_section.get("prompt_compression", False))
         kb_batch_apply = bool(tune_section.get("kb_batch_apply", False))
+        skip_marginal_attribution = bool(
+            tune_section.get("skip_marginal_attribution", False)
+        )
+        marginal_attribution_multiplier = float(
+            tune_section.get("marginal_attribution_multiplier", 2.0)
+        )
 
         return LoadedConfig(
             target=target,
@@ -66,6 +74,8 @@ class ConfigLoader:
             host_profile_name=host_profile_name,
             prompt_compression=prompt_compression,
             kb_batch_apply=kb_batch_apply,
+            skip_marginal_attribution=skip_marginal_attribution,
+            marginal_attribution_multiplier=marginal_attribution_multiplier,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

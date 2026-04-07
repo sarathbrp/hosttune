@@ -50,6 +50,35 @@ class TriageRulesLoader:
 class RuleBasedTriage:
     ruleset: TriageRuleset
 
+    def collect_all_autofixes(
+        self, context: HypothesisContext
+    ) -> list[tuple[str, str, str]]:
+        """Return ALL autofix (parameter_key, proposed_value, reason) tuples.
+
+        Unlike evaluate() which returns only the first autofix, this
+        collects every matching autofix rule for pre-loop batch application.
+        """
+        candidates_by_key = {
+            c.parameter_key: c for c in context.candidates
+        }
+        results: list[tuple[str, str, str]] = []
+        for section, rules in self.ruleset.sections.items():
+            for rule in rules:
+                if rule.get("enabled", True) is False:
+                    continue
+                if str(rule.get("action", "recommend")) != "autofix":
+                    continue
+                outcome = self._evaluate_rule(
+                    rule, section, context, candidates_by_key
+                )
+                if outcome is None or outcome[1] is None:
+                    continue
+                rec = outcome[1]
+                results.append(
+                    (rec.parameter_key, rec.proposed_value, rec.reason)
+                )
+        return results
+
     def evaluate(self, context: HypothesisContext) -> TriageResult:
         candidates_by_key = {candidate.parameter_key: candidate for candidate in context.candidates}
         triggered: list[TriggeredRule] = []

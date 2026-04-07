@@ -24,6 +24,8 @@ policy:
 tune:
   prompt_compression: true
   kb_batch_apply: true
+  skip_marginal_attribution: true
+  marginal_attribution_multiplier: 1.0
 
 benchmark:
   runner:

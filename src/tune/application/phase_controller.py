@@ -64,6 +64,14 @@ class PhaseController:
                 return ()
             return tuple(c for c in candidates if c.availability is CandidateAvailability.DEFERRED)
         active = active_catalog_candidates(candidates)
+        # Suppress parameters that were tried with no positive signal.
+        # EXPLOIT is exempt — it refines around the best config.
+        if phase not in (
+            TunePhase.KNOWLEDGE_DRIVEN,
+            TunePhase.EXPLOIT,
+            TunePhase.REBOOT_BATCH,
+        ):
+            active = self._suppress_failed_keys(state, active)
         if phase is TunePhase.KNOWLEDGE_DRIVEN:
             return self._filter_knowledge_driven(state, active)
         if phase is TunePhase.WIDE_SWEEP:
@@ -133,6 +141,33 @@ class PhaseController:
         high = tuple(c for c in untried if c.priority_tier is PriorityTier.HIGH)
         medium = tuple(c for c in untried if c.priority_tier is PriorityTier.MEDIUM)
         return high or medium or ()
+
+    def _suppress_failed_keys(
+        self,
+        state: TuneState,
+        candidates: tuple[CandidateParameter, ...],
+    ) -> tuple[CandidateParameter, ...]:
+        """Remove candidates whose parameter key was tried with no positive signal.
+
+        If every attempt for a key resulted in rejected/inconclusive/failed,
+        suppress it to avoid wasting iterations on dead-end parameters.
+        Keys with at least one accepted/promising attempt are kept.
+        """
+        positive_keys: set[str] = set()
+        tried_keys: set[str] = set()
+        for record in state.history:
+            key = record.hypothesis.parameter_key
+            if key == "__no_hypothesis__":
+                continue
+            tried_keys.add(key)
+            if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING):
+                positive_keys.add(key)
+        failed_keys = tried_keys - positive_keys
+        if not failed_keys:
+            return candidates
+        return tuple(
+            c for c in candidates if c.parameter_key not in failed_keys
+        )
 
     def _suppress_positive_keys(
         self,

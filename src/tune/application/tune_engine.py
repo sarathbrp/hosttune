@@ -19,6 +19,7 @@ from tune.application.phase_controller import PhaseController
 from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
+from tune.application.rule_based_triage import RuleBasedTriage
 from tune.application.tune_recorder import TuneRecorder
 from tune.domain.apply_models import AppliedChange
 from tune.domain.benchmark_models import TuneBenchmarkResult
@@ -99,7 +100,10 @@ class TuneEngine:
     result_evaluator: ResultEvaluator
     rollback_coordinator: RollbackCoordinator
     recorder: TuneRecorder
+    triage: RuleBasedTriage | None = None
     kb_batch_apply: bool = False
+    skip_marginal_attribution: bool = False
+    marginal_attribution_multiplier: float = 2.0
     logger: ExecutionLogger = NullExecutionLogger()
 
     def run(
@@ -202,6 +206,19 @@ class TuneEngine:
             )
         else:
             self.logger.stage_detail("tune", "KB: no prior blocked pairs found.")
+        # Pre-loop autofix batch: apply ALL triage autofixes in one iteration.
+        self._apply_autofix_batch(
+            context, state, all_candidates, prior_blocked, target_executor, benchmark_executor,
+        )
+        if state.active_changes:
+            all_candidates = self.candidate_catalog_builder.build(
+                context, target_executor
+            )
+            deferred_catalog = tuple(
+                c
+                for c in all_candidates
+                if c.availability is CandidateAvailability.DEFERRED
+            )
         prev_active_keys: set[str] = set()
         consecutive_noeval_short: int = 0
         stop_reason = self.phase_controller.stop_reason(state, all_candidates)
@@ -316,13 +333,13 @@ class TuneEngine:
                 )
             self.recorder.record(context, record)
             self.recorder.record_scoreboard(context, state.scoreboard)
-            # Track failed autofixes to prevent retry loops.
+            # Track failed/inconclusive to prevent retry loops.
             if (
-                record.evaluation_result is None
-                and history_record.status
+                history_record.status
                 in (
                     HypothesisStatus.FAILED_VALIDATION,
                     HypothesisStatus.REJECTED_PRE_APPLY,
+                    HypothesisStatus.INCONCLUSIVE,
                 )
                 and record.hypothesis.parameter_key != "__no_hypothesis__"
             ):
@@ -746,24 +763,50 @@ class TuneEngine:
                 },
             )
             if evaluation_result.decision is EvaluationDecision.ACCEPT:
-                # Skip attribution for overwhelming gains (>50% avg improvement).
-                # The signal is self-evident; save ~150s of rollback/re-benchmark.
                 avg_change = sum(
                     w.relative_change for w in evaluation_result.workload_evaluations
                 ) / max(len(evaluation_result.workload_evaluations), 1)
+                variance_threshold = context.baseline.expected_variance
                 if avg_change > 0.50:
+                    # Skip attribution for overwhelming gains (>50%).
                     self.logger.stage_detail(
                         "tune",
-                        (
-                            f"Attribution skipped: avg improvement {avg_change:.1%} "
-                            "> 50% threshold; accepting without verification."
-                        ),
+                        f"Attribution skipped: avg improvement "
+                        f"{avg_change:.1%} > 50%; accepting.",
                     )
                     attribution_verification = AttributionVerificationResult(
                         verified=True,
                         summary=f"skipped (overwhelming gain {avg_change:.1%})",
                         reverted_benchmark_result=None,
                         average_drop=avg_change,
+                    )
+                elif (
+                    self.skip_marginal_attribution
+                    and avg_change
+                    < variance_threshold * self.marginal_attribution_multiplier
+                ):
+                    # Marginal gain within noise floor — skip attribution,
+                    # downgrade to inconclusive to avoid 300s wasted.
+                    marginal_ceiling = (
+                        variance_threshold
+                        * self.marginal_attribution_multiplier
+                    )
+                    self.logger.stage_detail(
+                        "tune",
+                        f"Attribution skipped: avg improvement "
+                        f"{avg_change:.1%} < "
+                        f"{self.marginal_attribution_multiplier:.0f}x "
+                        f"variance ({marginal_ceiling:.1%}); "
+                        f"marking inconclusive.",
+                    )
+                    evaluation_result = replace(
+                        evaluation_result,
+                        decision=EvaluationDecision.INCONCLUSIVE,
+                        summary=(
+                            f"{evaluation_result.summary}; "
+                            f"marginal gain {avg_change:.1%} "
+                            f"within noise floor"
+                        ),
                     )
                 else:
                     attribution_verification = self.attribution_verifier.verify(
@@ -774,36 +817,37 @@ class TuneEngine:
                         target_executor=target_executor,
                         benchmark_runner_executor=benchmark_executor,
                     )
-                self._log_attribution_verification(attribution_verification)
-                self._record_kb_event(
-                    context=context,
-                    component="benchmark_runner",
-                    event_type="attribution_verification_completed",
-                    iteration_number=iteration_number,
-                    phase=phase,
-                    payload={
-                        "verified": attribution_verification.verified,
-                        "summary": attribution_verification.summary,
-                        "average_drop": attribution_verification.average_drop,
-                    },
-                )
-                if attribution_verification.verified:
-                    evaluation_result = replace(
-                        evaluation_result,
-                        attribution_verified=True,
-                        attribution_summary=attribution_verification.summary,
+                if evaluation_result.decision is EvaluationDecision.ACCEPT:
+                    self._log_attribution_verification(attribution_verification)
+                    self._record_kb_event(
+                        context=context,
+                        component="benchmark_runner",
+                        event_type="attribution_verification_completed",
+                        iteration_number=iteration_number,
+                        phase=phase,
+                        payload={
+                            "verified": attribution_verification.verified,
+                            "summary": attribution_verification.summary,
+                            "average_drop": attribution_verification.average_drop,
+                        },
                     )
-                else:
-                    evaluation_result = replace(
-                        evaluation_result,
-                        decision=EvaluationDecision.INCONCLUSIVE,
-                        summary=(
-                            f"{evaluation_result.summary}; "
-                            f"attribution_unverified={attribution_verification.summary}"
-                        ),
-                        attribution_verified=False,
-                        attribution_summary=attribution_verification.summary,
-                    )
+                    if attribution_verification.verified:
+                        evaluation_result = replace(
+                            evaluation_result,
+                            attribution_verified=True,
+                            attribution_summary=attribution_verification.summary,
+                        )
+                    else:
+                        evaluation_result = replace(
+                            evaluation_result,
+                            decision=EvaluationDecision.INCONCLUSIVE,
+                            summary=(
+                                f"{evaluation_result.summary}; "
+                                f"attribution_unverified={attribution_verification.summary}"
+                            ),
+                            attribution_verified=False,
+                            attribution_summary=attribution_verification.summary,
+                        )
             self._log_evaluation(evaluation_result)
             status = self._resolve_status(evaluation_result)
             keep = status in {HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING}
@@ -1186,6 +1230,80 @@ class TuneEngine:
         ]
         self._apply_and_benchmark_batch(
             context, state, hypotheses, target_executor, benchmark_executor, "KB batch"
+        )
+
+    def _apply_autofix_batch(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        all_candidates: tuple[CandidateParameter, ...],
+        prior_blocked: list[tuple[str, str]],
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+    ) -> None:
+        """Collect ALL triage autofixes and apply them in one batch.
+
+        Instead of consuming one iteration per autofix, this applies
+        sendfile=on, tcp_nopush=on, open_file_cache, limit_rate=0, etc.
+        all at once with a single benchmark validation.
+        """
+        if self.triage is None:
+            return
+        # Build a minimal HypothesisContext for triage evaluation.
+        hyp_context = HypothesisContext(
+            tune_context=context,
+            phase=state.current_phase,
+            iteration_number=0,
+            candidates=all_candidates,
+            deferred_candidates=(),
+            history=tuple(state.history),
+            active_parameter_keys=tuple(sorted(state.active_changes)),
+            best_parameter_values=(),
+            prior_blocked_pairs=tuple(prior_blocked),
+            confidence_scores=(),
+        )
+        autofixes = self.triage.collect_all_autofixes(hyp_context)
+        if not autofixes:
+            return
+        catalog_index = {c.parameter_key: c for c in all_candidates}
+        hypotheses: list[TuningHypothesis] = []
+        seen_keys: set[str] = set()
+        for param_key, proposed_value, reason in autofixes:
+            candidate = catalog_index.get(param_key)
+            if candidate is None:
+                continue
+            if param_key in state.active_changes or param_key in seen_keys:
+                continue
+            if candidate.current_value == proposed_value:
+                continue
+            seen_keys.add(param_key)
+            hypotheses.append(
+                TuningHypothesis(
+                    phase=TunePhase.KNOWLEDGE_DRIVEN,
+                    parameter_key=param_key,
+                    parameter_name=candidate.parameter_name,
+                    domain=candidate.domain,
+                    tuning_layer=candidate.tuning_layer,
+                    proposed_value=proposed_value,
+                    source=candidate.source,
+                    apply_mode=candidate.apply_mode,
+                    rationale=f"Autofix batch: {reason}",
+                )
+            )
+        if not hypotheses:
+            return
+        self.logger.stage_detail(
+            "tune",
+            "Autofix batch: applying "
+            + ", ".join(
+                f"{h.parameter_key}={h.proposed_value}"
+                for h in hypotheses
+            ),
+        )
+        self._apply_and_benchmark_batch(
+            context, state, hypotheses,
+            target_executor, benchmark_executor,
+            "Autofix batch",
         )
 
     def _try_recipe_shortcut(
