@@ -92,8 +92,7 @@ tunable_surface:
         - "on"
         - "off"
       apply_mode: reload
-      forbidden_values:
-        - "off"
+      forbidden_values: []
     tcp_nopush:
       value_type: enum
       priority_tier: medium
