@@ -35,6 +35,7 @@ def active_catalog_candidates(
 class PhaseController:
     convergence_no_signal_limit: int = 3
     convergence_best_stability_limit: int = 2
+    consecutive_failure_limit: int = 3
 
     def determine_phase(
         self,
@@ -165,6 +166,11 @@ class PhaseController:
             return "budget_exhausted"
         if self._has_converged(state, active_catalog_candidates(candidates)):
             return "converged"
+        if (
+            state.best_configuration is None
+            and self._consecutive_failures(state) >= self.consecutive_failure_limit
+        ):
+            return "consecutive_failures"
         return None
 
     def _should_advance(
@@ -183,9 +189,15 @@ class PhaseController:
             for record in phase_history
             if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING)
         ]
+        # Adaptive: advance if all phase iterations failed (no signal).
+        if (
+            len(phase_history) >= 3
+            and not positive_signal
+            and phase
+            not in (TunePhase.KNOWLEDGE_DRIVEN, TunePhase.WIDE_SWEEP)
+        ):
+            return True
         if phase is TunePhase.KNOWLEDGE_DRIVEN:
-            # Advance when filter returns empty (all KB candidates tried).
-            # The budget check at the top handles exhaustion.
             return not self._filter_knowledge_driven(state, candidates)
         if phase is TunePhase.WIDE_SWEEP:
             mandate = self._wide_sweep_mandate_keys(candidates, phase_history)
@@ -330,6 +342,16 @@ class PhaseController:
                 return selected
 
         return ()
+
+    def _consecutive_failures(self, state: TuneState) -> int:
+        """Count consecutive non-accept iterations from the tail of history."""
+        count = 0
+        for record in reversed(state.history):
+            if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING):
+                break
+            if record.status in (HypothesisStatus.REJECTED, HypothesisStatus.FAILED_VALIDATION):
+                count += 1
+        return count
 
     def _has_converged(
         self,

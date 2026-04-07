@@ -105,48 +105,59 @@ class LlmHypothesisGenerator:
             )
         if triage_result is not None and triage_result.autofix_action is not None:
             autofix = triage_result.autofix_action
-            candidate = self._find_candidate(context, autofix.parameter_key)
-            self.logger.stage_detail(
-                "tune",
-                (
-                    "Triage autofix: "
-                    f"parameter={autofix.parameter_key} "
-                    f"value={autofix.proposed_value} "
-                    f"reason={autofix.reason}"
-                ),
-            )
-            self._record_kb_event(
-                context=context,
-                component="hybrid_llm",
-                event_type="llm_skipped_autofix",
-                payload={
-                    "parameter_key": autofix.parameter_key,
-                    "proposed_value": autofix.proposed_value,
-                    "reason": autofix.reason,
-                },
-            )
-            return (
-                TuningHypothesis(
-                    phase=context.phase,
-                    parameter_key=candidate.parameter_key,
-                    parameter_name=candidate.parameter_name,
-                    domain=candidate.domain,
-                    tuning_layer=candidate.tuning_layer,
-                    proposed_value=autofix.proposed_value,
-                    source=candidate.source,
-                    apply_mode=candidate.apply_mode,
-                    rationale=autofix.reason,
-                    model_usage=None,
-                    expected_benchmark_impact=(
-                        "Deterministic baseline correction; expect cleaner benchmark behavior "
-                        "rather than a model-predicted range change."
+            autofix_pair = (autofix.parameter_key, autofix.proposed_value)
+            if autofix_pair in context.prior_blocked_pairs:
+                self.logger.stage_detail(
+                    "tune",
+                    "Triage autofix skipped (previously failed): "
+                    f"{autofix.parameter_key}={autofix.proposed_value}",
+                )
+                # Fall through to LLM path below.
+            else:
+                candidate = self._find_candidate(context, autofix.parameter_key)
+                self.logger.stage_detail(
+                    "tune",
+                    (
+                        "Triage autofix: "
+                        f"parameter={autofix.parameter_key} "
+                        f"value={autofix.proposed_value} "
+                        f"reason={autofix.reason}"
                     ),
-                    rollback_plan=(
-                        f"Restore {candidate.parameter_name} to its prior value and "
-                        f"{candidate.apply_mode.value} the service/runtime."
+                )
+                self._record_kb_event(
+                    context=context,
+                    component="hybrid_llm",
+                    event_type="llm_skipped_autofix",
+                    payload={
+                        "parameter_key": autofix.parameter_key,
+                        "proposed_value": autofix.proposed_value,
+                        "reason": autofix.reason,
+                    },
+                )
+                return (
+                    TuningHypothesis(
+                        phase=context.phase,
+                        parameter_key=candidate.parameter_key,
+                        parameter_name=candidate.parameter_name,
+                        domain=candidate.domain,
+                        tuning_layer=candidate.tuning_layer,
+                        proposed_value=autofix.proposed_value,
+                        source=candidate.source,
+                        apply_mode=candidate.apply_mode,
+                        rationale=autofix.reason,
+                        model_usage=None,
+                        expected_benchmark_impact=(
+                            "Deterministic baseline correction; "
+                            "expect cleaner benchmark behavior "
+                            "rather than a model-predicted range change."
+                        ),
+                        rollback_plan=(
+                            f"Restore {candidate.parameter_name} "
+                            "to its prior value and "
+                            f"{candidate.apply_mode.value} the service/runtime."
+                        ),
                     ),
-                ),
-            )
+                )
         self._debug_log(
             "LLM call",
             f"phase={context.phase.value} iteration={context.iteration_number} "

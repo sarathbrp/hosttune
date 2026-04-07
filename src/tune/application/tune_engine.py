@@ -177,6 +177,15 @@ class TuneEngine:
             deferred_catalog = tuple(
                 c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
             )
+        # Adaptive budget: rebalance if KB pre-applied many params.
+        pre_applied = len(state.active_changes)
+        if pre_applied >= 3:
+            state.rebalance_budget(pre_applied)
+            self.logger.stage_detail(
+                "tune",
+                f"Budget rebalanced: {pre_applied} params pre-applied; "
+                f"remaining={dict(state.remaining_budget)}",
+            )
         # KB-driven blocked pairs: load prior-run failures to avoid re-trying.
         prior_blocked = self._load_prior_blocked_pairs(context)
         if prior_blocked:
@@ -187,6 +196,7 @@ class TuneEngine:
         else:
             self.logger.stage_detail("tune", "KB: no prior blocked pairs found.")
         prev_active_keys: set[str] = set()
+        consecutive_noeval_short: int = 0
         stop_reason = self.phase_controller.stop_reason(state, all_candidates)
         while stop_reason is None:
             # Rebuild catalog only when active changes changed (saves ~30s SSH per iteration).
@@ -299,6 +309,48 @@ class TuneEngine:
                 )
             self.recorder.record(context, record)
             self.recorder.record_scoreboard(context, state.scoreboard)
+            # Track failed autofixes to prevent retry loops.
+            if (
+                record.evaluation_result is None
+                and history_record.status
+                in (
+                    HypothesisStatus.FAILED_VALIDATION,
+                    HypothesisStatus.REJECTED_PRE_APPLY,
+                )
+                and record.hypothesis.parameter_key != "__no_hypothesis__"
+            ):
+                prior_blocked.append(
+                    (record.hypothesis.parameter_key, record.hypothesis.proposed_value)
+                )
+            # Detect service-dead pattern: consecutive no_eval with short duration.
+            if record.evaluation_result is None and record.duration_seconds < 30:
+                consecutive_noeval_short += 1
+            else:
+                consecutive_noeval_short = 0
+            if consecutive_noeval_short >= 2:
+                self.logger.stage_detail(
+                    "tune",
+                    "Service appears dead: "
+                    f"{consecutive_noeval_short} consecutive fast failures. "
+                    "Attempting service restart.",
+                )
+                unit = context.onboard.service.identity.systemd_unit_name
+                restart_result = target_executor.run(
+                    f"systemctl restart {unit}"
+                )
+                if restart_result.exit_code == 0:
+                    self.logger.stage_detail(
+                        "tune", "Service restarted successfully."
+                    )
+                    consecutive_noeval_short = 0
+                else:
+                    self.logger.stage_detail(
+                        "tune",
+                        "Service restart failed: "
+                        f"{restart_result.stderr.strip()}",
+                    )
+                    stop_reason = "service_dead"
+                    break
             stop_reason = self.phase_controller.stop_reason(state, all_candidates)
         provisional_keys = {
             record.hypothesis.parameter_key

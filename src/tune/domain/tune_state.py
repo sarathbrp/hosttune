@@ -84,6 +84,30 @@ class TuneState:
             budgets[TunePhase.EXPLOIT] += 1
         return budgets
 
+    def rebalance_budget(self, pre_applied_count: int) -> None:
+        """Redistribute remaining budget after pre-loop KB operations.
+
+        When the KB batch applies many params, exploration is less valuable
+        and exploitation should get the freed budget.
+        """
+        remaining = sum(self.remaining_budget.values())
+        if remaining <= 0 or pre_applied_count < 3:
+            return  # Only rebalance when KB applied a meaningful batch.
+        # Shrink exploration phases, grow EXPLOIT.
+        shrinkable = (
+            TunePhase.WIDE_SWEEP,
+            TunePhase.DOMAIN_FOCUS,
+            TunePhase.INTERACTION,
+            TunePhase.BOUNDARY_PUSH,
+        )
+        freed = 0
+        for phase in shrinkable:
+            current = self.remaining_budget[phase]
+            new = max(1, current - 1)
+            freed += current - new
+            self.remaining_budget[phase] = new
+        self.remaining_budget[TunePhase.EXPLOIT] += freed
+
     def record_iteration(
         self,
         record: TuneIterationRecord,
