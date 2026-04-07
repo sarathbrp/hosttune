@@ -32,6 +32,7 @@ class LayerStatus(StrEnum):
     OK = "ok"
     FIXED = "fixed"
     LLM_DEFERRED = "llm_deferred"
+    ROLLED_BACK = "rolled_back"
 
 
 @dataclass(frozen=True)
@@ -65,11 +66,11 @@ class UnifiedResolver:
         confidence_scores: dict[str, tuple[int, int, float]],
         recipe_fix_sequence: list[dict[str, str]] | None,
         prior_blocked_pairs: list[tuple[str, str]],
-    ) -> tuple[list[TuningHypothesis], dict[str, str]]:
+    ) -> tuple[list[tuple[str, list[TuningHypothesis]]], dict[str, str]]:
         """Walk the dependency graph bottom-up, resolve values, return hypotheses.
 
         Returns:
-            hypotheses: ordered list (layer 1 first) ready for batch application
+            layer_hypotheses: [(layer_name, hypotheses)] grouped by layer
             layer_statuses: {layer_name: LayerStatus.value} for LLM prompt
         """
         catalog_index = {c.parameter_key: c for c in all_candidates}
@@ -81,13 +82,16 @@ class UnifiedResolver:
             context, state, all_candidates, prior_blocked_pairs
         )
 
-        hypotheses: list[TuningHypothesis] = []
+        layer_hypotheses: list[tuple[str, list[TuningHypothesis]]] = []
+        all_resolved: list[TuningHypothesis] = []
         layer_statuses: dict[str, str] = {}
+        total_resolved = 0
 
         for layer_name, layer_spec in self._layers:
             params = layer_spec.get("parameters") or {}
             layer_fixed = False
             layer_deferred = False
+            layer_hyps: list[TuningHypothesis] = []
 
             for param_key, param_spec in params.items():
                 candidate = catalog_index.get(param_key)
@@ -108,15 +112,28 @@ class UnifiedResolver:
                     blocked_set=blocked_set,
                 )
                 if proposed is None:
+                    self.logger.stage_detail(
+                        "tune",
+                        f"Resolver [{layer_name}] "
+                        f"{param_key}: "
+                        f"found={candidate.current_value} "
+                        f"action=SKIP (already at target)",
+                    )
                     continue
 
                 if proposed.resolution_source == "llm":
                     layer_deferred = True
+                    self.logger.stage_detail(
+                        "tune",
+                        f"Resolver [{layer_name}] "
+                        f"{param_key}: "
+                        f"found={candidate.current_value} "
+                        f"action=DEFER (for LLM in OPTIMIZE phase)",
+                    )
                     continue
 
-                # Validate constraints.
                 if not self._check_constraint(
-                    param_spec, proposed.proposed_value, hypotheses
+                    param_spec, proposed.proposed_value, all_resolved
                 ):
                     self.logger.stage_detail(
                         "tune",
@@ -126,29 +143,36 @@ class UnifiedResolver:
                     continue
 
                 layer_fixed = True
-                hypotheses.append(
-                    TuningHypothesis(
-                        phase=TunePhase.RESOLVE,
-                        parameter_key=param_key,
-                        parameter_name=candidate.parameter_name,
-                        domain=candidate.domain,
-                        tuning_layer=candidate.tuning_layer,
-                        proposed_value=proposed.proposed_value,
-                        source=candidate.source,
-                        apply_mode=candidate.apply_mode,
-                        rationale=(
-                            f"Resolver L{layer_name[:1]}: "
-                            f"{proposed.resolution_source} "
-                            f"({proposed.dependency_note})"
-                        ),
-                    )
+                hyp = TuningHypothesis(
+                    phase=TunePhase.RESOLVE,
+                    parameter_key=param_key,
+                    parameter_name=candidate.parameter_name,
+                    domain=candidate.domain,
+                    tuning_layer=candidate.tuning_layer,
+                    proposed_value=proposed.proposed_value,
+                    source=candidate.source,
+                    apply_mode=candidate.apply_mode,
+                    rationale=(
+                        f"Resolver L{layer_name[:1]}: "
+                        f"{proposed.resolution_source} "
+                        f"({proposed.dependency_note})"
+                    ),
                 )
+                layer_hyps.append(hyp)
+                all_resolved.append(hyp)
                 self.logger.stage_detail(
                     "tune",
-                    f"Resolver: {param_key}={proposed.proposed_value} "
-                    f"via {proposed.resolution_source} "
-                    f"(layer={layer_name})",
+                    f"Resolver [{layer_name}] "
+                    f"{param_key}: "
+                    f"found={candidate.current_value} "
+                    f"target={proposed.proposed_value} "
+                    f"source={proposed.resolution_source} "
+                    f"action=APPLY",
                 )
+
+            if layer_hyps:
+                layer_hypotheses.append((layer_name, layer_hyps))
+                total_resolved += len(layer_hyps)
 
             if layer_deferred:
                 layer_statuses[layer_name] = LayerStatus.LLM_DEFERRED.value
@@ -159,11 +183,11 @@ class UnifiedResolver:
 
         self.logger.stage_detail(
             "tune",
-            f"Resolver: {len(hypotheses)} params resolved across "
-            f"{len(self._layers)} layers. "
+            f"Resolver: {total_resolved} params across "
+            f"{len(layer_hypotheses)} layers. "
             f"Statuses: {layer_statuses}",
         )
-        return hypotheses, layer_statuses
+        return layer_hypotheses, layer_statuses
 
     def _resolve_value(
         self,

@@ -307,7 +307,7 @@ def format_layer_status_lines(
     """Format dependency layer statuses for the LLM prompt."""
     if not layer_statuses:
         return ["- (no dependency graph active)"]
-    icons = {"ok": "OK", "fixed": "FIXED", "llm_deferred": "NEEDS_LLM"}
+    icons = {"ok": "OK", "fixed": "FIXED", "llm_deferred": "NEEDS_LLM", "rolled_back": "ROLLED_BACK"}
     return [
         f"- {name}: {icons.get(status, status)}"
         for name, status in layer_statuses

@@ -159,12 +159,12 @@ class TuneEngine:
             self.logger.stage_detail("tune", "KB: no prior blocked pairs found.")
         confidence_scores = self._load_confidence_scores(context)
         if self.unified_resolver is not None:
-            # --- UNIFIED PATH ---
-            from tune.application.unified_resolver import UnifiedResolver
+            # --- UNIFIED PATH: layer-by-layer application ---
+            from tune.application.unified_resolver import LayerStatus, UnifiedResolver
 
             resolver: UnifiedResolver = self.unified_resolver  # type: ignore[assignment]
             recipe_seq = self._load_recipe_fix_sequence(context)
-            hypotheses, layer_statuses = resolver.resolve(
+            layer_hypotheses, layer_statuses = resolver.resolve(
                 context=context,
                 state=state,
                 all_candidates=all_candidates,
@@ -172,17 +172,47 @@ class TuneEngine:
                 recipe_fix_sequence=recipe_seq,
                 prior_blocked_pairs=prior_blocked,
             )
-            if hypotheses:
-                self._apply_and_benchmark_batch(
-                    context, state, hypotheses,
-                    target_executor, benchmark_executor,
-                    "Unified resolver",
+            total_applied = 0
+            for layer_name, layer_hyps in layer_hypotheses:
+                if not layer_hyps:
+                    continue
+                param_names = ", ".join(
+                    f"{h.parameter_key}={h.proposed_value}"
+                    for h in layer_hyps
                 )
+                self.logger.stage_detail(
+                    "tune",
+                    f"Resolver applying {layer_name}: {param_names}",
+                )
+                pre_count = len(state.active_changes)
+                self._apply_and_benchmark_batch(
+                    context, state, layer_hyps,
+                    target_executor, benchmark_executor,
+                    f"Resolver {layer_name}",
+                )
+                post_count = len(state.active_changes)
+                if post_count > pre_count:
+                    total_applied += post_count - pre_count
+                    # Rebuild catalog so next layer sees fresh values.
+                    all_candidates = (
+                        self.candidate_catalog_builder.build(
+                            context, target_executor
+                        )
+                    )
+                else:
+                    self.logger.stage_detail(
+                        "tune",
+                        f"Resolver {layer_name}: rolled back, "
+                        f"skipping remaining layers.",
+                    )
+                    layer_statuses[layer_name] = LayerStatus.ROLLED_BACK.value
+                    break
             state.layer_statuses = layer_statuses
             self.logger.stage_detail(
                 "tune",
-                f"Unified resolver: {len(hypotheses)} params applied, "
-                f"layers={layer_statuses}",
+                f"Unified resolver: {total_applied} params retained "
+                f"across {len(layer_hypotheses)} layers. "
+                f"Statuses: {layer_statuses}",
             )
         else:
             # --- LEGACY PATH ---
