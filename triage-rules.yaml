@@ -146,9 +146,32 @@ application_discovery_sanity:
     min_logical_cores: 32
     floor_value: 10000
 
-  - id: nginx_enable_open_file_cache
+  - id: nginx_enable_tcp_nopush
+    enabled: true
+    action: autofix
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.tcp_nopush
+    proposed_value: "on"
+    only_when_current_in:
+      - "off"
+
+  - id: nginx_disable_gzip
     enabled: true
     action: recommend
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.gzip
+    proposed_value: "off"
+    only_when_current_in:
+      - "on"
+    detail: >-
+      gzip adds CPU overhead per response. On fast local networks the
+      bandwidth saving is negligible; disabling improves RPS.
+
+  - id: nginx_enable_open_file_cache
+    enabled: true
+    action: autofix
     kind: service_current_not
     service_name: nginx
     candidate_key: service.directive.open_file_cache
