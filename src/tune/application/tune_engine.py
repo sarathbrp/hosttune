@@ -219,6 +219,12 @@ class TuneEngine:
                 for c in all_candidates
                 if c.availability is CandidateAvailability.DEFERRED
             )
+        # Track params applied in pre-loop batches — attribution is
+        # unreliable for these because rollback of one param in a batch
+        # shows minimal drop even when the param contributed to the gain.
+        # This includes PROMISING (provisionally retained) params from
+        # the batch — their batch benchmark already validated them.
+        batch_applied_keys: set[str] = set(state.active_changes.keys())
         prev_active_keys: set[str] = set()
         consecutive_noeval_short: int = 0
         stop_reason = self.phase_controller.stop_reason(state, all_candidates)
@@ -296,6 +302,7 @@ class TuneEngine:
                 confidence_scores=confidence_scores,
                 target_executor=target_executor,
                 benchmark_executor=benchmark_executor,
+                batch_applied_keys=batch_applied_keys,
             )
             state.record_iteration(record, history_record)
             if (
@@ -413,6 +420,7 @@ class TuneEngine:
         confidence_scores: dict[str, tuple[int, int, float]],
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
+        batch_applied_keys: set[str] | None = None,
     ) -> tuple[TuneIterationRecord, HypothesisRecord]:
         started_at = datetime.now(UTC)
         started_timer = perf_counter()
@@ -767,7 +775,33 @@ class TuneEngine:
                     w.relative_change for w in evaluation_result.workload_evaluations
                 ) / max(len(evaluation_result.workload_evaluations), 1)
                 variance_threshold = context.baseline.expected_variance
-                if avg_change > 0.50:
+                _batch_keys = batch_applied_keys or set()
+                # Batch masking is reliable with 3+ params; with only 2,
+                # rollback of one still gives a measurable signal.
+                is_batch_param = (
+                    primary.parameter_key in _batch_keys
+                    and len(_batch_keys) >= 3
+                )
+                if is_batch_param:
+                    # Batch-applied param: per-param attribution is
+                    # unreliable because other batch params mask the drop.
+                    self.logger.stage_detail(
+                        "tune",
+                        f"Attribution skipped: "
+                        f"{primary.parameter_key} was batch-applied "
+                        f"with {len(_batch_keys)} params; "
+                        f"accepting (batch-verified).",
+                    )
+                    attribution_verification = AttributionVerificationResult(
+                        verified=True,
+                        summary=(
+                            f"skipped (batch-applied with "
+                            f"{len(_batch_keys)} params)"
+                        ),
+                        reverted_benchmark_result=None,
+                        average_drop=avg_change,
+                    )
+                elif avg_change > 0.50:
                     # Skip attribution for overwhelming gains (>50%).
                     self.logger.stage_detail(
                         "tune",
