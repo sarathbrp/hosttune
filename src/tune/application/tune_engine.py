@@ -141,8 +141,15 @@ class TuneEngine:
                 "tune",
                 f"Catalog: {len(deferred_catalog)} deferred (reboot_batch) sysctl candidate(s).",
             )
+        # Recipe shortcut: if we've seen this degradation pattern before,
+        # apply the complete fix sequence and skip exploration.
+        recipe_applied = self._try_recipe_shortcut(
+            context, state, all_candidates, target_executor, benchmark_executor,
+        )
         confidence_scores = self._load_confidence_scores(context)
-        if self.kb_batch_apply:
+        if recipe_applied:
+            pass  # Recipe handled everything; skip KB batch.
+        elif self.kb_batch_apply:
             # Consolidated KB batch: collect ALL KB-known params, apply once, benchmark once.
             self._run_kb_batch_consolidated(
                 context,
@@ -1180,6 +1187,132 @@ class TuneEngine:
         self._apply_and_benchmark_batch(
             context, state, hypotheses, target_executor, benchmark_executor, "KB batch"
         )
+
+    def _try_recipe_shortcut(
+        self,
+        context: TuneContext,
+        state: TuneState,
+        all_candidates: tuple[CandidateParameter, ...],
+        target_executor: CommandExecutor,
+        benchmark_executor: CommandExecutor,
+    ) -> bool:
+        """Apply a matching degradation recipe if one exists.
+
+        Computes a fingerprint from the current baseline, looks up
+        prior runs with similar degradation patterns, and if a match
+        is found, batch-applies the entire fix sequence.
+
+        Returns True if a recipe was applied, False otherwise.
+        """
+        from preflight.infrastructure.knowledge_base import (
+            compute_degradation_fingerprint,
+            host_fingerprint_for_snapshot,
+        )
+
+        kb = getattr(context, "knowledge_base", None)
+        artifacts = context.artifacts
+        if kb is None or artifacts is None:
+            return False
+        # Compute current baseline fingerprint.
+        workload_results = context.baseline.workload_results
+        if not workload_results:
+            return False
+        names, vector = compute_degradation_fingerprint(workload_results)
+        fingerprint = host_fingerprint_for_snapshot(
+            context.preflight, context.onboard.service_name
+        )
+        recipe = kb.lookup_degradation_recipe(
+            service_name=context.onboard.service_name,
+            host_fingerprint=fingerprint,
+            current_fingerprint=vector,
+            current_workload_names=names,
+            exclude_run_id=artifacts.session_id,
+        )
+        if recipe is None:
+            self.logger.stage_detail(
+                "tune", "Recipe lookup: no matching degradation pattern."
+            )
+            return False
+        fix_sequence = recipe["fix_sequence"]
+        self.logger.stage_detail(
+            "tune",
+            f"Recipe match: run={recipe['run_id']} "
+            f"similarity={recipe['similarity']:.2%} "
+            f"score={recipe['best_score']:.2%} "
+            f"fixes={len(fix_sequence)}",
+        )
+        self._record_kb_event(
+            context=context,
+            component="recipe_lookup",
+            event_type="recipe_matched",
+            payload={
+                "matched_run_id": recipe["run_id"],
+                "similarity": recipe["similarity"],
+                "best_score": recipe["best_score"],
+                "fix_count": len(fix_sequence),
+            },
+        )
+        # Build hypotheses from the fix sequence.
+        catalog_index = {c.parameter_key: c for c in all_candidates}
+        hypotheses: list[TuningHypothesis] = []
+        for step in fix_sequence:
+            param_key = step["parameter_key"]
+            candidate = catalog_index.get(param_key)
+            if candidate is None:
+                self.logger.stage_detail(
+                    "tune",
+                    f"Recipe: skipping {param_key} (not in catalog)",
+                )
+                continue
+            if candidate.current_value == step["value"]:
+                continue  # Already at recipe value.
+            hypotheses.append(
+                TuningHypothesis(
+                    phase=TunePhase.KNOWLEDGE_DRIVEN,
+                    parameter_key=param_key,
+                    parameter_name=candidate.parameter_name,
+                    domain=candidate.domain,
+                    tuning_layer=candidate.tuning_layer,
+                    proposed_value=step["value"],
+                    source=candidate.source,
+                    apply_mode=candidate.apply_mode,
+                    rationale=(
+                        f"Recipe shortcut from run {recipe['run_id']} "
+                        f"(similarity={recipe['similarity']:.0%})"
+                    ),
+                )
+            )
+        if not hypotheses:
+            self.logger.stage_detail(
+                "tune", "Recipe: all fixes already applied or not in catalog."
+            )
+            return False
+        self.logger.stage_detail(
+            "tune",
+            "Recipe: applying "
+            + ", ".join(f"{h.parameter_key}={h.proposed_value}" for h in hypotheses),
+        )
+        self._apply_and_benchmark_batch(
+            context, state, hypotheses,
+            target_executor, benchmark_executor,
+            "Recipe shortcut",
+        )
+        # Zero out exploration budget if recipe was accepted.
+        if state.active_changes:
+            for phase in TunePhase:
+                if phase not in (TunePhase.EXPLOIT, TunePhase.REBOOT_BATCH):
+                    state.remaining_budget[phase] = 0
+            state.remaining_budget[TunePhase.EXPLOIT] = min(
+                2, state.remaining_budget[TunePhase.EXPLOIT]
+            )
+            self.logger.stage_detail(
+                "tune",
+                f"Recipe applied: zeroed exploration budget, "
+                f"EXPLOIT={state.remaining_budget[TunePhase.EXPLOIT]} "
+                f"remaining.",
+            )
+            return True
+        return False
 
     def _run_kb_batch_consolidated(
         self,

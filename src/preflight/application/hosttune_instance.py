@@ -380,7 +380,63 @@ class HostTuneInstance:
                 ),
                 final_retained_config=result.final_retained_config_values(),
             )
+            # Store degradation recipe for future pattern matching.
+            self._store_degradation_recipe(result)
         return result
+
+    def _store_degradation_recipe(self, result: TuneState) -> None:
+        """Store the fix sequence as a degradation recipe for future lookups."""
+        if (
+            result.best_configuration is None
+            or result.best_configuration.score <= 0
+            or self.baseline is None
+            or self.artifacts is None
+            or self.knowledge_base is None
+            or self.preflight is None
+            or self.onboard is None
+        ):
+            return
+        from tune.domain.hypothesis_models import HypothesisStatus
+
+        fix_sequence = [
+            {
+                "parameter_key": rec.hypothesis.parameter_key,
+                "value": rec.hypothesis.proposed_value,
+                "apply_mode": rec.hypothesis.apply_mode.value,
+            }
+            for rec in result.history
+            if rec.status is HypothesisStatus.ACCEPTED
+        ]
+        if not fix_sequence:
+            return
+        from preflight.infrastructure.knowledge_base import (
+            compute_degradation_fingerprint,
+        )
+
+        names, vector = compute_degradation_fingerprint(
+            self.baseline.workload_results
+        )
+        import json
+
+        fingerprint = host_fingerprint_for_snapshot(
+            self.preflight, self.onboard.service_name
+        )
+        self.knowledge_base.store_degradation_recipe(
+            run_id=self.artifacts.session_id,
+            host_fingerprint=fingerprint,
+            service_name=self.onboard.service_name,
+            fingerprint_json=json.dumps(
+                {"workload_names": names, "rps_vector": vector}
+            ),
+            fix_sequence_json=json.dumps(fix_sequence),
+            best_score=result.best_configuration.score,
+            workload_count=len(names),
+        )
+        self.logger.stage_detail(
+            "tune",
+            f"Stored degradation recipe: {len(fix_sequence)} fixes, "
+            f"score={result.best_configuration.score:.2%}",
+        )
 
     def _run_preflight(self, loaded_config: LoadedConfig) -> DiscoverySnapshot:
         runner = self.discovery_runner_factory(None)

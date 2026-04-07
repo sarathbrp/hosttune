@@ -61,6 +61,32 @@ def host_fingerprint_for_snapshot(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def compute_degradation_fingerprint(
+    workload_results: tuple[Any, ...] | list[Any],
+) -> tuple[list[str], list[float]]:
+    """Compute normalized RPS vector from baseline workload results.
+
+    Returns (workload_names, rps_vector) sorted by name.
+    The vector is L2-normalized for cosine similarity comparison.
+    """
+    sorted_results = sorted(workload_results, key=lambda w: w.workload_name)
+    names = [w.workload_name for w in sorted_results]
+    rps_values = [w.requests_per_second for w in sorted_results]
+    norm = sum(v * v for v in rps_values) ** 0.5
+    if norm == 0:
+        return names, [0.0] * len(rps_values)
+    return names, [v / norm for v in rps_values]
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 class KnowledgeBase:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -445,6 +471,103 @@ class KnowledgeBase:
             for key, (tests, accepted) in counts.items()
         }
 
+    def store_degradation_recipe(
+        self,
+        *,
+        run_id: str,
+        host_fingerprint: str,
+        service_name: str,
+        fingerprint_json: str,
+        fix_sequence_json: str,
+        best_score: float,
+        blockers_fixed_json: str | None = None,
+        workload_count: int,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO degradation_recipes (
+                    run_id, host_fingerprint, service_name,
+                    degradation_fingerprint_json, fix_sequence_json,
+                    best_score, blockers_fixed_json, workload_count,
+                    created_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    degradation_fingerprint_json=excluded.degradation_fingerprint_json,
+                    fix_sequence_json=excluded.fix_sequence_json,
+                    best_score=excluded.best_score,
+                    blockers_fixed_json=excluded.blockers_fixed_json,
+                    created_at_utc=excluded.created_at_utc
+                """,
+                (
+                    run_id,
+                    host_fingerprint,
+                    service_name,
+                    fingerprint_json,
+                    fix_sequence_json,
+                    best_score,
+                    blockers_fixed_json,
+                    workload_count,
+                    now,
+                ),
+            )
+            connection.commit()
+
+    def lookup_degradation_recipe(
+        self,
+        *,
+        service_name: str,
+        host_fingerprint: str,
+        current_fingerprint: list[float],
+        current_workload_names: list[str],
+        similarity_threshold: float = 0.90,
+        exclude_run_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find best-matching recipe by cosine similarity.
+
+        Returns None if no recipe exceeds the threshold.
+        """
+        params: list[object] = [service_name, host_fingerprint]
+        query = (
+            "SELECT run_id, degradation_fingerprint_json, "
+            "fix_sequence_json, best_score, blockers_fixed_json "
+            "FROM degradation_recipes "
+            "WHERE service_name=? AND host_fingerprint=?"
+        )
+        if exclude_run_id is not None:
+            query += " AND run_id<>?"
+            params.append(exclude_run_id)
+        query += " ORDER BY best_score DESC LIMIT 20"
+        with sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(query, tuple(params)).fetchall()
+        best_match: dict[str, Any] | None = None
+        best_similarity = 0.0
+        for row in rows:
+            stored = json.loads(row["degradation_fingerprint_json"])
+            stored_names = stored.get("workload_names", [])
+            stored_vector = stored.get("rps_vector", [])
+            if sorted(stored_names) != sorted(current_workload_names):
+                continue
+            if len(stored_vector) != len(current_fingerprint):
+                continue
+            similarity = _cosine_similarity(
+                current_fingerprint, stored_vector
+            )
+            if similarity >= similarity_threshold and similarity > best_similarity:
+                best_similarity = similarity
+                best_match = {
+                    "run_id": row["run_id"],
+                    "fix_sequence": json.loads(row["fix_sequence_json"]),
+                    "best_score": row["best_score"],
+                    "similarity": similarity,
+                    "blockers_fixed": json.loads(
+                        row["blockers_fixed_json"] or "[]"
+                    ),
+                }
+        return best_match
+
     def _ensure_schema(self) -> None:
         with sqlite3.connect(self.path) as connection:
             connection.execute(
@@ -496,6 +619,28 @@ class KnowledgeBase:
                 """
                 CREATE INDEX IF NOT EXISTS idx_runs_similarity
                 ON runs(service_name, cpu_core_band, numa_nodes, platform_summary, nic_driver)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS degradation_recipes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL UNIQUE,
+                    host_fingerprint TEXT NOT NULL,
+                    service_name TEXT NOT NULL,
+                    degradation_fingerprint_json TEXT NOT NULL,
+                    fix_sequence_json TEXT NOT NULL,
+                    best_score REAL NOT NULL,
+                    blockers_fixed_json TEXT,
+                    workload_count INTEGER NOT NULL,
+                    created_at_utc TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_recipes_lookup
+                ON degradation_recipes(service_name, host_fingerprint)
                 """
             )
             connection.commit()
