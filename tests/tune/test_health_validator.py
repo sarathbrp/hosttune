@@ -43,6 +43,8 @@ class HealthyExecutor:
             )
         if "systemctl show" in command and "LimitNPROC" in command:
             return CommandResult(command=command, exit_code=0, stdout="8000\n", stderr="")
+        if "systemctl show" in command and "CPUQuotaPerSecUSec" in command:
+            return CommandResult(command=command, exit_code=0, stdout="1250000\n", stderr="")
         if "systemctl show" in command and "CPUQuota" in command:
             return CommandResult(command=command, exit_code=0, stdout="125%\n", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
@@ -281,4 +283,46 @@ def test_health_validator_accepts_healthy_systemd_cgroup_control_change() -> Non
     assert result.healthy is True
     assert any(
         check.name == "effective_value" and check.detail == "observed=125%" for check in result.checks
+    )
+
+
+def test_health_validator_reads_cpu_quota_from_per_sec_usec_property() -> None:
+    class CgroupReadableOnlyExecutor(HealthyExecutor):
+        def run(self, command: str) -> CommandResult:
+            if "systemctl show" in command and "CPUQuotaPerSecUSec" in command:
+                return CommandResult(command=command, exit_code=0, stdout="4s\n", stderr="")
+            if "systemctl show" in command and "CPUQuota" in command:
+                return CommandResult(command=command, exit_code=0, stdout="\n", stderr="")
+            return super().run(command)
+
+    hypothesis = TuningHypothesis(
+        phase=TunePhase.WIDE_SWEEP,
+        parameter_key="systemd.cgroup.cpu_quota_percent",
+        parameter_name="cpu_quota_percent",
+        domain="runtime",
+        tuning_layer=tuning_layer_for_parameter_key("systemd.cgroup.cpu_quota_percent"),
+        proposed_value="400",
+        source=CandidateSource.SYSTEMD_CGROUP_CONTROL,
+        apply_mode=ApplyMode.RESTART,
+        rationale="Raise unit CPUQuota.",
+    )
+    applied_change = AppliedChange(
+        hypothesis=hypothesis,
+        target_path="nginx.service:CPUQuota",
+        previous_value="15",
+        applied_value="400",
+        apply_mode=ApplyMode.RESTART,
+        apply_command="systemctl set-property ...",
+        rollback_command="systemctl set-property ...",
+    )
+
+    result = HealthValidator().validate(
+        context=build_tune_context(),
+        applied_change=applied_change,
+        executor=CgroupReadableOnlyExecutor(),
+    )
+
+    assert result.healthy is True
+    assert any(
+        check.name == "effective_value" and check.detail == "observed=400%" for check in result.checks
     )

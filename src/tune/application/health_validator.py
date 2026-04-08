@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from onboard.domain.models import ProbeType
 from preflight.domain.models import CommandExecutor
+from tune.application.apply_coordinator import SystemdCgroupControlApplier
 from tune.domain.apply_models import AppliedChange
 from tune.domain.tune_context import TuneContext
 from tune.domain.validation_models import ValidationCheck, ValidationResult
@@ -270,15 +271,21 @@ class HealthValidator:
 
         if applied_change.hypothesis.parameter_key.startswith("systemd.cgroup."):
             unit, prop = applied_change.target_path.rsplit(":", maxsplit=1)
-            command = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(prop)} --value"
-            result = executor.run(command)
-            observed = result.stdout.strip()
-            passed = result.exit_code == 0 and _systemd_cgroup_observation_matches(
+            try:
+                observed_raw = SystemdCgroupControlApplier.read_property_value(executor, unit, prop)
+            except ValueError:
+                observed_raw = ""
+            observed_norm = SystemdCgroupControlApplier.normalize_property_value(prop, observed_raw)
+            observed = observed_norm or ""
+            passed = bool(observed) and _systemd_cgroup_observation_matches(
                 prop,
                 observed,
                 applied_change.applied_value,
             )
-            detail = f"observed={observed or 'unknown'}"
+            if prop == "CPUQuota" and observed:
+                detail = f"observed={observed}%"
+            else:
+                detail = f"observed={observed or 'unknown'}"
             return ValidationCheck(
                 name="effective_value",
                 passed=passed,

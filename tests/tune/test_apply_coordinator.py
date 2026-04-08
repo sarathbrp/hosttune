@@ -55,6 +55,8 @@ class FakeExecutor:
             return CommandResult(command=command, exit_code=0, stdout="", stderr="")
         if "systemctl show" in command and "LimitNPROC" in command:
             return CommandResult(command=command, exit_code=0, stdout="1000\n", stderr="")
+        if "systemctl show" in command and "CPUQuotaPerSecUSec" in command:
+            return CommandResult(command=command, exit_code=0, stdout="500000\n", stderr="")
         if "systemctl show" in command and "CPUQuota" in command:
             return CommandResult(command=command, exit_code=0, stdout="50%\n", stderr="")
         if "systemctl show" in command and "MemoryMax" in command:

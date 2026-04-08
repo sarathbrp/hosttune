@@ -682,10 +682,10 @@ class SystemdUnitLimitApplier:
 
 @dataclass
 class SystemdCgroupControlApplier:
-    """Apply systemd cgroup resource controls via a systemd drop-in file.
+    """Apply systemd cgroup resource controls via `systemctl set-property`.
 
-    Same approach as SystemdUnitLimitApplier — uses drop-ins instead of
-    set-property to handle persistent degrader overrides (e.g. CPUQuota=15%).
+    set-property writes runtime overrides under `/run/systemd/system.control`,
+    which take precedence over `/etc/systemd/system/*.d` drop-ins.
     """
 
     @staticmethod
