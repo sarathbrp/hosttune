@@ -148,6 +148,7 @@ class TuneEngine:
         state = TuneState.initialize(
             context.preflight.policy.max_iterations,
             use_unified_resolver=self.unified_resolver is not None,
+            allow_reboot=context.preflight.policy.allow_reboot,
         )
         all_candidates = self.candidate_catalog_builder.build(context, target_executor)
         deferred_catalog = tuple(

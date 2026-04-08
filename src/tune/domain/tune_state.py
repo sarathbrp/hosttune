@@ -52,9 +52,10 @@ class TuneState:
         max_iterations: int,
         *,
         use_unified_resolver: bool = False,
+        allow_reboot: bool = False,
     ) -> TuneState:
         if use_unified_resolver:
-            budgets = cls._allocate_unified_budget(max_iterations)
+            budgets = cls._allocate_unified_budget(max_iterations, allow_reboot=allow_reboot)
             initial_phase = TunePhase.RESOLVE
         else:
             budgets = cls._allocate_budget(max_iterations)
@@ -96,7 +97,7 @@ class TuneState:
         return budgets
 
     @staticmethod
-    def _allocate_unified_budget(max_iterations: int) -> dict[TunePhase, int]:
+    def _allocate_unified_budget(max_iterations: int, *, allow_reboot: bool = False) -> dict[TunePhase, int]:
         """Proportional budget: OPTIMIZE 50% / EXPLOIT 30% / REBOOT_BATCH 20%.
 
         RESOLVE does not count against max_iterations — it runs however many
@@ -112,13 +113,19 @@ class TuneState:
         if max_iterations <= 0:
             return budgets
         # RESOLVE is uncapped — stop_reason excludes it from exhaustion check.
+        # RESOLVE runs on top of max_iterations — it's architectural setup,
+        # not user-controllable exploration. RESOLVE budget is generous so it
+        # never exhausts; stop_reason already excludes it from budget check.
         budgets[TunePhase.RESOLVE] = max_iterations
+        # max_iterations controls ONLY LLM-driven phases (optimize/exploit/reboot).
         if max_iterations == 1:
             budgets[TunePhase.OPTIMIZE] = 1
             return budgets
-        # Proportional split with rounding; remainder goes to OPTIMIZE.
+        # Proportional split: OPTIMIZE 50% / EXPLOIT 30% / REBOOT 20%.
+        # If reboot is not allowed by policy, skip REBOOT allocation and give
+        # those iterations to OPTIMIZE so max_iterations = effective LLM iterations.
         exploit = max(1, round(max_iterations * 0.30))
-        reboot  = max(0, round(max_iterations * 0.20)) if max_iterations > 3 else 0
+        reboot  = max(0, round(max_iterations * 0.20)) if (max_iterations > 3 and allow_reboot) else 0
         optimize = max(1, max_iterations - exploit - reboot)
         # Clamp total to exact max_iterations.
         total = optimize + exploit + reboot
