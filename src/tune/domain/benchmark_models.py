@@ -14,6 +14,8 @@ class BenchmarkTelemetrySample:
     softnet_stat: str
     ethtool_s: str
     errors: tuple[str, ...] = ()
+    sockstat: str = ""    # /proc/net/sockstat — socket pressure + TCP memory
+    vmstat_s: str = ""   # vmstat 1 1 — CPU utilization, context switches, interrupts
 
 
 @dataclass(frozen=True)

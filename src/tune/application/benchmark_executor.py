@@ -95,6 +95,8 @@ class TuneBenchmarkExecutor:
                                 softnet_stat=sample.softnet_stat,
                                 ethtool_s=sample.ethtool_s,
                                 errors=sample.errors,
+                                sockstat=sample.sockstat,
+                                vmstat_s=sample.vmstat_s,
                             )
                         )
                         telemetry_seq += 1
@@ -114,7 +116,7 @@ class TuneBenchmarkExecutor:
                     "tune",
                     f"Runtime telemetry collection started "
                     f"(interval={self.telemetry_sample_interval_seconds}s; "
-                    "ss -s, softnet_stat, ethtool -S — aggregate digest only).",
+                    "ss -s, softnet_stat, ethtool -S, sockstat, vmstat — aggregate digest only).",
                 )
                 samples = collect_telemetry_during_blocking_command(
                     collector=collector,

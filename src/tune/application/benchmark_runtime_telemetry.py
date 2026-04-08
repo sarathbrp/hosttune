@@ -175,6 +175,55 @@ def format_runtime_telemetry_digest(
                     " — consider ring buffer tuning (ethtool -G)"
                 )
 
+    # ── /proc/net/sockstat: socket pressure snapshot (last sample) ───────────
+    last_sock = samples[-1].sockstat if samples else ""
+    if last_sock:
+        tcp_match = re.search(
+            r"TCP:\s+inuse\s+(\d+)\s+orphan\s+\d+\s+tw\s+(\d+)\s+alloc\s+\d+\s+mem\s+(\d+)",
+            last_sock,
+        )
+        if tcp_match:
+            inuse, tw, mem_pages = int(tcp_match.group(1)), int(tcp_match.group(2)), int(tcp_match.group(3))
+            mem_mb = mem_pages * 4 / 1024
+            notes = []
+            if tw > 10000:
+                notes.append("high timewait — consider ip_local_port_range or tcp_tw_reuse")
+            if mem_mb > 512:
+                notes.append(f"TCP memory pressure: {mem_mb:.0f}MiB")
+            note_str = (" — " + "; ".join(notes)) if notes else ""
+            lines.append(
+                f"sockstat (last sample): TCP_inuse={inuse} tw={tw} mem={mem_mb:.0f}MiB{note_str}"
+            )
+
+    # ── vmstat: CPU utilization + context-switch delta (last sample) ─────────
+    last_vm = samples[-1].vmstat_s if samples else ""
+    if last_vm:
+        vm_lines = [l for l in last_vm.splitlines() if l.strip() and l.strip()[0].isdigit()]
+        if vm_lines:
+            fields = vm_lines[-1].split()
+            if len(fields) >= 17:
+                try:
+                    cs = int(fields[11])   # context switches/s
+                    interrupts = int(fields[10])  # interrupts/s
+                    cpu_us = int(fields[12])  # user %
+                    cpu_sy = int(fields[13])  # system %
+                    cpu_id = int(fields[14])  # idle %
+                    cpu_wa = int(fields[15])  # iowait %
+                    notes = []
+                    if cpu_id < 10:
+                        notes.append("CPU fully saturated")
+                    if cpu_wa > 5:
+                        notes.append(f"iowait {cpu_wa}% — I/O bottleneck")
+                    if cs > 5_000_000:
+                        notes.append(f"high context switches ({cs:,}/s) — consider cpu affinity")
+                    note_str = (" — " + "; ".join(notes)) if notes else ""
+                    lines.append(
+                        f"vmstat (last sample): cpu_us={cpu_us}% sy={cpu_sy}% "
+                        f"id={cpu_id}% wa={cpu_wa}% cs={cs:,}/s intr={interrupts:,}/s{note_str}"
+                    )
+                except (ValueError, IndexError):
+                    pass
+
     return "\n".join(lines)
 
 
@@ -229,12 +278,20 @@ class BenchmarkRuntimeTelemetryCollector:
         else:
             errors.append("preflight network interface name empty; ethtool skipped")
 
+        r_sock = executor.run("cat /proc/net/sockstat")
+        sockstat = r_sock.stdout if r_sock.exit_code == 0 else ""
+
+        r_vm = executor.run("vmstat 1 1")
+        vmstat_s = r_vm.stdout if r_vm.exit_code == 0 else ""
+
         return BenchmarkTelemetrySample(
             sequence=sequence,
             ss_s=ss_s,
             softnet_stat=softnet,
             ethtool_s=ethtool_s,
             errors=tuple(errors),
+            sockstat=sockstat,
+            vmstat_s=vmstat_s,
         )
 
 
