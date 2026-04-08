@@ -31,26 +31,32 @@ layers:
     parameters:
       sysctl.net.core.somaxconn:
         floor: 65535
+        ceiling: 65535       # kernel hard limit (uint16 max)
         dependency: "Backs nginx listen backlog; low values drop SYN packets"
         resolve_from: [recipe, kb, graph]
       sysctl.net.core.netdev_max_backlog:
         floor: 5000
+        ceiling: 1000000     # beyond 1M wastes memory with no gain
         dependency: "Per-CPU NIC RX queue depth; exceeded = silent packet drops"
         resolve_from: [recipe, kb, graph]
       sysctl.net.ipv4.tcp_max_syn_backlog:
         floor: 8192
+        ceiling: 65536       # beyond 64K gives no SYN-flood benefit
         dependency: "SYN queue depth for burst traffic"
         resolve_from: [recipe, kb, graph]
       sysctl.net.core.rmem_max:
         floor: 16777216
+        ceiling: 134217728   # 128MB max; beyond this wastes RAM
         dependency: "Max receive socket buffer for high-BDP flows"
         resolve_from: [recipe, kb, graph]
       sysctl.net.core.wmem_max:
         floor: 16777216
+        ceiling: 134217728   # 128MB max; mirror rmem_max
         dependency: "Max send socket buffer; pair with rmem_max"
         resolve_from: [recipe, kb, graph]
       sysctl.vm.swappiness:
-        ceiling: 10
+        floor: 0             # 0 = never swap (safe with enough RAM)
+        ceiling: 10          # >10 causes aggressive swapping under load
         dependency: "High values swap aggressively, adding latency"
         resolve_from: [recipe, kb, graph]
 
@@ -59,10 +65,12 @@ layers:
     parameters:
       systemd.unit.limit_nofile:
         floor: 524288
+        ceiling: 2097152     # 2M = kernel max (fs.file-max bound)
         dependency: "Hard ceiling for worker_rlimit_nofile"
         resolve_from: [recipe, kb, graph]
       runtime.prlimit.nofile_soft:
         floor: 524288
+        ceiling: 2097152     # must not exceed systemd LimitNOFILE
         dependency: "Effective fd limit = MIN(this, systemd LimitNOFILE)"
         constraint: "MUST be <= systemd.unit.limit_nofile"
         resolve_from: [recipe, kb, graph]
@@ -77,16 +85,19 @@ layers:
         resolve_from: [recipe, kb, graph, llm]
       service.directive.worker_rlimit_nofile:
         floor: 524288
+        ceiling: 2097152     # must not exceed systemd LimitNOFILE
         constraint: "MUST be <= systemd.unit.limit_nofile"
         dependency: "Capped by layer 3 resource valve"
         resolve_from: [recipe, kb, graph]
       service.directive.worker_connections:
         floor: 65535
+        ceiling: 65535       # kernel fd limit per worker; beyond this needs higher rlimit
         constraint: "MUST be <= service.directive.worker_rlimit_nofile"
         dependency: "Per-worker connection limit; needs fd headroom"
         resolve_from: [recipe, kb, graph]
       service.directive.keepalive_requests:
         floor: 10000
+        ceiling: 1000000     # unlimited is 0, 1M is effectively unlimited
         dependency: "Connection reuse; reduces TCP handshake overhead"
         resolve_from: [recipe, kb, graph]
 

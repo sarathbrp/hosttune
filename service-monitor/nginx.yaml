@@ -140,15 +140,15 @@ tunable_surface:
     worker_rlimit_nofile:
       value_type: integer
       priority_tier: high
-      min_value: 1024
-      max_value: 1048576
+      min_value: 65535       # must be >= worker_connections; <65535 caps connections
+      max_value: 2097152     # kernel max fd limit
       apply_mode: reload
       forbidden_values: []
     keepalive_timeout:
       value_type: integer
       priority_tier: low
-      min_value: 1
-      max_value: 300
+      min_value: 5           # <5s closes connections too aggressively
+      max_value: 120         # >120s accumulates idle connections, wastes memory
       apply_mode: reload
       forbidden_values: []
     multi_accept:
@@ -191,8 +191,8 @@ tunable_surface:
     nofile_soft:
       value_type: integer
       priority_tier: high
-      min_value: 1024
-      max_value: 2097152
+      min_value: 65535       # <65535 caps concurrent connections
+      max_value: 2097152     # kernel max fd limit
       apply_mode: reload
       allowed_values: []
       forbidden_values: []
@@ -210,7 +210,7 @@ tunable_surface:
     limit_nproc:
       value_type: integer
       priority_tier: medium
-      min_value: 64
+      min_value: 2048        # <2048 causes fork failures under load (64 is dangerously low)
       max_value: 655350
       apply_mode: restart
       allowed_values: []
@@ -229,8 +229,8 @@ tunable_surface:
     memory_max_mib:
       value_type: integer
       priority_tier: low
-      min_value: 64
-      max_value: 65536
+      min_value: 512         # <512MiB will OOM-kill nginx under any real load
+      max_value: 65536       # 64GiB cap; leave headroom for kernel + OS
       apply_mode: restart
       allowed_values: []
       forbidden_values: []
