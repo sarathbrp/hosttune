@@ -438,7 +438,7 @@ class KnowledgeBase:
             query += " AND run_id != ?"
             params.append(exclude_run_id)
         best: dict[str, float] = {}
-        with self._connect() as connection:
+        with sqlite3.connect(self.path) as connection:
             for row in connection.execute(query, tuple(params)).fetchall():
                 try:
                     payload = json.loads(row[0])
