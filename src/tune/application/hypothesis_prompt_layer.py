@@ -585,6 +585,48 @@ def format_working_hypothesis_lines(digest: str) -> list[str]:
                 "worker_cpu_affinity may help reduce scheduling overhead"
             )
 
+    # ── cgroup CPU throttling ─────────────────────────────────────────────────
+    cg_throttle = re.search(r"cgroup CPU throttle.*?throttled_usec=([+-]?\d[,\d]*)µs", digest)
+    cg_healthy = "cgroup CPU throttle: not throttled" in digest
+    cg_unavailable = "cgroup_cpu_stat" not in digest and "cgroup CPU" not in digest
+
+    if cg_throttle:
+        delta_us_str = cg_throttle.group(1).replace(",", "")
+        try:
+            delta_us = int(delta_us_str)
+        except ValueError:
+            delta_us = 0
+        if delta_us > 5_000_000:
+            hypotheses.append(
+                "CRITICAL: cgroup CPU throttling (>5s throttled per sample window): "
+                "CPUQuota is the PRIMARY bottleneck — system appears idle but nginx is "
+                "CPU-starved. vmstat idle% is misleading (shows system-wide not per-service). "
+                "Fix: raise systemd.cgroup.cpu_quota_percent to 400+ "
+                "(400% = 4 full cores on this 112-core host). "
+                "Priority: fix this BEFORE any other parameter."
+            )
+        elif delta_us > 500_000:
+            hypotheses.append(
+                f"Moderate cgroup CPU throttling ({delta_us:,}µs throttled): "
+                "CPUQuota is partially limiting nginx throughput. "
+                "Candidate: systemd.cgroup.cpu_quota_percent — raise to remove cap."
+            )
+        else:
+            hypotheses.append(
+                "Minor cgroup throttling detected — CPUQuota may be a minor factor "
+                "but not the primary bottleneck."
+            )
+    elif cg_healthy:
+        hypotheses.append(
+            "cgroup CPU: not throttled — CPUQuota is not limiting nginx throughput."
+        )
+    elif cg_unavailable:
+        hypotheses.append(
+            "cgroup CPU stats unavailable: check systemd.cgroup.cpu_quota_percent "
+            "candidate for current CPUQuota value — if < 100, it IS the bottleneck "
+            "even though vmstat shows high idle (idle is system-wide, not per-service)."
+        )
+
     # ── edge case: all signals healthy ───────────────────────────────────────
     all_healthy = (
         squeeze == 0

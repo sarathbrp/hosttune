@@ -224,6 +224,52 @@ def format_runtime_telemetry_digest(
                 except (ValueError, IndexError):
                     pass
 
+    # ── cgroup CPU throttling (first→last sample delta) ──────────────────────
+    def _parse_cgroup_throttle(stat: str) -> tuple[int, int]:
+        """Return (nr_throttled, throttled_usec) from cpu.stat or systemctl output."""
+        nr = 0
+        us = 0
+        m = re.search(r'nr_throttled\s+(\d+)', stat)
+        if m:
+            nr = int(m.group(1))
+        # cgroup v2: throttled_usec; cgroup v1: throttled_time (nanoseconds)
+        m2 = re.search(r'throttled_usec\s+(\d+)', stat)
+        if m2:
+            us = int(m2.group(1))
+        else:
+            m3 = re.search(r'throttled_time\s+(\d+)', stat)
+            if m3:
+                us = int(m3.group(1)) // 1000  # ns → µs
+        return nr, us
+
+    first_cg = samples[0].cgroup_cpu_stat if samples else ""
+    last_cg = samples[-1].cgroup_cpu_stat if samples else ""
+
+    if last_cg:
+        nr_last, us_last = _parse_cgroup_throttle(last_cg)
+        nr_first, us_first = _parse_cgroup_throttle(first_cg) if first_cg else (0, 0)
+        delta_nr = max(0, nr_last - nr_first)
+        delta_us = max(0, us_last - us_first)
+        # Also try to read CPUQuota from systemctl fallback output.
+        quota_match = re.search(r'CPUQuota=([^\n]+)', last_cg)
+        quota_str = quota_match.group(1).strip() if quota_match else None
+
+        if delta_us > 0 or delta_nr > 0:
+            throttle_pct = (delta_us / (delta_us + max(1, us_last - delta_us))) * 100 if us_last > 0 else 0
+            note = ""
+            if delta_us > 5_000_000:  # >5 seconds throttled across sample window
+                note = " — CRITICAL: cgroup is heavily throttled, CPUQuota is the bottleneck"
+            elif delta_nr > 10:
+                note = " — moderate throttling detected, consider raising CPUQuota"
+            lines.append(
+                f"cgroup CPU throttle (first→last): nr_throttled={delta_nr:+d} "
+                f"throttled_usec={delta_us:+,}µs{note}"
+            )
+            if quota_str:
+                lines.append(f"  CPUQuota={quota_str}")
+        else:
+            lines.append("cgroup CPU throttle: not throttled (healthy) — CPUQuota not limiting nginx")
+
     return "\n".join(lines)
 
 
@@ -254,6 +300,7 @@ class BenchmarkRuntimeTelemetryCollector:
     """Runs lightweight host probes for accept-queue / softnet / NIC drop hints."""
 
     network_interface: str
+    unit_name: str = ""   # systemd unit name e.g. nginx.service
 
     def capture_sample(self, executor: CommandExecutor, sequence: int) -> BenchmarkTelemetrySample:
         errors: list[str] = []
@@ -284,6 +331,21 @@ class BenchmarkRuntimeTelemetryCollector:
         r_vm = executor.run("vmstat 1 1")
         vmstat_s = r_vm.stdout if r_vm.exit_code == 0 else ""
 
+        # Cgroup CPU throttling stats — try cgroup v2 then v1 paths.
+        cgroup_cpu_stat = ""
+        if self.unit_name:
+            unit = shlex.quote(self.unit_name)
+            cg_cmd = (
+                f"f=/sys/fs/cgroup/system.slice/{unit}/cpu.stat; "
+                f"[ -f \"$f\" ] && cat \"$f\" && exit 0; "
+                f"f=/sys/fs/cgroup/cpu/system.slice/{unit}/cpu.stat; "
+                f"[ -f \"$f\" ] && cat \"$f\" && exit 0; "
+                f"systemctl show {unit} --property=CPUUsageNSec "
+                f"--property=TasksCurrent --property=CPUQuota 2>/dev/null"
+            )
+            r_cg = executor.run(cg_cmd)
+            cgroup_cpu_stat = r_cg.stdout if r_cg.exit_code == 0 else ""
+
         return BenchmarkTelemetrySample(
             sequence=sequence,
             ss_s=ss_s,
@@ -292,6 +354,7 @@ class BenchmarkRuntimeTelemetryCollector:
             errors=tuple(errors),
             sockstat=sockstat,
             vmstat_s=vmstat_s,
+            cgroup_cpu_stat=cgroup_cpu_stat,
         )
 
 

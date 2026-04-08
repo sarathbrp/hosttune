@@ -14,8 +14,9 @@ class BenchmarkTelemetrySample:
     softnet_stat: str
     ethtool_s: str
     errors: tuple[str, ...] = ()
-    sockstat: str = ""    # /proc/net/sockstat — socket pressure + TCP memory
-    vmstat_s: str = ""   # vmstat 1 1 — CPU utilization, context switches, interrupts
+    sockstat: str = ""           # /proc/net/sockstat — socket pressure + TCP memory
+    vmstat_s: str = ""           # vmstat 1 1 — CPU utilization, context switches, interrupts
+    cgroup_cpu_stat: str = ""    # nginx cgroup cpu.stat — throttled_usec, nr_throttled
 
 
 @dataclass(frozen=True)

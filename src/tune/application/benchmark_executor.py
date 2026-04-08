@@ -54,6 +54,7 @@ class TuneBenchmarkExecutor:
         if telemetry_executor is not None and self.telemetry_sample_interval_seconds > 0:
             collector = BenchmarkRuntimeTelemetryCollector(
                 network_interface=context.preflight.network.interface_name,
+                unit_name=context.onboard.service.identity.systemd_unit_name or "",
             )
 
         for run_index in range(1, self.run_count + 1):
@@ -97,6 +98,7 @@ class TuneBenchmarkExecutor:
                                 errors=sample.errors,
                                 sockstat=sample.sockstat,
                                 vmstat_s=sample.vmstat_s,
+                                cgroup_cpu_stat=sample.cgroup_cpu_stat,
                             )
                         )
                         telemetry_seq += 1
@@ -116,7 +118,7 @@ class TuneBenchmarkExecutor:
                     "tune",
                     f"Runtime telemetry collection started "
                     f"(interval={self.telemetry_sample_interval_seconds}s; "
-                    "ss -s, softnet_stat, ethtool -S, sockstat, vmstat — aggregate digest only).",
+                    "ss -s, softnet_stat, ethtool -S, sockstat, vmstat, cgroup cpu.stat — aggregate digest only).",
                 )
                 samples = collect_telemetry_during_blocking_command(
                     collector=collector,
