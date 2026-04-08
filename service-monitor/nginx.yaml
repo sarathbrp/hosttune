@@ -161,7 +161,7 @@ tunable_surface:
     keepalive_timeout:
       value_type: integer
       priority_tier: low
-      min_value: 5           # <5s closes connections too aggressively
+      min_value: 15          # <15s is too aggressive for static-asset connection reuse
       max_value: 120         # >120s accumulates idle connections, wastes memory
       apply_mode: reload
       forbidden_values: []

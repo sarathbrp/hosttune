@@ -146,6 +146,15 @@ application_discovery_sanity:
     min_logical_cores: 32
     floor_value: 10000
 
+  - id: nginx_keepalive_timeout_floor
+    enabled: true
+    action: recommend
+    kind: candidate_floor
+    service_name: nginx
+    candidate_key: service.directive.keepalive_timeout
+    min_logical_cores: 32
+    floor_value: 30
+
   - id: nginx_enable_tcp_nopush
     enabled: true
     action: autofix

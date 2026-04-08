@@ -96,6 +96,32 @@ def test_triage_can_autofix_tcp_nodelay_when_disabled() -> None:
     assert result.autofix_action.proposed_value == "on"
 
 
+def test_triage_flags_keepalive_timeout_floor_when_set_to_5() -> None:
+    context = build_tune_context()
+    built = CandidateCatalogBuilder().build(context, FakeExecutor())
+    candidates = tuple(
+        replace(candidate, current_value="5")
+        if candidate.parameter_key == "service.directive.keepalive_timeout"
+        else candidate
+        for candidate in built
+    )
+    hyp_context = HypothesisContext(
+        tune_context=context,
+        phase=TunePhase.WIDE_SWEEP,
+        iteration_number=1,
+        candidates=candidates,
+        deferred_candidates=(),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+
+    result = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(
+        hyp_context
+    )
+    assert any(rule.rule_id == "nginx_keepalive_timeout_floor" for rule in result.triggered_rules)
+
+
 def test_triage_emits_signal_for_dual_numa_host() -> None:
     result = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(
         build_hypothesis_context()

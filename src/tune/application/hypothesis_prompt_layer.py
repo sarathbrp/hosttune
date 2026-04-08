@@ -1009,6 +1009,11 @@ _PERFORMANCE_SEMANTICS: dict[str, str] = {
         "CONNECTION REUSE: higher = fewer TCP handshakes but longer-lived "
         "connections consuming memory. Balance with worker_connections."
     ),
+    "service.directive.keepalive_timeout": (
+        "IDLE CONNECTION LIFETIME: too low causes reconnect churn and extra "
+        "TCP handshakes; too high can hoard idle sockets. For static serving, "
+        "avoid overly aggressive values."
+    ),
     "service.directive.worker_connections": (
         "PER-WORKER LIMIT: this is per worker process, not global. "
         "Effective max = worker_processes * worker_connections."
