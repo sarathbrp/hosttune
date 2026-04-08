@@ -522,6 +522,13 @@ class EnvDiagnosticExecutor:
                 stdout="Max open files            1024                 1024                 files\n",
                 stderr="",
             )
+        if "Max processes" in command:
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="Max processes             64                   64                   processes\n",
+                stderr="",
+            )
         if "smp_affinity_list" in command:
             return CommandResult(
                 command=command,
@@ -555,6 +562,13 @@ def _build_env_hierarchy_host_profile(
                 name="LimitNOFILE",
                 target_perf="1048576",
                 inspect_cmd="cat /proc/$(pgrep -n nginx)/limits | grep 'Max open files'",
+            )
+        )
+        parameters.append(
+            HostPerformanceHierarchyParameter(
+                name="LimitNPROC",
+                target_perf="65535",
+                inspect_cmd="cat /proc/$(pgrep -n nginx)/limits | grep 'Max processes'",
             )
         )
     if include_irq_affinity:
@@ -687,6 +701,32 @@ def test_env_diagnostic_uses_dropin_for_limitnofile_hierarchy_fix(tmp_path: Path
     assert any("rm -f" in cmd for cmd in executor.commands)
     assert not any(
         "systemctl set-property nginx.service LimitNOFILE=" in cmd
+        for cmd in executor.commands
+    )
+
+
+def test_env_diagnostic_uses_dropin_for_limitnproc_hierarchy_fix(tmp_path: Path) -> None:
+    executor = EnvDiagnosticExecutor()
+    instance = HostTuneInstance(
+        config_loader=EnvCleanupEnabledConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: executor,
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+    instance.load_preflight(Path("config.yaml"))
+    instance.host_profile = _build_env_hierarchy_host_profile(include_limits=True)
+
+    instance.clear_environment_blockers(Path("config.yaml"))
+
+    assert any("Max processes" in cmd for cmd in executor.commands)
+    assert any("zz_hosttune_limit_nproc.conf" in cmd for cmd in executor.commands)
+    assert any("grep -q '^LimitNPROC='" in cmd for cmd in executor.commands)
+    assert any("rm -f" in cmd for cmd in executor.commands)
+    assert not any(
+        "systemctl set-property nginx.service LimitNPROC=" in cmd
         for cmd in executor.commands
     )
 

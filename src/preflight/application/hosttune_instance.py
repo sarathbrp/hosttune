@@ -470,27 +470,9 @@ class HostTuneInstance:
         if name == "ioweight":
             return "systemctl set-property nginx.service IOWeight=100"
         if name == "limitnofile":
-            return (
-                "mkdir -p /etc/systemd/system/nginx.service.d && "
-                "for _f in /etc/systemd/system/nginx.service.d/*.conf; do "
-                "[ -f \"$_f\" ] && grep -q '^LimitNOFILE=' \"$_f\" 2>/dev/null && rm -f \"$_f\"; "
-                "done; true && "
-                "printf '[Service]\\nLimitNOFILE=1048576\\n' > "
-                "/etc/systemd/system/nginx.service.d/zz_hosttune_limit_nofile.conf && "
-                "systemctl daemon-reload && "
-                "systemctl restart nginx.service"
-            )
+            return self._systemd_limit_dropin_fix_command("LimitNOFILE", "1048576")
         if name == "limitnproc":
-            return (
-                "mkdir -p /etc/systemd/system/nginx.service.d && "
-                "for _f in /etc/systemd/system/nginx.service.d/*.conf; do "
-                "[ -f \"$_f\" ] && grep -q '^LimitNPROC=' \"$_f\" 2>/dev/null && rm -f \"$_f\"; "
-                "done; true && "
-                "printf '[Service]\\nLimitNPROC=65535\\n' > "
-                "/etc/systemd/system/nginx.service.d/zz_hosttune_limit_nproc.conf && "
-                "systemctl daemon-reload && "
-                "systemctl restart nginx.service"
-            )
+            return self._systemd_limit_dropin_fix_command("LimitNPROC", "65535")
         if name == "irqbalance":
             return "systemctl enable --now irqbalance"
         if name == "nic_irq_affinity":
@@ -531,6 +513,22 @@ class HostTuneInstance:
             return False
         allowed = {"0", "0-0"}
         return all(line in allowed for line in lines)
+
+    def _systemd_limit_dropin_fix_command(self, property_name: str, value: str) -> str:
+        if property_name.startswith("Limit") and len(property_name) > len("Limit"):
+            suffix = f"limit_{property_name[len('Limit'):].lower()}"
+        else:
+            suffix = re.sub(r"(?<!^)(?=[A-Z])", "_", property_name).lower()
+        return (
+            "mkdir -p /etc/systemd/system/nginx.service.d && "
+            "for _f in /etc/systemd/system/nginx.service.d/*.conf; do "
+            f"[ -f \"$_f\" ] && grep -q '^{property_name}=' \"$_f\" 2>/dev/null && rm -f \"$_f\"; "
+            "done; true && "
+            f"printf '[Service]\\n{property_name}={value}\\n' > "
+            f"/etc/systemd/system/nginx.service.d/zz_hosttune_{suffix}.conf && "
+            "systemctl daemon-reload && "
+            "systemctl restart nginx.service"
+        )
 
     def run_tune(
         self,
