@@ -288,7 +288,7 @@ class NginxDirectiveApplier:
             "name=sys.argv[2]; "
             "value=sys.argv[3]; "
             "text=path.read_text(); "
-            "pattern=rf'(?m)^\\s*{re.escape(directive_name)}\\s+[^;]+;'; "
+            "pattern=rf'(?m)^\\s*{re.escape(name)}\\s+[^;]+;'; "
             "replacement=f'{name} {value};'; "
             "updated,count=re.subn(pattern,replacement,text); "
             "count or sys.exit('directive not found'); "
