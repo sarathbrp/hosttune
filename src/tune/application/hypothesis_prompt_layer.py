@@ -7,6 +7,8 @@ only emits bounded summaries and digests for the model.
 
 from __future__ import annotations
 
+import re
+
 from preflight.domain.kernel_sysctl_profile import format_sysctl_profile_compact
 from preflight.domain.models import DiscoverySnapshot
 from tune.application.benchmark_runtime_telemetry import (
@@ -315,6 +317,191 @@ def format_kb_best_rps_lines(context: "HypothesisContext", tune_context: TuneCon
     return lines
 
 
+def format_working_hypothesis_lines(digest: str) -> list[str]:
+    """Derive targeted hypothesis lines from the telemetry digest.
+
+    Covers good/bad/edge-case scenarios across all telemetry sources:
+    ss-s, softnet_stat, ethtool-S, sockstat, vmstat.
+    """
+    if not digest or "No runtime telemetry" in digest:
+        return ["- no telemetry yet — first iteration or benchmark not completed"]
+
+    hypotheses: list[str] = []
+
+    # ── softnet_stat: time_squeeze (softirq budget) ──────────────────────────
+    squeeze_match = re.search(r"time_squeeze total:\s*([\d,]+)", digest)
+    drops_match = re.search(r"TOTAL drops:\s*([\d,]+)", digest)
+    squeeze = int(squeeze_match.group(1).replace(",", "")) if squeeze_match else 0
+    drops = int(drops_match.group(1).replace(",", "")) if drops_match else 0
+
+    if squeeze > 50_000:
+        hypotheses.append(
+            f"CRITICAL softirq exhaustion (time_squeeze={squeeze:,}): "
+            "kernel cannot drain NIC fast enough → target netdev_max_backlog, "
+            "network.queue.combined (more NIC queues), network.ring.rx/tx"
+        )
+    elif squeeze > 5_000:
+        hypotheses.append(
+            f"Moderate softirq pressure (time_squeeze={squeeze:,}): "
+            "consider raising netdev_max_backlog or expanding NIC queue count"
+        )
+    else:
+        hypotheses.append(
+            "Softirq healthy (no time_squeeze): kernel packet processing not the bottleneck"
+        )
+
+    if drops > 0:
+        hypotheses.append(
+            f"Softnet drops detected ({drops:,}): receive queue overflowing — "
+            "raise netdev_max_backlog or NIC ring buffer (network.ring.rx)"
+        )
+
+    # ── ethtool -S: NIC-level drops/errors ───────────────────────────────────
+    if "no NIC-level drops or errors" in digest:
+        hypotheses.append("NIC layer clean: no rx_discards/errors — bottleneck is above the NIC")
+    elif "NIC errors/drops" in digest:
+        nic_err = re.search(r"NIC errors/drops:\s*([\d,]+)", digest)
+        n = nic_err.group(1) if nic_err else "?"
+        hypotheses.append(
+            f"NIC drops detected ({n}): ring buffer too small → "
+            "priority target: network.ring.rx and network.ring.tx (ethtool -G)"
+        )
+
+    # edge case: drops at kernel level but NOT at NIC → queue tuning, not ring buffer
+    if drops > 0 and "no NIC-level drops" in digest:
+        hypotheses.append(
+            "Kernel drops WITHOUT NIC drops: packet loss is in the kernel queue, "
+            "NOT the NIC ring → focus on netdev_max_backlog, not ring buffers"
+        )
+
+    # ── ss -s: TCP connection states ─────────────────────────────────────────
+    estab_match = re.search(r"tcp_established:.*?max=(\d+)", digest)
+    tw_match = re.search(r"tcp_timewait:.*?end=(\d+)", digest)
+    tw_increasing = "↑increasing" in digest
+    estab = int(estab_match.group(1)) if estab_match else 0
+    tw_end = int(tw_match.group(1)) if tw_match else 0
+
+    if estab > 5000:
+        hypotheses.append(
+            f"High concurrent connections (max_estab={estab:,}): "
+            "worker_connections may be the ceiling — verify worker_connections >= estab_max"
+        )
+    elif estab < 100 and squeeze > 1000:
+        hypotheses.append(
+            "Low established connections despite softirq pressure: "
+            "connections being rejected at listen backlog — somaxconn or tcp_max_syn_backlog too low"
+        )
+
+    if tw_increasing:
+        hypotheses.append(
+            f"TIME_WAIT accumulating (end={tw_end:,}, increasing): "
+            "port exhaustion risk → ip_local_port_range (widen), tcp_tw_reuse=1, "
+            "keepalive_requests (reduce churn)"
+        )
+    elif tw_end > 10_000:
+        hypotheses.append(
+            f"High TIME_WAIT (end={tw_end:,}, stable): "
+            "large pool but not growing — keepalive_requests/keepalive_timeout "
+            "could reduce churn further"
+        )
+
+    # ── sockstat: socket memory + timewait pressure ───────────────────────────
+    sock_inuse = re.search(r"TCP_inuse=(\d+)", digest)
+    sock_tw = re.search(r"tw=(\d+)", digest)
+    sock_mem = re.search(r"mem=([\d.]+)MiB", digest)
+    if sock_inuse:
+        inuse = int(sock_inuse.group(1))
+        if inuse > 10_000:
+            hypotheses.append(
+                f"Very high active sockets (TCP_inuse={inuse:,}): "
+                "keepalive_timeout may be too long — connections accumulating"
+            )
+        elif inuse < 50:
+            hypotheses.append(
+                f"Very few active sockets (TCP_inuse={inuse}): "
+                "benchmark not reaching nginx or connections being dropped early — "
+                "check somaxconn and tcp_max_syn_backlog"
+            )
+    if sock_mem:
+        mem = float(sock_mem.group(1))
+        if mem > 512:
+            hypotheses.append(
+                f"TCP socket memory pressure ({mem:.0f}MiB): "
+                "rmem_max/wmem_max may be over-allocated — "
+                "or high connection count consuming buffer space"
+            )
+        else:
+            hypotheses.append(f"TCP memory healthy ({mem:.0f}MiB): socket buffers not the bottleneck")
+
+    # ── vmstat: CPU utilization + context switches ────────────────────────────
+    vm_match = re.search(
+        r"vmstat.*?cpu_us=(\d+)%\s+sy=(\d+)%\s+id=(\d+)%\s+wa=(\d+)%\s+cs=([\d,]+)/s",
+        digest,
+    )
+    if vm_match:
+        cpu_us = int(vm_match.group(1))
+        cpu_sy = int(vm_match.group(2))
+        cpu_id = int(vm_match.group(3))
+        cpu_wa = int(vm_match.group(4))
+        cs = int(vm_match.group(5).replace(",", ""))
+
+        if cpu_id > 50:
+            hypotheses.append(
+                f"CPU has headroom (idle={cpu_id}%): "
+                "can safely scale workers — consider worker_processes increase"
+            )
+        elif cpu_id < 10:
+            hypotheses.append(
+                f"CPU saturated (idle={cpu_id}%): "
+                "reduce per-request overhead → access_log=off, gzip=off, "
+                "sendfile=on — do NOT add more workers"
+            )
+        elif 10 <= cpu_id <= 30:
+            hypotheses.append(
+                f"CPU mostly loaded (idle={cpu_id}%): "
+                "marginal headroom — optimize efficiency before scaling workers"
+            )
+
+        if cpu_sy > 20:
+            hypotheses.append(
+                f"High system CPU (sy={cpu_sy}%): excessive syscall overhead → "
+                "sendfile=on (zero-copy), tcp_nopush=on, multi_accept=on"
+            )
+
+        if cpu_wa > 5:
+            hypotheses.append(
+                f"I/O wait detected (wa={cpu_wa}%): disk bottleneck → "
+                "open_file_cache (cache fd/metadata), aio=threads (async I/O)"
+            )
+
+        if cs > 5_000_000:
+            hypotheses.append(
+                f"Very high context switches ({cs:,}/s): "
+                "CPU ping-pong between cores → worker_cpu_affinity to pin workers"
+            )
+        elif cs > 1_000_000:
+            hypotheses.append(
+                f"Elevated context switches ({cs:,}/s): "
+                "worker_cpu_affinity may help reduce scheduling overhead"
+            )
+
+    # ── edge case: all signals healthy ───────────────────────────────────────
+    all_healthy = (
+        squeeze == 0
+        and drops == 0
+        and "no NIC-level drops" in digest
+        and (not vm_match or int(vm_match.group(3)) > 30)
+    )
+    if all_healthy:
+        hypotheses.append(
+            "All telemetry signals healthy: bottleneck is likely in nginx config "
+            "(worker_connections ceiling, keepalive_requests, open_file_cache) "
+            "or upstream network — try application-layer parameters"
+        )
+
+    return [f"- {h}" for h in hypotheses] if hypotheses else ["- insufficient telemetry signal"]
+
+
 def format_prior_run_memory(tune_context: TuneContext) -> str:
     artifacts = tune_context.artifacts
     knowledge_base = tune_context.knowledge_base
@@ -586,6 +773,8 @@ def format_hybrid_hypothesis_prompt(
         *format_baseline_digest_lines(tune_context),
         "Last benchmark runtime telemetry:",
         telemetry_body,
+        "Working hypothesis (derived from telemetry):",
+        *format_working_hypothesis_lines(telemetry_body),
         "Current tune state:",
         f"- active_changes={', '.join(context.active_parameter_keys) or 'none'}",
         (
@@ -809,6 +998,8 @@ def format_compressed_hypothesis_prompt(
         *format_kb_best_rps_lines(context, tune_context),
         "Telemetry:",
         telemetry_body,
+        "Working hypothesis (derived from telemetry — validate and act on these signals):",
+        *format_working_hypothesis_lines(telemetry_body),
         "State:",
         f"- active={', '.join(context.active_parameter_keys) or 'none'}",
         (f"- best=" f"{', '.join(f'{k}={v}' for k, v in context.best_parameter_values) or 'none'}"),
