@@ -317,6 +317,101 @@ def format_kb_best_rps_lines(context: "HypothesisContext", tune_context: TuneCon
     return lines
 
 
+def format_environment_blockers_lines(
+    context: "HypothesisContext",
+    tune_context: TuneContext,
+) -> list[str]:
+    """Surface known environment constraints/blockers so the LLM targets root causes.
+
+    Covers: IRQ affinity, I/O scheduler, readahead, cgroup CPU/memory throttling,
+    systemd file-descriptor and process limits.
+    """
+    lines: list[str] = []
+    preflight = tune_context.preflight
+
+    # ── IRQ affinity ─────────────────────────────────────────────────────────
+    irq = getattr(preflight, "irq", None)
+    if irq is not None:
+        if not irq.irqbalance_active:
+            summary = irq.nic_irq_cpu_summary or "unknown"
+            cpus = set(summary.replace("-", ",").split(","))
+            if len(cpus) == 1 and "unknown" not in summary:
+                lines.append(
+                    f"BLOCKER — IRQ pinned to single CPU ({summary}): irqbalance is stopped, "
+                    "all NIC interrupts land on one core → softirq saturation. "
+                    "Fix: restart irqbalance OR spread via /proc/irq/*/smp_affinity. "
+                    "Candidate: platform.cpu_governor / irq_affinity_tuning."
+                )
+            else:
+                lines.append(
+                    f"IRQ: irqbalance stopped, NIC IRQs on CPUs [{summary}] — "
+                    "manual affinity in effect; verify spread is adequate."
+                )
+        else:
+            lines.append("IRQ: irqbalance active — NIC interrupts auto-distributed across CPUs (healthy).")
+
+    # ── Storage I/O scheduler + readahead ────────────────────────────────────
+    storage = getattr(preflight, "storage", None)
+    if storage is not None:
+        scheduler = getattr(storage, "scheduler", "unknown")
+        readahead_kb = getattr(storage, "readahead_kb", 0)
+        if scheduler and scheduler not in ("none", "noop", "unknown"):
+            lines.append(
+                f"BLOCKER — I/O scheduler={scheduler!r}: adds latency vs 'none' (NVMe passthrough). "
+                "Fix: echo none > /sys/block/<dev>/queue/scheduler. "
+                "Candidate: storage_scheduler_tuning."
+            )
+        else:
+            lines.append(f"I/O scheduler={scheduler!r} (healthy for NVMe).")
+        if readahead_kb > 0 and readahead_kb < 64:
+            lines.append(
+                f"BLOCKER — readahead={readahead_kb}KB (very low): each file read triggers "
+                "extra I/O ops instead of prefetching. Fix: blockdev --setra 256 <dev>."
+            )
+        elif readahead_kb > 0:
+            lines.append(f"Readahead={readahead_kb}KB.")
+
+    # ── Cgroup + systemd resource caps (from candidate current values) ────────
+    cgroup_keys = {
+        "systemd.cgroup.cpu_quota_percent": ("CPUQuota", "%", 100),
+        "systemd.cgroup.memory_max_mib": ("MemoryMax", "MiB", 4096),
+    }
+    unit_keys = {
+        "systemd.unit.limit_nofile": ("LimitNOFILE", 65535),
+        "systemd.unit.limit_nproc": ("LimitNPROC", 1024),
+    }
+    candidate_map = {c.parameter_key: c for c in context.candidates}
+
+    for key, (label, unit, threshold) in cgroup_keys.items():
+        c = candidate_map.get(key)
+        if c and c.current_value:
+            try:
+                val = float(c.current_value)
+                if val < threshold:
+                    lines.append(
+                        f"BLOCKER — {label}={val}{unit}: severely throttled. "
+                        f"Fix: raise via systemd.cgroup.{key.split('.')[-1]}. "
+                        f"Candidate: {key} (current={val}{unit})."
+                    )
+            except ValueError:
+                pass
+
+    for key, (label, threshold) in unit_keys.items():
+        c = candidate_map.get(key)
+        if c and c.current_value:
+            try:
+                val = int(c.current_value)
+                if val < threshold:
+                    lines.append(
+                        f"BLOCKER — {label}={val}: caps connections/processes. "
+                        f"Fix: raise via {key}. Candidate active."
+                    )
+            except ValueError:
+                pass
+
+    return [f"- {l}" for l in lines] if lines else ["- no environment blockers detected"]
+
+
 def format_working_hypothesis_lines(digest: str) -> list[str]:
     """Derive targeted hypothesis lines from the telemetry digest.
 
@@ -983,6 +1078,8 @@ def format_compressed_hypothesis_prompt(
         *_format_compressed_triage_lines(triage),
         "Host:",
         host_summary,
+        "Environment blockers (known constraints that cap performance — fix these first):",
+        *format_environment_blockers_lines(context, tune_context),
         "Contract:",
         f"- service={tune_context.onboard.service_name}; "
         f"metric={tune_context.onboard.service.benchmark_hints.primary_metric}",
