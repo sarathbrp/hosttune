@@ -470,6 +470,11 @@ class LlmHypothesisGenerator:
         # Allow re-escalation if the last attempt was accepted or promising.
         if last_attempt.status.value in ("accepted", "promising"):
             return
+        # Allow re-escalation if the last value was pathologically low (<=1) —
+        # this indicates a bad previous value (e.g. from deterministic fallback),
+        # not a legitimate boundary test. Recovery should never be blocked.
+        if last_proposed_int <= 1:
+            return
         raise ValueError(
             f"Diminishing-return suppression: {candidate.parameter_key} was "
             f"escalated to {last_proposed_int} in iteration "
