@@ -33,10 +33,12 @@ fi
 echo "MLflow version: $("${VENV}/bin/mlflow" --version)"
 echo ""
 
+HOST_URL="http://$(hostname -f):${PORT}"
 "${VENV}/bin/mlflow" server \
     --host 0.0.0.0 \
     --port "${PORT}" \
     --backend-store-uri "${BACKEND_STORE}" \
     --default-artifact-root "${ARTIFACT_ROOT}" \
-    --allowed-hosts "*"
+    --allowed-hosts "*" \
+    --cors-allowed-origins "${HOST_URL},http://localhost:${PORT},http://127.0.0.1:${PORT}"
 ENDSSH
