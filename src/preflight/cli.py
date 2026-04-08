@@ -181,6 +181,10 @@ def build_tune_engine(
     mlflow_tracking_uri: str = "http://localhost:5000",
     mlflow_experiment_name: str = "hosttune",
     skip_attribution: bool = False,
+    stopping_marginal_gain_threshold: float = 0.03,
+    stopping_marginal_gain_iterations: int = 2,
+    stopping_historical_best_pct: float = 0.85,
+    stopping_telemetry_stop_enabled: bool = True,
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
@@ -225,6 +229,10 @@ def build_tune_engine(
         candidate_catalog_builder=CandidateCatalogBuilder(),
         phase_controller=PhaseController(
             use_unified_resolver=use_unified_resolver,
+            marginal_gain_threshold=stopping_marginal_gain_threshold,
+            marginal_gain_iterations=stopping_marginal_gain_iterations,
+            historical_best_pct=stopping_historical_best_pct,
+            telemetry_stop_enabled=stopping_telemetry_stop_enabled,
         ),
         hypothesis_generator=hypothesis_generator,
         triage=triage,
@@ -324,6 +332,10 @@ def main() -> int:
                     mlflow_tracking_uri=loaded_config.mlflow_tracking_uri,
                     mlflow_experiment_name=loaded_config.mlflow_experiment_name,
                     skip_attribution=loaded_config.skip_attribution,
+                    stopping_marginal_gain_threshold=loaded_config.stopping_marginal_gain_threshold,
+                    stopping_marginal_gain_iterations=loaded_config.stopping_marginal_gain_iterations,
+                    stopping_historical_best_pct=loaded_config.stopping_historical_best_pct,
+                    stopping_telemetry_stop_enabled=loaded_config.stopping_telemetry_stop_enabled,
                 ),
             )
     except ValueError as error:

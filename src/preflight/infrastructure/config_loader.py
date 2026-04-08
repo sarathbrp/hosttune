@@ -33,6 +33,10 @@ class LoadedConfig:
     mlflow_tracking_uri: str = "http://localhost:5000"
     mlflow_experiment_name: str = "hosttune"
     skip_attribution: bool = False
+    stopping_marginal_gain_threshold: float = 0.03
+    stopping_marginal_gain_iterations: int = 2
+    stopping_historical_best_pct: float = 0.85
+    stopping_telemetry_stop_enabled: bool = True
 
 
 class ConfigLoader:
@@ -89,6 +93,12 @@ class ConfigLoader:
         mlflow_experiment_name = str(mlflow_section.get("experiment_name", "hosttune"))
         skip_attribution = bool(tune_section.get("skip_attribution", False))
 
+        stopping_section = tune_section.get("stopping") or {}
+        stopping_marginal_gain_threshold = float(stopping_section.get("marginal_gain_threshold", 0.03))
+        stopping_marginal_gain_iterations = int(stopping_section.get("marginal_gain_iterations", 2))
+        stopping_historical_best_pct = float(stopping_section.get("historical_best_pct", 0.85))
+        stopping_telemetry_stop_enabled = bool(stopping_section.get("telemetry_stop_enabled", True))
+
         return LoadedConfig(
             target=target,
             policy=policy,
@@ -106,6 +116,10 @@ class ConfigLoader:
             mlflow_tracking_uri=mlflow_tracking_uri,
             mlflow_experiment_name=mlflow_experiment_name,
             skip_attribution=skip_attribution,
+            stopping_marginal_gain_threshold=stopping_marginal_gain_threshold,
+            stopping_marginal_gain_iterations=stopping_marginal_gain_iterations,
+            stopping_historical_best_pct=stopping_historical_best_pct,
+            stopping_telemetry_stop_enabled=stopping_telemetry_stop_enabled,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

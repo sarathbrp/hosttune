@@ -145,10 +145,13 @@ class TuneEngine:
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
     ) -> TuneState:
+        kb_best = _kb_best_workload_rps(context)
+        kb_best_homepage = dict(kb_best).get("homepage", 0.0)
         state = TuneState.initialize(
             context.preflight.policy.max_iterations,
             use_unified_resolver=self.unified_resolver is not None,
             allow_reboot=context.preflight.policy.allow_reboot,
+            kb_best_homepage_rps=kb_best_homepage,
         )
         all_candidates = self.candidate_catalog_builder.build(context, target_executor)
         deferred_catalog = tuple(

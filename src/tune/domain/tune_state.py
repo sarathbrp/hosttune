@@ -37,6 +37,8 @@ class TuneState:
     scoreboard: TuneScoreboard = field(default_factory=TuneScoreboard)
     stop_reason: str | None = None
     layer_statuses: dict[str, str] = field(default_factory=dict)
+    # KB historical best homepage RPS — used by PhaseController for proximity stop.
+    kb_best_homepage_rps: float = 0.0
 
     def best_iteration_config_values(self) -> dict[str, str]:
         if self.best_configuration is None:
@@ -53,6 +55,7 @@ class TuneState:
         *,
         use_unified_resolver: bool = False,
         allow_reboot: bool = False,
+        kb_best_homepage_rps: float = 0.0,
     ) -> TuneState:
         if use_unified_resolver:
             budgets = cls._allocate_unified_budget(max_iterations, allow_reboot=allow_reboot)
@@ -65,6 +68,7 @@ class TuneState:
             total_iterations=0,
             phase_iterations={phase: 0 for phase in TunePhase},
             remaining_budget=budgets,
+            kb_best_homepage_rps=kb_best_homepage_rps,
         )
 
     @staticmethod

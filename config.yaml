@@ -26,6 +26,11 @@ tune:
   kb_batch_apply: true
   skip_marginal_attribution: true
   skip_attribution: true
+  stopping:
+    marginal_gain_threshold: 0.03      # stop if homepage gain < 3% for N consecutive iters
+    marginal_gain_iterations: 2        # consecutive marginal iterations before stop
+    historical_best_pct: 0.85         # stop when homepage >= 85% of KB historical best RPS
+    telemetry_stop_enabled: true       # stop on telemetry deterioration signals
   marginal_attribution_multiplier: 1.0
   use_unified_resolver: true
   dependency_graph_path: tuning-dependency-graph.yaml

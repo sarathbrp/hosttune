@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from onboard.domain.models import PriorityTier
@@ -44,6 +45,11 @@ class PhaseController:
     convergence_best_stability_limit: int = 2
     consecutive_failure_limit: int = 3
     use_unified_resolver: bool = False
+    # Configurable stopping thresholds (from config.yaml tune.stopping.*)
+    marginal_gain_threshold: float = 0.03    # homepage gain < 3% = marginal
+    marginal_gain_iterations: int = 2        # consecutive marginal iters before stop
+    historical_best_pct: float = 0.85       # stop at 85% of KB historical best
+    telemetry_stop_enabled: bool = True      # enable telemetry deterioration stop
 
     def determine_phase(
         self,
@@ -230,7 +236,81 @@ class PhaseController:
             and self._consecutive_failures(state) >= self.consecutive_failure_limit
         ):
             return "consecutive_failures"
+        if self._is_marginal_gain_plateau(state):
+            return "marginal_gain_plateau"
+        if self._near_historical_best(state):
+            return "near_historical_best"
+        if self.telemetry_stop_enabled and self._telemetry_deteriorating(state):
+            return "telemetry_deterioration"
         return None
+
+    def _is_marginal_gain_plateau(self, state: TuneState) -> bool:
+        """Stop if last N benchmarked iterations all had marginal homepage gain
+        AND large/medium workloads showed no improvement."""
+        benchmarked = [
+            r for r in state.iteration_records
+            if r.evaluation_result is not None
+        ]
+        if len(benchmarked) < self.marginal_gain_iterations:
+            return False
+        recent = benchmarked[-self.marginal_gain_iterations:]
+        for rec in recent:
+            evals = {w.workload_name: w.relative_change for w in rec.evaluation_result.workload_evaluations}
+            hp_change = evals.get("homepage", 0.0)
+            if hp_change >= self.marginal_gain_threshold:
+                return False  # at least one recent iter had meaningful homepage gain
+        # All recent iters had marginal homepage gain; also check large/medium are stuck
+        for rec in recent:
+            evals = {w.workload_name: w.relative_change for w in rec.evaluation_result.workload_evaluations}
+            if evals.get("large", 0.0) >= self.marginal_gain_threshold:
+                return False
+            if evals.get("medium", 0.0) >= self.marginal_gain_threshold:
+                return False
+        return True
+
+    def _near_historical_best(self, state: TuneState) -> bool:
+        """Stop when homepage RPS reaches historical_best_pct of KB best."""
+        if state.kb_best_homepage_rps <= 0 or state.best_configuration is None:
+            return False
+        for rec in reversed(state.iteration_records):
+            if rec.evaluation_result is not None:
+                for w in rec.evaluation_result.workload_evaluations:
+                    if w.workload_name == "homepage":
+                        return w.current_requests_per_second >= self.historical_best_pct * state.kb_best_homepage_rps
+        return False
+
+    def _telemetry_deteriorating(self, state: TuneState) -> bool:
+        """Stop if 2 consecutive recent iterations show worsening telemetry signals."""
+        benchmarked = [
+            r for r in state.iteration_records
+            if r.benchmark_result is not None and r.benchmark_result.runtime_telemetry
+        ]
+        if len(benchmarked) < 2:
+            return False
+        signals: list[dict[str, float]] = []
+        for rec in benchmarked[-2:]:
+            digest = "\n".join(
+                s.softnet_stat + "\n" + s.vmstat_s
+                for s in rec.benchmark_result.runtime_telemetry
+                if s.softnet_stat or s.vmstat_s
+            )
+            sq_match = re.search(r"time_squeeze total:\s*([\d,]+)", digest)
+            squeeze = int(sq_match.group(1).replace(",", "")) if sq_match else 0
+            sys_match = re.search(r"cpu_us=\d+%\s+sy=(\d+)%", digest)
+            cpu_sys = int(sys_match.group(1)) if sys_match else 0
+            cs_match = re.search(r"cs=([\d,]+)/s", digest)
+            cs = int(cs_match.group(1).replace(",", "")) if cs_match else 0
+            signals.append({"squeeze": squeeze, "cpu_sys": cpu_sys, "cs": cs})
+        if len(signals) < 2:
+            return False
+        bad_signals = 0
+        if signals[1]["squeeze"] > signals[0]["squeeze"] * 1.5 and signals[1]["squeeze"] > 10_000:
+            bad_signals += 1
+        if signals[1]["cpu_sys"] > 25 and signals[1]["cpu_sys"] > signals[0]["cpu_sys"] * 1.3:
+            bad_signals += 1
+        if signals[1]["cs"] > 5_000_000 and signals[1]["cs"] > signals[0]["cs"] * 1.3:
+            bad_signals += 1
+        return bad_signals >= 2
 
     def _should_advance(
         self,
