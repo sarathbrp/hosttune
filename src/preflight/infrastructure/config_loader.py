@@ -28,6 +28,7 @@ class LoadedConfig:
     marginal_attribution_multiplier: float = 2.0
     use_unified_resolver: bool = False
     dependency_graph_path: str = "tuning-dependency-graph.yaml"
+    dspy_compiled_path: str | None = None
 
 
 class ConfigLoader:
@@ -75,6 +76,8 @@ class ConfigLoader:
                 "dependency_graph_path", "tuning-dependency-graph.yaml"
             )
         )
+        raw_compiled = tune_section.get("dspy_compiled_path")
+        dspy_compiled_path = str(raw_compiled) if raw_compiled else None
 
         return LoadedConfig(
             target=target,
@@ -88,6 +91,7 @@ class ConfigLoader:
             marginal_attribution_multiplier=marginal_attribution_multiplier,
             use_unified_resolver=use_unified_resolver,
             dependency_graph_path=dependency_graph_path,
+            dspy_compiled_path=dspy_compiled_path,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

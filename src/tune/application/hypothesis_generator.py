@@ -501,6 +501,8 @@ class LlmHypothesisGenerator:
             raise ValueError(msg)
         if isinstance(value, int | float):
             return str(value)
+        if isinstance(value, dict | list):
+            return json.dumps(value)
         if not isinstance(value, str) or value == "":
             msg = f"Model response must include non-empty string field: {field_name}"
             raise ValueError(msg)

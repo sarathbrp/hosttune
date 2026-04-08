@@ -18,7 +18,7 @@ policy:
   allow_reboot: false
   allow_environment_cleanup: true
   rollback_required: true
-  max_iterations: 10
+  max_iterations: 6
   benchmark_stability_threshold: 0.10
 
 tune:
@@ -28,6 +28,7 @@ tune:
   marginal_attribution_multiplier: 1.0
   use_unified_resolver: true
   dependency_graph_path: tuning-dependency-graph.yaml
+  dspy_compiled_path: artifacts/dspy_compiled.json
 
 benchmark:
   runner:

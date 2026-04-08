@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from preflight.interfaces.execution_logger import ExecutionLogger, NullExecutionLogger
 from tune.domain.hypothesis_context import HypothesisContext
@@ -17,20 +18,17 @@ class LangGraphHypothesisClient:
     config: ModelEndpointConfig
     prompt_builder: object
     logger: ExecutionLogger = field(default_factory=NullExecutionLogger)
+    compiled_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        from tune.application.dspy_hypothesis_module import configure_dspy
+
+        configure_dspy(self.config)
 
     def complete(self, context: HypothesisContext) -> ModelCompletion:
         prompt = self.prompt_builder.build(context)  # type: ignore[union-attr]
         self._log_prompt("hybrid_hypothesizer", prompt)
-        content, usage = self._call_llm_with_usage(
-            caller="hybrid_hypothesizer",
-            system=(
-                "You are the single hybrid hypothesizer for HostTune. "
-                "A deterministic triage layer has already run. "
-                "Return exactly one JSON object with keys: parameter_key, proposed_value, "
-                "tuning_layer, apply_mode, rationale, expected_benchmark_impact, rollback_plan."
-            ),
-            prompt=prompt,
-        )
+        content, usage = self._call_dspy(prompt)
         self._log_response("hybrid_hypothesizer", content)
         artifact_path = self._save_agent_artifact(
             context,
@@ -40,6 +38,42 @@ class LangGraphHypothesisClient:
             usage,
         )
         return ModelCompletion(content=content, usage=usage, artifact_path=artifact_path)
+
+    def _call_dspy(self, prompt: str) -> tuple[str, ModelUsage | None]:
+        from tune.application.dspy_hypothesis_module import call_predictor
+
+        try:
+            proposal = call_predictor(prompt, self.compiled_path)
+        except Exception as exc:
+            msg = f"[hybrid_hypothesizer] DSPy call failed: {type(exc).__name__}: {exc}"
+            raise ValueError(msg) from exc
+
+        content = proposal.model_dump_json()
+        usage = self._extract_dspy_usage()
+        return content, usage
+
+    def _extract_dspy_usage(self) -> ModelUsage | None:
+        import dspy
+
+        lm = getattr(dspy.settings, "lm", None)
+        if lm is None:
+            return None
+        history = getattr(lm, "history", None)
+        if not history:
+            return None
+        last = history[-1]
+        response = last.get("response")
+        if response is None:
+            return None
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is None:
+            return None
+        return ModelUsage(
+            model_name=self.config.model_name,
+            input_tokens=int(getattr(usage_obj, "prompt_tokens", 0)),
+            output_tokens=int(getattr(usage_obj, "completion_tokens", 0)),
+            total_tokens=int(getattr(usage_obj, "total_tokens", 0)),
+        )
 
     def _log_prompt(self, agent: str, prompt: str) -> None:
         self.logger.stage_detail(
@@ -114,45 +148,3 @@ class LangGraphHypothesisClient:
         except OSError as exc:
             _log.warning("Failed to update hypothesis index %s: %s", index_path, exc)
         return str(path)
-
-    def _call_llm_with_usage(
-        self, *, caller: str, system: str, prompt: str
-    ) -> tuple[str, ModelUsage | None]:
-        client = self._build_openai_client()
-        try:
-            completion = client.chat.completions.create(
-                model=self.config.model_name,
-                temperature=0.0,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-        except Exception as exc:
-            msg = f"[{caller}] LLM call failed: {type(exc).__name__}: {exc}"
-            raise ValueError(msg) from exc
-        content = completion.choices[0].message.content
-        if not isinstance(content, str):
-            msg = f"[{caller}] OpenAI-compatible response did not include string content."
-            raise ValueError(msg)
-        usage_payload = getattr(completion, "usage", None)
-        usage = None
-        if usage_payload is not None:
-            usage = ModelUsage(
-                model_name=self.config.model_name,
-                input_tokens=int(getattr(usage_payload, "prompt_tokens", 0)),
-                output_tokens=int(getattr(usage_payload, "completion_tokens", 0)),
-                total_tokens=int(getattr(usage_payload, "total_tokens", 0)),
-            )
-        return content, usage
-
-    def _build_openai_client(self) -> object:
-        try:
-            from openai import OpenAI
-        except ImportError as error:
-            msg = "openai is required for LangGraphHypothesisClient."
-            raise RuntimeError(msg) from error
-        return OpenAI(
-            base_url=self.config.base_url,
-            api_key=self.config.api_key,
-        )

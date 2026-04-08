@@ -81,7 +81,7 @@ def try_read_network_ring_current(
         'awk \'BEGIN{section=""} '
         '/Current hardware settings:/{section="current"; next} '
         '/Pre-set maximums:/{section="max"; next} '
-        f'section=="current" && $1=="{ring_name}:" {{print $2; exit}}\''
+        f'section=="current" && tolower($1)=="{ring_name}:" {{print $2; exit}}\''
     )
     result = executor.run(command)
     if result.exit_code != 0:

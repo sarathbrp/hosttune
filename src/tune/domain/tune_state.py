@@ -97,12 +97,19 @@ class TuneState:
 
     @staticmethod
     def _allocate_unified_budget(max_iterations: int) -> dict[TunePhase, int]:
-        """3-phase budget: RESOLVE(1) + OPTIMIZE(variable) + EXPLOIT(2)."""
+        """Budget allocation: RESOLVE does not count against max_iterations.
+
+        The resolver applies one iteration per dependency graph layer; the
+        number of layers is determined by graph structure, not user config.
+        OPTIMIZE + EXPLOIT + REBOOT_BATCH share the full max_iterations budget.
+        """
         budgets = {phase: 0 for phase in TunePhase}
         if max_iterations <= 0:
             return budgets
-        budgets[TunePhase.RESOLVE] = 1
-        remaining = max_iterations - 1
+        # RESOLVE budget is generous — it won't be exhausted by layer iterations.
+        # stop_reason excludes RESOLVE from the budget-exhaustion check.
+        budgets[TunePhase.RESOLVE] = max_iterations
+        remaining = max_iterations
         # Reserve at least 1 for OPTIMIZE when possible.
         budgets[TunePhase.EXPLOIT] = min(2, max(0, remaining - 1))
         remaining -= budgets[TunePhase.EXPLOIT]

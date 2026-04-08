@@ -216,7 +216,12 @@ class PhaseController:
         state: TuneState,
         candidates: tuple[CandidateParameter, ...],
     ) -> str | None:
-        if sum(state.remaining_budget.values()) == 0:
+        # RESOLVE does not count against max_iterations — exclude it.
+        non_resolve_budget = sum(
+            v for phase, v in state.remaining_budget.items()
+            if phase is not TunePhase.RESOLVE
+        )
+        if non_resolve_budget == 0:
             return "budget_exhausted"
         if self._has_converged(state, active_catalog_candidates(candidates)):
             return "converged"

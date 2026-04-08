@@ -176,12 +176,14 @@ def build_tune_engine(
     marginal_attribution_multiplier: float = 2.0,
     use_unified_resolver: bool = False,
     dependency_graph_path: str = "tuning-dependency-graph.yaml",
+    compiled_path: Path | None = None,
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
         hypothesis_generator = build_langgraph_hypothesis_generator(
             logger=execution_logger,
             prompt_compression=prompt_compression,
+            compiled_path=compiled_path,
         )
         mode_label = "compressed" if prompt_compression else "standard"
         execution_logger.stage_detail(
@@ -247,6 +249,7 @@ def build_tune_engine(
         rollback_coordinator=RollbackCoordinator(),
         recorder=TuneRecorder(),
         logger=execution_logger,
+        compiled_path=compiled_path,
     )
 
 
@@ -306,6 +309,9 @@ def main() -> int:
                     marginal_attribution_multiplier=loaded_config.marginal_attribution_multiplier,
                     use_unified_resolver=loaded_config.use_unified_resolver,
                     dependency_graph_path=loaded_config.dependency_graph_path,
+                    compiled_path=Path(loaded_config.dspy_compiled_path)
+                    if loaded_config.dspy_compiled_path
+                    else None,
                 ),
             )
     except ValueError as error:

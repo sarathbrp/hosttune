@@ -19,6 +19,7 @@ def build_langgraph_hypothesis_generator(
     logger: ExecutionLogger | None = None,
     *,
     prompt_compression: bool = False,
+    compiled_path: Path | None = None,
 ) -> LlmHypothesisGenerator:
     config = ModelEndpointConfigLoader().load(env_path)
     execution_logger = logger or NullExecutionLogger()
@@ -34,6 +35,7 @@ def build_langgraph_hypothesis_generator(
             config=config,
             prompt_builder=prompt_builder,
             logger=execution_logger,
+            compiled_path=compiled_path,
         ),
         triage=triage,
         logger=execution_logger,

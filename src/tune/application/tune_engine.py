@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from time import perf_counter
 from typing import Protocol
 
@@ -106,6 +108,8 @@ class TuneEngine:
     skip_marginal_attribution: bool = False
     marginal_attribution_multiplier: float = 2.0
     logger: ExecutionLogger = NullExecutionLogger()
+    compiled_path: Path | None = None
+    auto_compile_threshold: int = 30
 
     def run(
         self,
@@ -391,7 +395,12 @@ class TuneEngine:
                     (record.hypothesis.parameter_key, record.hypothesis.proposed_value)
                 )
             # Detect service-dead pattern: consecutive no_eval with short duration.
-            if record.evaluation_result is None and record.duration_seconds < 30:
+            # Exclude REJECTED_PRE_APPLY — apply was rolled back, service is untouched.
+            if (
+                record.evaluation_result is None
+                and record.duration_seconds < 30
+                and history_record.status is HypothesisStatus.FAILED_VALIDATION
+            ):
                 consecutive_noeval_short += 1
             else:
                 consecutive_noeval_short = 0
@@ -443,7 +452,112 @@ class TuneEngine:
             payload={"stop_reason": state.stop_reason},
         )
         self.logger.stage_end("tune")
+        self._maybe_auto_compile(context)
         return state
+
+    def _maybe_auto_compile(self, context: TuneContext) -> None:
+        """Compile DSPy hypothesis prompt once enough accepted examples accumulate.
+
+        Skips silently if compiled_path is None, if the file already exists,
+        or if artifacts are unavailable. Any compile failure is logged but non-fatal.
+        """
+        if self.compiled_path is None:
+            return
+        if self.compiled_path.exists():
+            return  # already compiled; delete the file to trigger recompile
+        artifacts = context.artifacts
+        if artifacts is None:
+            return
+
+        sessions_dir = artifacts.session_directory.parent
+        accepted_prompts: list[str] = []
+
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            hypotheses_dir = session_dir / "hypotheses"
+            if not hypotheses_dir.exists():
+                continue
+
+            # Build accept/reject outcome map for this session.
+            outcomes: dict[int, bool] = {}
+            for iteration_file in hypotheses_dir.glob("tune_iterations_*.jsonl"):
+                for line in iteration_file.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if record.get("phase") == "knowledge_driven":
+                        continue  # KB path — no LLM call
+                    eval_result = record.get("record", {}).get("evaluation_result")
+                    if eval_result is None:
+                        continue
+                    iteration = record.get("iteration_number", -1)
+                    outcomes[iteration] = eval_result.get("decision") == "ACCEPT"
+
+            # Match accepted outcomes to their saved prompt artifacts.
+            for artifact_file in hypotheses_dir.glob("iter*_hybrid_hypothesizer.json"):
+                try:
+                    data = json.loads(artifact_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                iteration = data.get("iteration")
+                if not outcomes.get(iteration):
+                    continue
+                prompt = data.get("prompt", "")
+                if prompt:
+                    accepted_prompts.append(prompt)
+
+        count = len(accepted_prompts)
+        if count < self.auto_compile_threshold:
+            self.logger.stage_detail(
+                "tune",
+                f"DSPy auto-compile: {count}/{self.auto_compile_threshold} accepted "
+                "LLM examples collected — run more sessions to trigger optimization.",
+            )
+            return
+
+        self.logger.stage_detail(
+            "tune",
+            f"DSPy auto-compile: {count} accepted examples — compiling hypothesis prompt...",
+        )
+        try:
+            import dspy
+            from dspy.teleprompt import BootstrapFewShot
+
+            from tune.application.dspy_hypothesis_module import (
+                HypothesisPredictor,
+                reset_predictor,
+            )
+
+            trainset = [
+                dspy.Example(context=prompt).with_inputs("context")
+                for prompt in accepted_prompts
+            ]
+
+            def metric(
+                example: dspy.Example,
+                prediction: dspy.Prediction,
+                trace: object = None,  # noqa: ARG001
+            ) -> bool:
+                return hasattr(prediction, "hypothesis") and prediction.hypothesis is not None
+
+            optimizer = BootstrapFewShot(metric=metric, max_bootstrapped_demos=4)
+            compiled = optimizer.compile(HypothesisPredictor(), trainset=trainset)
+            compiled.save(str(self.compiled_path))
+            reset_predictor()  # reload singleton from disk on next call
+            self.logger.stage_detail(
+                "tune",
+                f"DSPy auto-compile: saved to {self.compiled_path} — "
+                "optimized prompts active from next session.",
+            )
+        except Exception as exc:
+            self.logger.stage_detail(
+                "tune",
+                f"DSPy auto-compile failed (non-fatal): {type(exc).__name__}: {exc}",
+            )
 
     def _run_iteration(
         self,
@@ -686,7 +800,7 @@ class TuneEngine:
                 iteration_number=iteration_number,
                 phase=phase,
                 hypothesis=primary,
-                status=HypothesisStatus.FAILED_VALIDATION,
+                status=HypothesisStatus.REJECTED_PRE_APPLY,
                 evaluation_summary=f"apply failed: {apply_error}",
             )
             return record, history_record
