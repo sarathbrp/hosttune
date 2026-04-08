@@ -128,6 +128,18 @@ class SysctlTunable:
 
 
 @dataclass(frozen=True)
+class ParameterGroupMember:
+    parameter_key: str
+    target_value: str
+
+
+@dataclass(frozen=True)
+class ParameterGroup:
+    name: str
+    members: tuple[ParameterGroupMember, ...]
+
+
+@dataclass(frozen=True)
 class ServiceTunableSurface:
     allowed_directives: dict[str, DirectiveConstraint]
     forbidden_directives: tuple[str, ...]
@@ -144,6 +156,8 @@ class ServiceTunableSurface:
     # YAML keys: cpu_quota_percent -> CPUQuota=N%, memory_max_mib -> MemoryMax=NM.
     # Requires cgroup v2 (cgroup_resource_control capability flag). No applier yet.
     cgroup_resource_controls: dict[str, DirectiveConstraint] = field(default_factory=dict)
+    # Parameter groups: when any member is proposed, enforce all members together.
+    parameter_groups: tuple[ParameterGroup, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,8 @@ from onboard.domain.models import (
     ConfigFormat,
     DirectiveConstraint,
     DirectiveValueType,
+    ParameterGroup,
+    ParameterGroupMember,
     PriorityTier,
     ProbeType,
     ProcessState,
@@ -131,6 +133,7 @@ class ServiceDefinitionValidator:
         runtime_limits_raw = cast(dict[str, Any], data.get("runtime_limits", {}))
         systemd_limits_raw = cast(dict[str, Any], data.get("systemd_unit_limits", {}))
         cgroup_controls_raw = cast(dict[str, Any], data.get("cgroup_resource_controls", {}))
+        parameter_groups_raw = data.get("parameter_groups", [])
         return ServiceTunableSurface(
             allowed_directives={
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
@@ -153,7 +156,38 @@ class ServiceDefinitionValidator:
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
                 for name, value in cgroup_controls_raw.items()
             },
+            parameter_groups=self._parse_parameter_groups(parameter_groups_raw),
         )
+
+    def _parse_parameter_groups(self, value: object) -> tuple[ParameterGroup, ...]:
+        if value is None or value == []:
+            return ()
+        if not isinstance(value, list):
+            msg = "Expected list for 'parameter_groups'"
+            raise ValueError(msg)
+        groups: list[ParameterGroup] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                msg = f"parameter_groups[{index}] must be an object"
+                raise ValueError(msg)
+            name = self._require_str(item, "name")
+            members_raw = item.get("members")
+            if not isinstance(members_raw, list) or not members_raw:
+                msg = f"parameter_groups[{index}].members must be a non-empty list"
+                raise ValueError(msg)
+            members: list[ParameterGroupMember] = []
+            for m_index, member in enumerate(members_raw):
+                if not isinstance(member, dict):
+                    msg = f"parameter_groups[{index}].members[{m_index}] must be an object"
+                    raise ValueError(msg)
+                members.append(
+                    ParameterGroupMember(
+                        parameter_key=self._require_str(member, "parameter_key"),
+                        target_value=self._require_str(member, "target_value"),
+                    )
+                )
+            groups.append(ParameterGroup(name=name, members=tuple(members)))
+        return tuple(groups)
 
     def _parse_relevant_sysctls(self, value: object) -> tuple[SysctlTunable, ...]:
         if value is None or value == []:

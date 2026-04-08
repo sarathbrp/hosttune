@@ -21,7 +21,7 @@ from tune.application.phase_controller import PhaseController
 from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
-from tune.application.tune_engine import TuneEngine
+from tune.application.tune_engine import TuneEngine, _normalize_parameter_group_hypotheses
 from tune.application.tune_recorder import TuneRecorder
 from tune.domain.evaluation_models import AttributionVerificationResult
 from tune.domain.hypothesis_models import (
@@ -623,3 +623,66 @@ def test_tune_engine_rejects_forbidden_value_before_apply(tmp_path) -> None:  # 
     assert state.iteration_records[0].applied_change is None
     assert not any(command.startswith("python3 -c ") for command in target_executor.commands)
     assert any("Pre-apply rejection:" in message for message in logger.messages)
+
+
+def test_parameter_group_normalization_enforces_members_together() -> None:
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.tuning_layer import TuningLayer
+
+    def _directive_candidate(parameter_key: str, parameter_name: str, current_value: str) -> object:
+        from tune.domain.hypothesis_models import CandidateParameter
+
+        return CandidateParameter(
+            parameter_key=parameter_key,
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            parameter_name=parameter_name,
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.ENUM,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.MEDIUM,
+            allowed_values=("on", "off"),
+            forbidden_values=(),
+            min_value=None,
+            max_value=None,
+            rationale_hint="test",
+            current_value=current_value,
+        )
+
+    candidates = (
+        _directive_candidate("service.directive.sendfile", "sendfile", "off"),
+        _directive_candidate("service.directive.tcp_nopush", "tcp_nopush", "off"),
+        _directive_candidate("service.directive.tcp_nodelay", "tcp_nodelay", "off"),
+    )
+    hypotheses = (
+        TuningHypothesis(
+            phase=TunePhase.OPTIMIZE,
+            parameter_key="service.directive.tcp_nopush",
+            parameter_name="tcp_nopush",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            proposed_value="off",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            apply_mode=ApplyMode.RELOAD,
+            rationale="test",
+        ),
+    )
+    groups = (
+        (
+            "nginx_static_io_trio",
+            (
+                ("service.directive.sendfile", "on"),
+                ("service.directive.tcp_nopush", "on"),
+                ("service.directive.tcp_nodelay", "on"),
+            ),
+        ),
+    )
+
+    normalized = _normalize_parameter_group_hypotheses(hypotheses, candidates, groups)
+
+    assert {h.parameter_key for h in normalized} == {
+        "service.directive.sendfile",
+        "service.directive.tcp_nopush",
+        "service.directive.tcp_nodelay",
+    }
+    assert all(h.proposed_value == "on" for h in normalized)

@@ -108,6 +108,14 @@ tunable_surface:
         - "off"
       apply_mode: reload
       forbidden_values: []
+    tcp_nodelay:
+      value_type: enum
+      priority_tier: medium
+      allowed_values:
+        - "on"
+        - "off"
+      apply_mode: reload
+      forbidden_values: []
     limit_rate:
       value_type: string
       priority_tier: high
@@ -182,6 +190,15 @@ tunable_surface:
   forbidden_directives:
     - master_process
     - daemon
+  parameter_groups:
+    - name: nginx_static_io_trio
+      members:
+        - parameter_key: service.directive.sendfile
+          target_value: "on"
+        - parameter_key: service.directive.tcp_nopush
+          target_value: "on"
+        - parameter_key: service.directive.tcp_nodelay
+          target_value: "on"
   interdependencies:
     - worker_processes -> verify CPU topology and NUMA layout
     - worker_connections -> verify file descriptor limits

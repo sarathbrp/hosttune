@@ -113,6 +113,77 @@ def _kb_best_workload_rps(context: TuneContext) -> tuple[tuple[str, float], ...]
     return tuple(sorted(best.items()))
 
 
+def _normalize_parameter_group_hypotheses(
+    hypotheses: tuple[TuningHypothesis, ...],
+    candidates: tuple[CandidateParameter, ...],
+    parameter_groups: tuple[tuple[str, tuple[tuple[str, str], ...]], ...],
+) -> tuple[TuningHypothesis, ...]:
+    """When one member is proposed, enforce all group members together."""
+    if not hypotheses or not parameter_groups:
+        return hypotheses
+
+    proposed_keys = {h.parameter_key for h in hypotheses}
+
+    candidate_by_key = {candidate.parameter_key: candidate for candidate in candidates}
+    hypothesis_by_key = {hypothesis.parameter_key: hypothesis for hypothesis in hypotheses}
+    primary = hypotheses[0]
+    changed = False
+
+    for _group_name, members in parameter_groups:
+        member_keys = {key for key, _value in members}
+        if member_keys.isdisjoint(proposed_keys):
+            continue
+        for key, target_value in members:
+            candidate = candidate_by_key.get(key)
+            if candidate is None:
+                continue
+            existing = hypothesis_by_key.get(key)
+            if existing is not None:
+                if existing.proposed_value != target_value:
+                    hypothesis_by_key[key] = replace(
+                        existing,
+                        proposed_value=target_value,
+                        rationale=(
+                            f"{existing.rationale} | parameter-group normalization: "
+                            "enforce grouped values together"
+                        ),
+                    )
+                    changed = True
+                continue
+            if candidate.current_value == target_value:
+                continue
+            hypothesis_by_key[key] = TuningHypothesis(
+                phase=primary.phase,
+                parameter_key=candidate.parameter_key,
+                parameter_name=candidate.parameter_name,
+                domain=candidate.domain,
+                tuning_layer=candidate.tuning_layer,
+                proposed_value=target_value,
+                source=candidate.source,
+                apply_mode=candidate.apply_mode,
+                rationale="parameter-group normalization: enforce grouped values together",
+            )
+            changed = True
+
+    if not changed:
+        return hypotheses
+
+    normalized: list[TuningHypothesis] = []
+    seen: set[str] = set()
+    for hypothesis in hypotheses:
+        normalized.append(hypothesis_by_key[hypothesis.parameter_key])
+        seen.add(hypothesis.parameter_key)
+    for _group_name, members in parameter_groups:
+        for key, _value in members:
+            if key in seen:
+                continue
+            extra = hypothesis_by_key.get(key)
+            if extra is not None:
+                normalized.append(extra)
+                seen.add(key)
+    return tuple(normalized)
+
+
 @dataclass
 class TuneEngine:
     candidate_catalog_builder: CandidateCatalogBuilder
@@ -772,6 +843,18 @@ class TuneEngine:
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
+            service_groups = tuple(
+                (
+                    group.name,
+                    tuple((member.parameter_key, member.target_value) for member in group.members),
+                )
+                for group in live_context.onboard.service.tunable_surface.parameter_groups
+            )
+            hypotheses = _normalize_parameter_group_hypotheses(
+                hypotheses,
+                candidates,
+                service_groups,
+            )
         except Exception as exc:
             # Catch broadly so a single bad LLM response or parse error doesn't crash
             # the entire session. Log the full exception type for debugging.

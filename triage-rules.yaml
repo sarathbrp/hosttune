@@ -156,6 +156,16 @@ application_discovery_sanity:
     only_when_current_in:
       - "off"
 
+  - id: nginx_enable_tcp_nodelay
+    enabled: true
+    action: autofix
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.tcp_nodelay
+    proposed_value: "on"
+    only_when_current_in:
+      - "off"
+
   - id: nginx_disable_gzip
     enabled: true
     action: autofix

@@ -165,6 +165,7 @@ class NginxDirectiveApplier:
             "open_file_cache",
             "gzip",
             "tcp_nopush",
+            "tcp_nodelay",
             "limit_rate",
         }
     )

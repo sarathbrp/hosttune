@@ -94,6 +94,15 @@ def build_valid_definition() -> dict[str, object]:
                     "forbidden_values": ["off"],
                     "apply_mode": "reload",
                 },
+                "tcp_nodelay": {
+                    "value_type": "enum",
+                    "priority_tier": "medium",
+                    "min_value": None,
+                    "max_value": None,
+                    "allowed_values": ["on", "off"],
+                    "forbidden_values": [],
+                    "apply_mode": "reload",
+                },
                 "limit_rate": {
                     "value_type": "string",
                     "priority_tier": "high",
@@ -141,6 +150,16 @@ def build_valid_definition() -> dict[str, object]:
                 },
             },
             "forbidden_directives": ["daemon"],
+            "parameter_groups": [
+                {
+                    "name": "nginx_static_io_trio",
+                    "members": [
+                        {"parameter_key": "service.directive.sendfile", "target_value": "on"},
+                        {"parameter_key": "service.directive.tcp_nopush", "target_value": "on"},
+                        {"parameter_key": "service.directive.tcp_nodelay", "target_value": "on"},
+                    ],
+                }
+            ],
             "interdependencies": [],
             "relevant_sysctls": [
                 {"name": "net.core.somaxconn", "priority_tier": "high"},
@@ -231,6 +250,12 @@ def test_validator_builds_typed_service_definition() -> None:
         "on",
         "off",
     )
+    assert definition.tunable_surface.allowed_directives["tcp_nodelay"].allowed_values == (
+        "on",
+        "off",
+    )
+    assert len(definition.tunable_surface.parameter_groups) == 1
+    assert definition.tunable_surface.parameter_groups[0].name == "nginx_static_io_trio"
     assert definition.tunable_surface.allowed_directives["worker_cpu_affinity"].value_type.value == "string"
     assert definition.tunable_surface.allowed_directives["limit_rate"].value_type.value == "string"
     assert definition.tunable_surface.network_ring_priority_tier is PriorityTier.MEDIUM

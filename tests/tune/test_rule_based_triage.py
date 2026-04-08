@@ -70,6 +70,32 @@ def test_triage_can_autofix_sendfile_when_disabled() -> None:
     assert result.autofix_action.proposed_value == "on"
 
 
+def test_triage_can_autofix_tcp_nodelay_when_disabled() -> None:
+    base = build_hypothesis_context()
+    candidates = tuple(
+        replace(candidate, current_value="off")
+        if candidate.parameter_key == "service.directive.tcp_nodelay"
+        else candidate
+        for candidate in base.candidates
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=candidates,
+        deferred_candidates=base.deferred_candidates,
+        history=base.history,
+        active_parameter_keys=base.active_parameter_keys,
+        best_parameter_values=base.best_parameter_values,
+    )
+
+    result = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(context)
+
+    assert result.autofix_action is not None
+    assert result.autofix_action.parameter_key == "service.directive.tcp_nodelay"
+    assert result.autofix_action.proposed_value == "on"
+
+
 def test_triage_emits_signal_for_dual_numa_host() -> None:
     result = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(
         build_hypothesis_context()
