@@ -15,6 +15,9 @@ class ExecutionLogger:
     def stage_detail(self, stage: str, message: str) -> None:
         """Log an informational message for a stage."""
 
+    def stage_warning(self, stage: str, message: str) -> None:
+        """Log a warning — skipped benchmarks, validation failures, rollbacks."""
+
     def command(self, stage: str, command: str) -> None:
         """Log a command before execution."""
 
@@ -54,6 +57,10 @@ class StdlibExecutionLogger(ExecutionLogger):
     def stage_detail(self, stage: str, message: str) -> None:
         for line in message.splitlines() or ("",):
             self.logger.info("[%s] %s", stage, line)
+
+    def stage_warning(self, stage: str, message: str) -> None:
+        for line in message.splitlines() or ("",):
+            self.logger.warning("[%s] WARNING %s", stage, line)
 
     def command(self, stage: str, command: str) -> None:
         self.logger.debug("[%s] $ %s", stage, command)

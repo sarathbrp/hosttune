@@ -164,7 +164,7 @@ class TuneEngine:
         baseline_failed_checks = tuple(check for check in baseline_checks if not check.passed)
         if baseline_failed_checks:
             detail = ", ".join(f"{check.name}: {check.detail}" for check in baseline_failed_checks)
-            self.logger.stage_detail(
+            self.logger.stage_warning(
                 "tune",
                 f"Pre-tune health gate failed ({detail})",
             )
@@ -445,7 +445,7 @@ class TuneEngine:
             else:
                 consecutive_noeval_short = 0
             if consecutive_noeval_short >= 2:
-                self.logger.stage_detail(
+                self.logger.stage_warning(
                     "tune",
                     "Service appears dead: "
                     f"{consecutive_noeval_short} consecutive fast failures. "
@@ -461,7 +461,7 @@ class TuneEngine:
                     )
                     consecutive_noeval_short = 0
                 else:
-                    self.logger.stage_detail(
+                    self.logger.stage_warning(
                         "tune",
                         "Service restart failed: "
                         f"{restart_result.stderr.strip()}",
@@ -775,7 +775,7 @@ class TuneEngine:
         except Exception as exc:
             # Catch broadly so a single bad LLM response or parse error doesn't crash
             # the entire session. Log the full exception type for debugging.
-            self.logger.stage_detail(
+            self.logger.stage_warning(
                 "tune",
                 (
                     f"Hypothesis generation failed ({type(exc).__name__}): {exc} "
@@ -939,7 +939,7 @@ class TuneEngine:
             except Exception as exc:
                 apply_error = exc
                 from tune.application.format_table import apply_failed_table
-                self.logger.stage_detail("tune", apply_failed_table(h.parameter_key, str(exc)))
+                self.logger.stage_warning("tune", apply_failed_table(h.parameter_key, str(exc)))
                 self._record_kb_event(
                     context=context,
                     component="tuning_executor",
@@ -1011,7 +1011,7 @@ class TuneEngine:
                 )
                 or "unknown validation failure"
             )
-            self.logger.stage_detail(
+            self.logger.stage_warning(
                 "tune",
                 f"Benchmark skipped: validation failed ({failed_checks})",
             )
@@ -1323,9 +1323,9 @@ class TuneEngine:
                 self.rollback_coordinator.rollback(ac, target_executor)
             except Exception as exc:
                 failures.append(param_key)
-                self.logger.stage_detail("tune", f"ROLLBACK FAILED for {param_key}: {exc}")
+                self.logger.stage_warning("tune", f"ROLLBACK FAILED for {param_key}: {exc}")
         if failures:
-            self.logger.stage_detail(
+            self.logger.stage_warning(
                 "tune",
                 f"CRITICAL: partial rollback — still applied: {failures}",
             )
@@ -1963,7 +1963,7 @@ class TuneEngine:
             context, primary_ac, target_executor
         )
         if not validation_result.healthy:
-            self.logger.stage_detail(
+            self.logger.stage_warning(
                 "tune",
                 f"Resolver {layer_name}: health check failed; "
                 f"rolling back.",
@@ -2072,7 +2072,7 @@ class TuneEngine:
         primary_ac = next(iter(applied.values()))
         validation_result = self.health_validator.validate(context, primary_ac, target_executor)
         if not validation_result.healthy:
-            self.logger.stage_detail(
+            self.logger.stage_warning(
                 "tune", f"{log_prefix}: health check failed; rolling back all."
             )
             self._rollback_all(applied, target_executor)
