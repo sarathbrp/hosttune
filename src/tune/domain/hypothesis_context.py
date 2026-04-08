@@ -33,3 +33,7 @@ class HypothesisContext:
     confidence_scores: tuple[tuple[str, int, int, float], ...] = ()
     # Dependency layer statuses from unified resolver (empty in legacy mode).
     layer_statuses: tuple[tuple[str, str], ...] = ()
+    # Current RPS per workload after all applied changes (from last benchmarked iteration).
+    current_workload_rps: tuple[tuple[str, float], ...] = ()
+    # All-time best RPS per workload from KB (top-1 across prior sessions, same host).
+    kb_best_workload_rps: tuple[tuple[str, float], ...] = ()

@@ -89,6 +89,30 @@ def _last_benchmark_runtime_telemetry_digest(
     return format_runtime_telemetry_digest((), max_chars_per_section=420)
 
 
+def _current_workload_rps(state: TuneState) -> tuple[tuple[str, float], ...]:
+    """RPS per workload from the most recent benchmarked iteration."""
+    for record in reversed(state.iteration_records):
+        if record.evaluation_result is not None:
+            return tuple(
+                (w.workload_name, w.current_requests_per_second)
+                for w in record.evaluation_result.workload_evaluations
+            )
+    return ()
+
+
+def _kb_best_workload_rps(context: TuneContext) -> tuple[tuple[str, float], ...]:
+    """All-time best RPS per workload from the knowledge base."""
+    kb = getattr(context, "knowledge_base", None)
+    artifacts = context.artifacts
+    if kb is None or artifacts is None:
+        return ()
+    best = kb.get_best_workload_rps(
+        service_name=context.onboard.service_name,
+        exclude_run_id=artifacts.session_id,
+    )
+    return tuple(sorted(best.items()))
+
+
 @dataclass
 class TuneEngine:
     candidate_catalog_builder: CandidateCatalogBuilder
@@ -721,6 +745,8 @@ class TuneEngine:
             prior_blocked_pairs=prior_blocked_pairs,
             confidence_scores=tuple((k, t, a, c) for k, (t, a, c) in confidence_scores.items()),
             layer_statuses=tuple(sorted(state.layer_statuses.items())),
+            current_workload_rps=_current_workload_rps(state),
+            kb_best_workload_rps=_kb_best_workload_rps(context),
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)

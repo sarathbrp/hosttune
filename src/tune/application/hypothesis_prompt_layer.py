@@ -266,6 +266,55 @@ def format_service_yaml_reference_snippet(tune_context: TuneContext) -> str:
     return truncate_for_prompt(snippet, 1000)
 
 
+def format_current_performance_lines(
+    context: "HypothesisContext",
+    tune_context: TuneContext,
+) -> list[str]:
+    """Applied params + current RPS vs baseline so LLM sees what's been done and what changed."""
+    if not context.current_workload_rps:
+        return ["- no benchmark yet"]
+    baseline_by_name = {
+        w.workload_name: w.requests_per_second
+        for w in tune_context.baseline.workload_results
+    }
+    param_summary = ", ".join(
+        f"{k}={v}" for k, v in context.best_parameter_values
+    ) or "none"
+    lines = [f"- applied={param_summary}"]
+    for workload_name, current_rps in context.current_workload_rps:
+        baseline_rps = baseline_by_name.get(workload_name)
+        if baseline_rps and baseline_rps > 0:
+            pct = (current_rps - baseline_rps) / baseline_rps * 100
+            sign = "+" if pct >= 0 else ""
+            lines.append(
+                f"- {workload_name}: rps={current_rps:,.0f} ({sign}{pct:.1f}% vs baseline)"
+            )
+        else:
+            lines.append(f"- {workload_name}: rps={current_rps:,.0f}")
+    return lines
+
+
+def format_kb_best_rps_lines(context: "HypothesisContext", tune_context: TuneContext) -> list[str]:
+    """All-time best RPS per workload from KB — the target to beat or match."""
+    if not context.kb_best_workload_rps:
+        return ["- no prior sessions"]
+    baseline_by_name = {
+        w.workload_name: w.requests_per_second
+        for w in tune_context.baseline.workload_results
+    }
+    current_by_name = dict(context.current_workload_rps)
+    lines = []
+    for workload_name, best_rps in context.kb_best_workload_rps:
+        current = current_by_name.get(workload_name, baseline_by_name.get(workload_name, 0))
+        if best_rps > 0 and current > 0:
+            pct_achieved = current / best_rps * 100
+            gap = "✓ matched" if pct_achieved >= 95 else f"{pct_achieved:.0f}% achieved"
+            lines.append(f"- {workload_name}: best={best_rps:,.0f} rps [{gap}]")
+        else:
+            lines.append(f"- {workload_name}: best={best_rps:,.0f} rps")
+    return lines
+
+
 def format_prior_run_memory(tune_context: TuneContext) -> str:
     artifacts = tune_context.artifacts
     knowledge_base = tune_context.knowledge_base
@@ -754,6 +803,10 @@ def format_compressed_hypothesis_prompt(
         format_prior_run_memory(tune_context),
         "Baseline:",
         *format_baseline_digest_lines(tune_context),
+        "Current performance (after applied changes):",
+        *format_current_performance_lines(context, tune_context),
+        "Historical best (KB top-1, same service — target to match or beat):",
+        *format_kb_best_rps_lines(context, tune_context),
         "Telemetry:",
         telemetry_body,
         "State:",

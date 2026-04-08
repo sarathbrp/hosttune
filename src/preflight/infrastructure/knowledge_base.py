@@ -417,6 +417,40 @@ class KnowledgeBase:
             return None
         return config
 
+    def get_best_workload_rps(
+        self,
+        *,
+        service_name: str,
+        exclude_run_id: str | None = None,
+    ) -> dict[str, float]:
+        """All-time best RPS per workload for this service from KB events.
+
+        Queries all best_config_updated events and returns {workload_name: max_rps}.
+        Always top-1 — as sessions improve, this automatically reflects the new best.
+        """
+        query = """
+            SELECT payload_json FROM events
+            WHERE event_type = 'best_config_updated'
+              AND service_name = ?
+        """
+        params: list[object] = [service_name]
+        if exclude_run_id:
+            query += " AND run_id != ?"
+            params.append(exclude_run_id)
+        best: dict[str, float] = {}
+        with self._connect() as connection:
+            for row in connection.execute(query, tuple(params)).fetchall():
+                try:
+                    payload = json.loads(row[0])
+                    for w in payload.get("workloads", []):
+                        name = w.get("workload_name")
+                        rps = w.get("current_requests_per_second")
+                        if name and rps and float(rps) > best.get(name, 0.0):
+                            best[name] = float(rps)
+                except Exception:
+                    continue
+        return best
+
     def get_parameter_confidence_scores(
         self,
         *,
