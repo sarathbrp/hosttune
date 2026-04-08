@@ -28,12 +28,14 @@ class AttributionVerifier:
     ) -> AttributionVerificationResult:
         rollback_result = target_executor.run(applied_change.rollback_command)
         if rollback_result.exit_code != 0:
+            stderr = "\n".join(
+                line for line in rollback_result.stderr.splitlines()
+                if "Identity file" not in line and "not accessible" not in line
+            ).strip()
+            detail = stderr or rollback_result.stdout.strip() or rollback_result.stderr.strip()
             return AttributionVerificationResult(
                 verified=False,
-                summary=(
-                    "attribution rollback failed: "
-                    f"{rollback_result.stderr or rollback_result.stdout}"
-                ),
+                summary=f"attribution rollback failed: {detail}",
                 reverted_benchmark_result=None,
                 average_drop=0.0,
             )

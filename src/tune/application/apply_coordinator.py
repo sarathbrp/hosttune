@@ -365,19 +365,13 @@ class NginxDirectiveApplier:
     ) -> str:
         python_script = (
             "import pathlib,re,sys; "
-            "path=pathlib.Path(sys.argv[1]); "
-            "name=sys.argv[2]; "
-            "lines=path.read_text().splitlines(); "
-            "pattern=re.compile(rf'^\\s*{re.escape(name)}\\s+[^;]+;\\s*$'); "
-            "removed=False; "
-            "out=[]; "
-            "for line in lines:\n"
-            "    if (not removed) and pattern.match(line):\n"
-            "        removed=True\n"
-            "        continue\n"
-            "    out.append(line)\n"
-            "removed or sys.exit('directive not found'); "
-            "path.write_text('\\n'.join(out)+'\\n')"
+            "p=pathlib.Path(sys.argv[1]); "
+            "n=sys.argv[2]; "
+            "lines=p.read_text().splitlines(); "
+            f"pat=re.compile(rf'^\\\\s*{re.escape(name)}\\\\s+[^;]+;\\\\s*$'); "
+            "idx=next((i for i,l in enumerate(lines) if pat.match(l)),None); "
+            "sys.exit('directive not found') if idx is None "
+            "else p.write_text('\\n'.join(lines[:idx]+lines[idx+1:])+'\\n')"
         )
         return " ".join(
             (
