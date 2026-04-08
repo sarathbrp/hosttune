@@ -767,6 +767,15 @@ class SystemdCgroupControlApplier:
         hypothesis: TuningHypothesis,
         executor: CommandExecutor,
     ) -> AppliedChange:
+        """Apply cgroup controls via systemctl set-property (runtime priority).
+
+        /run/systemd/system.control/<unit>.d/ has higher priority than any
+        /etc/systemd/system/<unit>.d/ drop-in regardless of filename sort order.
+        Using set-property ensures we always override the degrader's setting.
+
+        Rollback uses set-property with empty value to reset (CPUQuota=) or
+        restore the previous value.
+        """
         control_name = hypothesis.parameter_name
         prop = self.property_name(control_name)
         unit = context.onboard.service.identity.systemd_unit_name
@@ -774,37 +783,26 @@ class SystemdCgroupControlApplier:
         previous_value = self.normalize_property_value(prop, previous_raw) or "infinity"
         new_value = hypothesis.proposed_value.strip()
         prop_assignment = self.property_assignment(prop, new_value)  # e.g. CPUQuota=400%
-        dropin_dir = f"/etc/systemd/system/{unit}.d"
-        dropin_file = f"{dropin_dir}/zz_hosttune_{control_name}.conf"
-        # 'for' loop exits 1 when glob matches nothing; '; true' neutralizes it.
-        overwrite_existing = (
-            f"for _f in {shlex.quote(dropin_dir)}/*.conf; do "
-            f"[ -f \"$_f\" ] && grep -q '^{prop}=' \"$_f\" 2>/dev/null && "
-            f"sed -i 's|^{prop}=.*|{prop_assignment}|' \"$_f\"; "
-            f"done; true"
-        )
-        # Use printf '%s\n%s\n' to avoid format-string issues with % in CPUQuota=N%.
-        write_cmd = (
-            f"mkdir -p {shlex.quote(dropin_dir)} && "
-            f"{overwrite_existing} && "
-            f"printf '%s\\n%s\\n' '[Service]' {shlex.quote(prop_assignment)} > {shlex.quote(dropin_file)}"
-        )
-        apply_parts = [write_cmd, *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode)]
+
+        # set-property writes to /run/systemd/system.control/ which wins over
+        # all /etc/ drop-ins — the only way to override a degrader's set-property.
+        set_cmd = f"systemctl set-property {shlex.quote(unit)} {shlex.quote(prop_assignment)}"
+        apply_parts = [set_cmd, *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode)]
         apply_command = " && ".join(apply_parts)
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
             msg = f"Failed to apply systemd cgroup control: {_cmd_error(apply_result)}"
             raise ValueError(msg)
+
+        # Rollback: empty value resets the runtime override (CPUQuota= = unlimited).
         _CGROUP_DEFAULTS = {"infinity", "18446744073709551615", ""}
-        if previous_raw.lower() in _CGROUP_DEFAULTS:
-            rollback_write = f"rm -f {shlex.quote(dropin_file)}"
+        if previous_raw.lower() in _CGROUP_DEFAULTS or previous_value == "infinity":
+            rollback_set = f"systemctl set-property {shlex.quote(unit)} {shlex.quote(f'{prop}=')}"
         else:
             prev_assignment = self.property_assignment(prop, previous_value)
-            rollback_write = (
-                f"printf '%s\\n%s\\n' '[Service]' {shlex.quote(prev_assignment)} > {shlex.quote(dropin_file)}"
-            )
+            rollback_set = f"systemctl set-property {shlex.quote(unit)} {shlex.quote(prev_assignment)}"
         rollback_parts = [
-            rollback_write,
+            rollback_set,
             *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode),
         ]
         rollback_command = " && ".join(rollback_parts)
