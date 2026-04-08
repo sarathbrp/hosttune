@@ -20,7 +20,7 @@ policy:
   allow_reboot: false
   allow_environment_cleanup: true
   rollback_required: true
-  max_iterations: 6
+  max_iterations: 12
   benchmark_stability_threshold: 0.05
 
 tune:
