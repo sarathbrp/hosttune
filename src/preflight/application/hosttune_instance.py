@@ -472,16 +472,22 @@ class HostTuneInstance:
         if name == "limitnofile":
             return (
                 "mkdir -p /etc/systemd/system/nginx.service.d && "
+                "for _f in /etc/systemd/system/nginx.service.d/*.conf; do "
+                "[ -f \"$_f\" ] && grep -q '^LimitNOFILE=' \"$_f\" 2>/dev/null && rm -f \"$_f\"; "
+                "done; true && "
                 "printf '[Service]\\nLimitNOFILE=1048576\\n' > "
-                "/etc/systemd/system/nginx.service.d/hosttune-limitnofile.conf && "
+                "/etc/systemd/system/nginx.service.d/zz_hosttune_limit_nofile.conf && "
                 "systemctl daemon-reload && "
                 "systemctl restart nginx.service"
             )
         if name == "limitnproc":
             return (
                 "mkdir -p /etc/systemd/system/nginx.service.d && "
+                "for _f in /etc/systemd/system/nginx.service.d/*.conf; do "
+                "[ -f \"$_f\" ] && grep -q '^LimitNPROC=' \"$_f\" 2>/dev/null && rm -f \"$_f\"; "
+                "done; true && "
                 "printf '[Service]\\nLimitNPROC=65535\\n' > "
-                "/etc/systemd/system/nginx.service.d/hosttune-limitnproc.conf && "
+                "/etc/systemd/system/nginx.service.d/zz_hosttune_limit_nproc.conf && "
                 "systemctl daemon-reload && "
                 "systemctl restart nginx.service"
             )

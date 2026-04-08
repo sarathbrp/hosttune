@@ -682,7 +682,9 @@ def test_env_diagnostic_uses_dropin_for_limitnofile_hierarchy_fix(tmp_path: Path
     instance.clear_environment_blockers(Path("config.yaml"))
 
     assert any("Max open files" in cmd for cmd in executor.commands)
-    assert any("hosttune-limitnofile.conf" in cmd for cmd in executor.commands)
+    assert any("zz_hosttune_limit_nofile.conf" in cmd for cmd in executor.commands)
+    assert any("grep -q '^LimitNOFILE='" in cmd for cmd in executor.commands)
+    assert any("rm -f" in cmd for cmd in executor.commands)
     assert not any(
         "systemctl set-property nginx.service LimitNOFILE=" in cmd
         for cmd in executor.commands

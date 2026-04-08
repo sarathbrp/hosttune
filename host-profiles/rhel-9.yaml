@@ -128,7 +128,10 @@ tunable_surface:
       threshold_below: 65536
       fix_command: >-
         mkdir -p /etc/systemd/system/nginx.service.d &&
-        printf '[Service]\nLimitNOFILE=524288\n' > /etc/systemd/system/nginx.service.d/hosttune-limitnofile.conf &&
+        for _f in /etc/systemd/system/nginx.service.d/*.conf; do
+        [ -f "$_f" ] && grep -q '^LimitNOFILE=' "$_f" 2>/dev/null && rm -f "$_f";
+        done; true &&
+        printf '[Service]\nLimitNOFILE=524288\n' > /etc/systemd/system/nginx.service.d/zz_hosttune_limit_nofile.conf &&
         systemctl daemon-reload &&
         systemctl restart nginx.service
       priority: critical
