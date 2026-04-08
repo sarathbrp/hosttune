@@ -9,6 +9,9 @@ from onboard.domain.models import (
     DirectiveValueType,
     ParameterGroup,
     ParameterGroupMember,
+    PerformanceHierarchy,
+    PerformanceHierarchyGroup,
+    PerformanceHierarchyParameter,
     PriorityTier,
     ProbeType,
     ProcessState,
@@ -134,6 +137,7 @@ class ServiceDefinitionValidator:
         systemd_limits_raw = cast(dict[str, Any], data.get("systemd_unit_limits", {}))
         cgroup_controls_raw = cast(dict[str, Any], data.get("cgroup_resource_controls", {}))
         parameter_groups_raw = data.get("parameter_groups", [])
+        performance_hierarchy_raw = data.get("performance_hierarchy")
         return ServiceTunableSurface(
             allowed_directives={
                 name: self._parse_directive_constraint(cast(dict[str, Any], value))
@@ -157,6 +161,7 @@ class ServiceDefinitionValidator:
                 for name, value in cgroup_controls_raw.items()
             },
             parameter_groups=self._parse_parameter_groups(parameter_groups_raw),
+            performance_hierarchy=self._parse_performance_hierarchy(performance_hierarchy_raw),
         )
 
     def _parse_parameter_groups(self, value: object) -> tuple[ParameterGroup, ...]:
@@ -188,6 +193,132 @@ class ServiceDefinitionValidator:
                 )
             groups.append(ParameterGroup(name=name, members=tuple(members)))
         return tuple(groups)
+
+    def _parse_performance_hierarchy(
+        self, value: object
+    ) -> PerformanceHierarchy | None:
+        if value is None or value == {}:
+            return None
+        if not isinstance(value, dict):
+            msg = "Expected mapping for 'performance_hierarchy'"
+            raise ValueError(msg)
+        raw = cast(dict[str, Any], value)
+        groups_raw = raw.get("groups")
+        if groups_raw is None:
+            return None
+        groups = self._parse_performance_hierarchy_groups(groups_raw)
+        return PerformanceHierarchy(
+            version=self._optional_str(raw.get("version")),
+            description=self._optional_str(raw.get("description")),
+            groups=groups,
+        )
+
+    def _parse_performance_hierarchy_groups(
+        self, value: object
+    ) -> tuple[PerformanceHierarchyGroup, ...]:
+        if isinstance(value, dict):
+            parsed: list[PerformanceHierarchyGroup] = []
+            for group_id, item in cast(dict[str, Any], value).items():
+                if not isinstance(group_id, str) or group_id == "":
+                    msg = "performance_hierarchy.groups keys must be non-empty strings"
+                    raise ValueError(msg)
+                if not isinstance(item, dict):
+                    msg = f"performance_hierarchy.groups[{group_id!r}] must be an object"
+                    raise ValueError(msg)
+                item_dict = cast(dict[str, Any], item)
+                parsed.append(
+                    PerformanceHierarchyGroup(
+                        group_id=group_id,
+                        description=self._require_str(item_dict, "description"),
+                        parameters=self._parse_performance_hierarchy_parameters(
+                            item_dict.get("parameters"),
+                        ),
+                        depends_on_groups=self._str_tuple(item_dict.get("depends_on_groups", [])),
+                    )
+                )
+            return tuple(parsed)
+        if isinstance(value, list):
+            parsed = []
+            for index, item in enumerate(value):
+                if not isinstance(item, dict):
+                    msg = f"performance_hierarchy.groups[{index}] must be an object"
+                    raise ValueError(msg)
+                item_dict = cast(dict[str, Any], item)
+                group_id = self._require_str(item_dict, "group_id")
+                parsed.append(
+                    PerformanceHierarchyGroup(
+                        group_id=group_id,
+                        description=self._require_str(item_dict, "description"),
+                        parameters=self._parse_performance_hierarchy_parameters(
+                            item_dict.get("parameters"),
+                        ),
+                        depends_on_groups=self._str_tuple(item_dict.get("depends_on_groups", [])),
+                    )
+                )
+            return tuple(parsed)
+        msg = "performance_hierarchy.groups must be a mapping or list"
+        raise ValueError(msg)
+
+    def _parse_performance_hierarchy_parameters(
+        self, value: object
+    ) -> tuple[PerformanceHierarchyParameter, ...]:
+        if isinstance(value, dict):
+            parsed: list[PerformanceHierarchyParameter] = []
+            for parameter_name, item in cast(dict[str, Any], value).items():
+                if not isinstance(parameter_name, str) or parameter_name == "":
+                    msg = (
+                        "performance_hierarchy group parameter names must be non-empty strings"
+                    )
+                    raise ValueError(msg)
+                if not isinstance(item, dict):
+                    msg = f"performance_hierarchy parameter {parameter_name!r} must be an object"
+                    raise ValueError(msg)
+                item_dict = cast(dict[str, Any], item)
+                parsed.append(
+                    PerformanceHierarchyParameter(
+                        name=parameter_name,
+                        target_perf=self._require_str(item_dict, "target_perf"),
+                        inspect_cmd=self._optional_str(item_dict.get("inspect_cmd")),
+                        detail=self._optional_str(item_dict.get("detail")),
+                        candidate_key=self._optional_str(item_dict.get("candidate_key")),
+                        target_type=self._optional_str(item_dict.get("target_type")),
+                        target_value=self._optional_target_value(item_dict.get("target_value")),
+                        enforceable=self._optional_bool(item_dict.get("enforceable"), False),
+                        depends_on_groups=self._str_tuple(item_dict.get("depends_on_groups", [])),
+                    )
+                )
+            return tuple(parsed)
+        if isinstance(value, list):
+            parsed = []
+            for index, item in enumerate(value):
+                if not isinstance(item, dict):
+                    msg = f"performance_hierarchy parameter[{index}] must be an object"
+                    raise ValueError(msg)
+                item_dict = cast(dict[str, Any], item)
+                parsed.append(
+                    PerformanceHierarchyParameter(
+                        name=self._require_str(item_dict, "name"),
+                        target_perf=self._require_str(item_dict, "target_perf"),
+                        inspect_cmd=self._optional_str(item_dict.get("inspect_cmd")),
+                        detail=self._optional_str(item_dict.get("detail")),
+                        candidate_key=self._optional_str(item_dict.get("candidate_key")),
+                        target_type=self._optional_str(item_dict.get("target_type")),
+                        target_value=self._optional_target_value(item_dict.get("target_value")),
+                        enforceable=self._optional_bool(item_dict.get("enforceable"), False),
+                        depends_on_groups=self._str_tuple(item_dict.get("depends_on_groups", [])),
+                    )
+                )
+            return tuple(parsed)
+        msg = "performance_hierarchy group parameters must be a mapping or list"
+        raise ValueError(msg)
+
+    def _optional_target_value(self, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float)):
+            return str(value)
+        msg = "Expected target_value to be string/number/null"
+        raise ValueError(msg)
 
     def _parse_relevant_sysctls(self, value: object) -> tuple[SysctlTunable, ...]:
         if value is None or value == []:
@@ -284,6 +415,14 @@ class ServiceDefinitionValidator:
             return None
         if not isinstance(value, int):
             msg = "Expected integer or null."
+            raise ValueError(msg)
+        return value
+
+    def _optional_bool(self, value: object, default: bool) -> bool:
+        if value is None:
+            return default
+        if not isinstance(value, bool):
+            msg = "Expected boolean or null."
             raise ValueError(msg)
         return value
 

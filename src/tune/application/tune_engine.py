@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -182,6 +183,429 @@ def _normalize_parameter_group_hypotheses(
                 normalized.append(extra)
                 seen.add(key)
     return tuple(normalized)
+
+
+_WIDE_SWEEP_NEUTRALIZATION_TARGETS: dict[str, str] = {
+    "service.directive.access_log": "off",
+    "service.directive.gzip": "off",
+}
+
+
+def _merge_candidate_sets(
+    primary: tuple[CandidateParameter, ...],
+    secondary: tuple[CandidateParameter, ...],
+) -> tuple[CandidateParameter, ...]:
+    ordered: list[CandidateParameter] = []
+    seen: set[str] = set()
+    for candidate in primary + secondary:
+        if candidate.parameter_key in seen:
+            continue
+        seen.add(candidate.parameter_key)
+        ordered.append(candidate)
+    return tuple(ordered)
+
+
+def _effective_candidate_value(
+    *,
+    parameter_key: str,
+    candidate_by_key: dict[str, CandidateParameter],
+    active_changes: dict[str, AppliedChange],
+) -> str | None:
+    active = active_changes.get(parameter_key)
+    if active is not None:
+        return active.applied_value
+    candidate = candidate_by_key.get(parameter_key)
+    if candidate is None:
+        return None
+    return candidate.current_value
+
+
+def _to_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _target_met(
+    *,
+    observed: str | None,
+    target_type: str | None,
+    target_value: str | None,
+) -> bool:
+    if observed is None or target_value is None:
+        return False
+    observed_text = observed.strip()
+    target_text = str(target_value).strip()
+    mode = (target_type or "exact").strip()
+    if mode == "exact":
+        return observed_text == target_text
+    if mode == "min":
+        observed_int = _to_int(observed_text)
+        target_int = _to_int(target_text)
+        return (
+            observed_int is not None
+            and target_int is not None
+            and observed_int >= target_int
+        )
+    if mode == "max":
+        observed_int = _to_int(observed_text)
+        target_int = _to_int(target_text)
+        return (
+            observed_int is not None
+            and target_int is not None
+            and observed_int <= target_int
+        )
+    if mode == "range":
+        observed_int = _to_int(observed_text)
+        match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", target_text)
+        if observed_int is None or match is None:
+            return False
+        low = int(match.group(1))
+        high = int(match.group(2))
+        if low > high:
+            low, high = high, low
+        return low <= observed_int <= high
+    if mode == "string_prefix":
+        return observed_text.startswith(target_text)
+    return False
+
+
+def _normalize_wide_sweep_neutralization_hypotheses(
+    hypotheses: tuple[TuningHypothesis, ...],
+    *,
+    phase: TunePhase,
+    candidate_pool: tuple[CandidateParameter, ...],
+    active_changes: dict[str, AppliedChange],
+) -> tuple[TuningHypothesis, ...]:
+    if phase is not TunePhase.WIDE_SWEEP or not hypotheses:
+        return hypotheses
+    candidate_by_key = {candidate.parameter_key: candidate for candidate in candidate_pool}
+    unsatisfied_keys = [
+        key
+        for key, target in _WIDE_SWEEP_NEUTRALIZATION_TARGETS.items()
+        if _effective_candidate_value(
+            parameter_key=key,
+            candidate_by_key=candidate_by_key,
+            active_changes=active_changes,
+        ) != target
+    ]
+    if not unsatisfied_keys:
+        return hypotheses
+    hypothesis_by_key = {hypothesis.parameter_key: hypothesis for hypothesis in hypotheses}
+    if not any(key in hypothesis_by_key for key in unsatisfied_keys):
+        return hypotheses
+    normalized: list[TuningHypothesis] = list(hypotheses)
+    for key in unsatisfied_keys:
+        target = _WIDE_SWEEP_NEUTRALIZATION_TARGETS[key]
+        existing = hypothesis_by_key.get(key)
+        if existing is not None:
+            if existing.proposed_value == target:
+                continue
+            updated = replace(
+                existing,
+                proposed_value=target,
+                rationale=(
+                    f"{existing.rationale} | wide_sweep benchmark neutralization"
+                ),
+            )
+            hypothesis_by_key[key] = updated
+            for index, item in enumerate(normalized):
+                if item.parameter_key == key:
+                    normalized[index] = updated
+                    break
+            continue
+        candidate = candidate_by_key.get(key)
+        if candidate is None:
+            continue
+        neutral = TuningHypothesis(
+            phase=hypotheses[0].phase,
+            parameter_key=candidate.parameter_key,
+            parameter_name=candidate.parameter_name,
+            domain=candidate.domain,
+            tuning_layer=candidate.tuning_layer,
+            proposed_value=target,
+            source=candidate.source,
+            apply_mode=candidate.apply_mode,
+            rationale="wide_sweep benchmark neutralization",
+        )
+        normalized.append(neutral)
+        hypothesis_by_key[key] = neutral
+    return tuple(normalized)
+
+
+def _normalize_worker_connections_nofile_chain_hypotheses(
+    hypotheses: tuple[TuningHypothesis, ...],
+    *,
+    candidate_pool: tuple[CandidateParameter, ...],
+    active_changes: dict[str, AppliedChange],
+) -> tuple[TuningHypothesis, ...]:
+    if not hypotheses:
+        return hypotheses
+    worker_connections = next(
+        (
+            hypothesis
+            for hypothesis in hypotheses
+            if hypothesis.parameter_key == "service.directive.worker_connections"
+        ),
+        None,
+    )
+    if worker_connections is None:
+        return hypotheses
+    required_connections = _to_int(worker_connections.proposed_value)
+    if required_connections is None:
+        return hypotheses
+    candidate_by_key = {candidate.parameter_key: candidate for candidate in candidate_pool}
+    worker_rlimit_key = "service.directive.worker_rlimit_nofile"
+    worker_rlimit_candidate = candidate_by_key.get(worker_rlimit_key)
+    if worker_rlimit_candidate is None:
+        return hypotheses
+    hypothesis_by_key = {hypothesis.parameter_key: hypothesis for hypothesis in hypotheses}
+    existing = hypothesis_by_key.get(worker_rlimit_key)
+    required_value = required_connections
+    if worker_rlimit_candidate.min_value is not None:
+        required_value = max(required_value, worker_rlimit_candidate.min_value)
+    if worker_rlimit_candidate.max_value is not None:
+        required_value = min(required_value, worker_rlimit_candidate.max_value)
+    required_text = str(required_value)
+    if existing is not None:
+        existing_int = _to_int(existing.proposed_value)
+        if existing_int is not None and existing_int >= required_value:
+            return hypotheses
+        updated = replace(
+            existing,
+            proposed_value=required_text,
+            rationale=(
+                f"{existing.rationale} | enforce NOFILE chain: worker_rlimit_nofile >= worker_connections"
+            ),
+        )
+        return tuple(
+            updated if hypothesis.parameter_key == worker_rlimit_key else hypothesis
+            for hypothesis in hypotheses
+        )
+    current_rlimit = _to_int(
+        _effective_candidate_value(
+            parameter_key=worker_rlimit_key,
+            candidate_by_key=candidate_by_key,
+            active_changes=active_changes,
+        )
+    )
+    if current_rlimit is not None and current_rlimit >= required_value:
+        return hypotheses
+    companion = TuningHypothesis(
+        phase=hypotheses[0].phase,
+        parameter_key=worker_rlimit_candidate.parameter_key,
+        parameter_name=worker_rlimit_candidate.parameter_name,
+        domain=worker_rlimit_candidate.domain,
+        tuning_layer=worker_rlimit_candidate.tuning_layer,
+        proposed_value=required_text,
+        source=worker_rlimit_candidate.source,
+        apply_mode=worker_rlimit_candidate.apply_mode,
+        rationale=(
+            "enforce NOFILE chain: worker_rlimit_nofile must be >= worker_connections"
+        ),
+    )
+    return tuple((*hypotheses, companion))
+
+
+def _worker_connections_nofile_chain_violation_reason(
+    hypotheses: tuple[TuningHypothesis, ...],
+    *,
+    candidate_pool: tuple[CandidateParameter, ...],
+    active_changes: dict[str, AppliedChange],
+) -> str | None:
+    if not hypotheses:
+        return None
+    hypothesis_values = {
+        hypothesis.parameter_key: hypothesis.proposed_value for hypothesis in hypotheses
+    }
+    worker_connections_key = "service.directive.worker_connections"
+    worker_rlimit_key = "service.directive.worker_rlimit_nofile"
+    candidate_by_key = {candidate.parameter_key: candidate for candidate in candidate_pool}
+    worker_connections_text = hypothesis_values.get(worker_connections_key)
+    if worker_connections_text is None:
+        return None
+    worker_connections = _to_int(worker_connections_text)
+    if worker_connections is None:
+        return (
+            "worker_connections proposal must be numeric to validate NOFILE chain"
+        )
+    worker_rlimit_text = hypothesis_values.get(worker_rlimit_key)
+    if worker_rlimit_text is None:
+        worker_rlimit_text = _effective_candidate_value(
+            parameter_key=worker_rlimit_key,
+            candidate_by_key=candidate_by_key,
+            active_changes=active_changes,
+        )
+    worker_rlimit = _to_int(worker_rlimit_text)
+    if worker_rlimit is None:
+        return (
+            "worker_connections requires worker_rlimit_nofile to be readable and numeric"
+        )
+    if worker_rlimit < worker_connections:
+        return (
+            "worker_connections requires worker_rlimit_nofile >= "
+            f"{worker_connections} (planned={worker_rlimit})"
+        )
+    return None
+
+
+def _hierarchy_group_sort_key(group_id: str) -> tuple[int, str]:
+    match = re.match(r"^\s*(\d+)_", group_id)
+    if match is None:
+        return (9999, group_id)
+    return (int(match.group(1)), group_id)
+
+
+def _enforce_hierarchy_candidate_gate(
+    *,
+    phase: TunePhase,
+    phase_candidates: tuple[CandidateParameter, ...],
+    all_candidates: tuple[CandidateParameter, ...],
+    active_changes: dict[str, AppliedChange],
+    performance_hierarchy: object | None,
+) -> tuple[CandidateParameter, ...]:
+    if not phase_candidates:
+        return phase_candidates
+    candidate_by_key = {candidate.parameter_key: candidate for candidate in all_candidates}
+
+    if phase is TunePhase.WIDE_SWEEP:
+        unsatisfied_neutralization = [
+            key
+            for key, target in _WIDE_SWEEP_NEUTRALIZATION_TARGETS.items()
+            if _effective_candidate_value(
+                parameter_key=key,
+                candidate_by_key=candidate_by_key,
+                active_changes=active_changes,
+            ) != target
+            and key in candidate_by_key
+        ]
+        if unsatisfied_neutralization:
+            phase_neutral = tuple(
+                candidate
+                for candidate in phase_candidates
+                if candidate.parameter_key in unsatisfied_neutralization
+            )
+            if phase_neutral:
+                return phase_neutral
+            all_neutral = tuple(
+                candidate
+                for candidate in all_candidates
+                if (
+                    candidate.parameter_key in unsatisfied_neutralization
+                    and candidate.availability is CandidateAvailability.ACTIVE
+                    and candidate.parameter_key not in active_changes
+                )
+            )
+            if all_neutral:
+                return all_neutral
+
+    if performance_hierarchy is None:
+        return phase_candidates
+    groups = tuple(getattr(performance_hierarchy, "groups", ()) or ())
+    if not groups:
+        return phase_candidates
+    sorted_groups = sorted(
+        groups,
+        key=lambda group: _hierarchy_group_sort_key(str(getattr(group, "group_id", ""))),
+    )
+    group_ids = [str(getattr(group, "group_id", "")) for group in sorted_groups]
+    group_dependencies: dict[str, tuple[str, ...]] = {}
+    for index, group in enumerate(sorted_groups):
+        group_id = group_ids[index]
+        explicit = tuple(getattr(group, "depends_on_groups", ()) or ())
+        if explicit:
+            group_dependencies[group_id] = explicit
+        else:
+            group_dependencies[group_id] = tuple(group_ids[:index])
+
+    enforceable_by_group: dict[str, list[tuple[str, str | None, str | None]]] = {}
+    parameter_group_map: dict[str, str] = {}
+    for group in sorted_groups:
+        group_id = str(getattr(group, "group_id", ""))
+        for parameter in tuple(getattr(group, "parameters", ()) or ()):
+            if not bool(getattr(parameter, "enforceable", False)):
+                continue
+            candidate_key = getattr(parameter, "candidate_key", None)
+            if not isinstance(candidate_key, str) or candidate_key == "":
+                continue
+            target_type = getattr(parameter, "target_type", None)
+            target_value = getattr(parameter, "target_value", None)
+            enforceable_by_group.setdefault(group_id, []).append(
+                (
+                    candidate_key,
+                    target_type if isinstance(target_type, str) else None,
+                    target_value if isinstance(target_value, str) else None,
+                )
+            )
+            parameter_group_map[candidate_key] = group_id
+
+    if not enforceable_by_group:
+        return phase_candidates
+    unsatisfied_groups: set[str] = set()
+    for group_id, checks in enforceable_by_group.items():
+        for parameter_key, target_type, target_value in checks:
+            observed = _effective_candidate_value(
+                parameter_key=parameter_key,
+                candidate_by_key=candidate_by_key,
+                active_changes=active_changes,
+            )
+            if not _target_met(
+                observed=observed,
+                target_type=target_type,
+                target_value=target_value,
+            ):
+                unsatisfied_groups.add(group_id)
+                break
+    if not unsatisfied_groups:
+        return phase_candidates
+
+    gated = tuple(
+        candidate
+        for candidate in phase_candidates
+        if (
+            parameter_group_map.get(candidate.parameter_key) is None
+            or not any(
+                dep in unsatisfied_groups
+                for dep in group_dependencies.get(
+                    parameter_group_map[candidate.parameter_key], ()
+                )
+            )
+        )
+    )
+    if gated:
+        return gated
+
+    earliest_unsatisfied = next(
+        (
+            group_id
+            for group_id in group_ids
+            if group_id in unsatisfied_groups
+        ),
+        None,
+    )
+    if earliest_unsatisfied is None:
+        return phase_candidates
+    required_keys = {
+        parameter_key
+        for parameter_key, _target_type, _target_value in enforceable_by_group.get(
+            earliest_unsatisfied, []
+        )
+    }
+    if not required_keys:
+        return phase_candidates
+    fallback = tuple(
+        candidate
+        for candidate in all_candidates
+        if (
+            candidate.parameter_key in required_keys
+            and candidate.availability is CandidateAvailability.ACTIVE
+            and candidate.parameter_key not in active_changes
+        )
+    )
+    return fallback if fallback else gated
 
 
 @dataclass
@@ -408,6 +832,13 @@ class TuneEngine:
                 state,
                 all_candidates,
                 allow_reboot=context.preflight.policy.allow_reboot,
+            )
+            candidates = _enforce_hierarchy_candidate_gate(
+                phase=phase,
+                phase_candidates=candidates,
+                all_candidates=all_candidates,
+                active_changes=state.active_changes,
+                performance_hierarchy=context.onboard.service.tunable_surface.performance_hierarchy,
             )
             if not candidates:
                 if phase is TunePhase.REBOOT_BATCH and deferred_catalog:
@@ -815,6 +1246,7 @@ class TuneEngine:
             kb_best_workload_rps=_kb_best_workload_rps(context),
             full_candidates=full_candidates,
         )
+        candidate_pool = _merge_candidate_sets(candidates, full_candidates)
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
             service_groups = tuple(
@@ -826,8 +1258,19 @@ class TuneEngine:
             )
             hypotheses = _normalize_parameter_group_hypotheses(
                 hypotheses,
-                candidates,
+                candidate_pool,
                 service_groups,
+            )
+            hypotheses = _normalize_wide_sweep_neutralization_hypotheses(
+                hypotheses,
+                phase=phase,
+                candidate_pool=candidate_pool,
+                active_changes=state.active_changes,
+            )
+            hypotheses = _normalize_worker_connections_nofile_chain_hypotheses(
+                hypotheses,
+                candidate_pool=candidate_pool,
+                active_changes=state.active_changes,
             )
         except Exception as exc:
             # Catch broadly so a single bad LLM response or parse error doesn't crash
@@ -890,11 +1333,62 @@ class TuneEngine:
 
         # Primary hypothesis drives the iteration record; companions are logged and co-applied.
         primary = hypotheses[0]
-        primary_candidate = self._find_candidate(candidates, primary.parameter_key)
+        primary_candidate = self._find_candidate(candidate_pool, primary.parameter_key)
         self._log_hypothesis(primary, primary_candidate, state)
         for companion in hypotheses[1:]:
-            companion_candidate = self._find_candidate(candidates, companion.parameter_key)
+            companion_candidate = self._find_candidate(candidate_pool, companion.parameter_key)
             self._log_hypothesis(companion, companion_candidate, state)
+
+        chain_violation = _worker_connections_nofile_chain_violation_reason(
+            hypotheses,
+            candidate_pool=candidate_pool,
+            active_changes=state.active_changes,
+        )
+        if chain_violation is not None:
+            from tune.application.format_table import pre_apply_rejection_table
+            self.logger.stage_detail(
+                "tune",
+                pre_apply_rejection_table(
+                    primary_candidate.tuning_layer.value,
+                    primary.parameter_key,
+                    chain_violation,
+                ),
+            )
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="pre_apply_rejected",
+                iteration_number=iteration_number,
+                phase=phase,
+                payload={
+                    "parameter_key": primary.parameter_key,
+                    "reason": chain_violation,
+                },
+            )
+            completed_at = datetime.now(UTC)
+            duration_seconds = perf_counter() - started_timer
+            record = TuneIterationRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=primary,
+                applied_change=None,
+                validation_result=None,
+                benchmark_result=None,
+                evaluation_result=None,
+                attribution_verification=None,
+                active_parameter_keys=tuple(sorted(state.active_changes)),
+                started_at_utc=started_at.isoformat(),
+                completed_at_utc=completed_at.isoformat(),
+                duration_seconds=duration_seconds,
+            )
+            history_record = HypothesisRecord(
+                iteration_number=iteration_number,
+                phase=phase,
+                hypothesis=primary,
+                status=HypothesisStatus.REJECTED_PRE_APPLY,
+                evaluation_summary=chain_violation,
+            )
+            return record, history_record
 
         # Pre-apply validate all; skip invalid companions, reject if primary fails.
         valid: list[TuningHypothesis] = []
@@ -946,7 +1440,7 @@ class TuneEngine:
             return record, history_record
         valid.append(primary)
         for companion in hypotheses[1:]:
-            companion_candidate = self._find_candidate(candidates, companion.parameter_key)
+            companion_candidate = self._find_candidate(candidate_pool, companion.parameter_key)
             companion_pre_apply = self.pre_apply_validator.validate(companion_candidate, companion)
             if companion_pre_apply.allowed:
                 valid.append(companion)
@@ -967,7 +1461,7 @@ class TuneEngine:
             try:
                 ac = self.apply_coordinator.apply(context, h, target_executor)
                 applied_changes[h.parameter_key] = ac
-                h_candidate = self._find_candidate(candidates, h.parameter_key)
+                h_candidate = self._find_candidate(candidate_pool, h.parameter_key)
                 from tune.application.format_table import apply_table
                 self.logger.stage_detail(
                     "tune",

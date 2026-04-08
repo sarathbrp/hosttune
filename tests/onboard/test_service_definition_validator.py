@@ -160,6 +160,47 @@ def build_valid_definition() -> dict[str, object]:
                     ],
                 }
             ],
+            "performance_hierarchy": {
+                "version": "1.1",
+                "description": "Merged chain policy",
+                "groups": {
+                    "1_cpu_parallelism": {
+                        "description": "CPU mappings and worker spread",
+                        "parameters": {
+                            "worker_processes": {
+                                "target_perf": "auto (or 112)",
+                                "inspect_cmd": "nginx -T | grep -E '^worker_processes'",
+                                "detail": "Current count of active workers.",
+                                "candidate_key": "service.directive.worker_processes",
+                                "target_type": "range",
+                                "target_value": "56-112",
+                                "enforceable": True,
+                            },
+                            "accept_mutex": {
+                                "target_perf": "off",
+                                "inspect_cmd": "nginx -T | grep 'accept_mutex'",
+                                "detail": "Observe if accept serialization is enabled.",
+                                "enforceable": False,
+                            },
+                        },
+                    },
+                    "4_protocol_payload": {
+                        "description": "Per-request overhead controls",
+                        "depends_on_groups": ["1_cpu_parallelism"],
+                        "parameters": {
+                            "access_log": {
+                                "target_perf": "off",
+                                "inspect_cmd": "nginx -T | grep 'access_log'",
+                                "detail": "Disable benchmark log tax.",
+                                "candidate_key": "service.directive.access_log",
+                                "target_type": "exact",
+                                "target_value": "off",
+                                "enforceable": True,
+                            },
+                        },
+                    },
+                },
+            },
             "interdependencies": [],
             "relevant_sysctls": [
                 {"name": "net.core.somaxconn", "priority_tier": "high"},
@@ -256,6 +297,13 @@ def test_validator_builds_typed_service_definition() -> None:
     )
     assert len(definition.tunable_surface.parameter_groups) == 1
     assert definition.tunable_surface.parameter_groups[0].name == "nginx_static_io_trio"
+    assert definition.tunable_surface.performance_hierarchy is not None
+    assert definition.tunable_surface.performance_hierarchy.version == "1.1"
+    assert len(definition.tunable_surface.performance_hierarchy.groups) == 2
+    group = definition.tunable_surface.performance_hierarchy.groups[0]
+    assert group.group_id == "1_cpu_parallelism"
+    assert group.parameters[0].candidate_key == "service.directive.worker_processes"
+    assert group.parameters[0].enforceable is True
     assert definition.tunable_surface.allowed_directives["worker_cpu_affinity"].value_type.value == "string"
     assert definition.tunable_surface.allowed_directives["limit_rate"].value_type.value == "string"
     assert definition.tunable_surface.network_ring_priority_tier is PriorityTier.MEDIUM
@@ -337,4 +385,12 @@ def test_validator_rejects_missing_required_blocks() -> None:
     data.pop("health_check")
 
     with pytest.raises(ValueError, match="Missing required service definition blocks"):
+        ServiceDefinitionValidator().validate(data)
+
+
+def test_validator_rejects_invalid_performance_hierarchy_shape() -> None:
+    data = build_valid_definition()
+    surface = cast(dict[str, object], data["tunable_surface"])
+    data["tunable_surface"] = {**surface, "performance_hierarchy": ["invalid"]}
+    with pytest.raises(ValueError, match="performance_hierarchy"):
         ServiceDefinitionValidator().validate(data)

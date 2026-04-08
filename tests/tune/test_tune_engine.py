@@ -22,7 +22,14 @@ from tune.application.phase_controller import PhaseController
 from tune.application.pre_apply_validator import PreApplyValidator
 from tune.application.result_evaluator import ResultEvaluator
 from tune.application.rollback_coordinator import RollbackCoordinator
-from tune.application.tune_engine import TuneEngine, _normalize_parameter_group_hypotheses
+from tune.application.tune_engine import (
+    TuneEngine,
+    _enforce_hierarchy_candidate_gate,
+    _normalize_parameter_group_hypotheses,
+    _normalize_wide_sweep_neutralization_hypotheses,
+    _normalize_worker_connections_nofile_chain_hypotheses,
+    _worker_connections_nofile_chain_violation_reason,
+)
 from tune.application.tune_recorder import TuneRecorder
 from tune.domain.evaluation_models import AttributionVerificationResult
 from tune.domain.hypothesis_models import (
@@ -736,3 +743,296 @@ def test_parameter_group_normalization_enforces_members_together() -> None:
         "service.directive.tcp_nodelay",
     }
     assert all(h.proposed_value == "on" for h in normalized)
+
+
+def test_worker_connections_chain_normalization_adds_worker_rlimit_companion() -> None:
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.hypothesis_models import CandidateParameter
+    from tune.domain.tuning_layer import TuningLayer
+
+    candidates = (
+        CandidateParameter(
+            parameter_key="service.directive.worker_connections",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            parameter_name="worker_connections",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.INTEGER,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.HIGH,
+            allowed_values=(),
+            forbidden_values=(),
+            min_value=128,
+            max_value=65535,
+            rationale_hint="test",
+            current_value="1024",
+        ),
+        CandidateParameter(
+            parameter_key="service.directive.worker_rlimit_nofile",
+            domain="runtime",
+            tuning_layer=TuningLayer.RUNTIME,
+            parameter_name="worker_rlimit_nofile",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.INTEGER,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.HIGH,
+            allowed_values=(),
+            forbidden_values=(),
+            min_value=1024,
+            max_value=2097152,
+            rationale_hint="test",
+            current_value="8192",
+        ),
+    )
+    hypotheses = (
+        TuningHypothesis(
+            phase=TunePhase.OPTIMIZE,
+            parameter_key="service.directive.worker_connections",
+            parameter_name="worker_connections",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            proposed_value="65535",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            apply_mode=ApplyMode.RELOAD,
+            rationale="raise concurrency",
+        ),
+    )
+
+    normalized = _normalize_worker_connections_nofile_chain_hypotheses(
+        hypotheses,
+        candidate_pool=candidates,
+        active_changes={},
+    )
+
+    values = {hypothesis.parameter_key: hypothesis.proposed_value for hypothesis in normalized}
+    assert values["service.directive.worker_connections"] == "65535"
+    assert int(values["service.directive.worker_rlimit_nofile"]) >= 65535
+    assert (
+        _worker_connections_nofile_chain_violation_reason(
+            normalized,
+            candidate_pool=candidates,
+            active_changes={},
+        )
+        is None
+    )
+
+
+def test_worker_connections_chain_violation_detects_low_rlimit() -> None:
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.hypothesis_models import CandidateParameter
+    from tune.domain.tuning_layer import TuningLayer
+
+    candidates = (
+        CandidateParameter(
+            parameter_key="service.directive.worker_connections",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            parameter_name="worker_connections",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.INTEGER,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.HIGH,
+            allowed_values=(),
+            forbidden_values=(),
+            min_value=128,
+            max_value=65535,
+            rationale_hint="test",
+            current_value="1024",
+        ),
+        CandidateParameter(
+            parameter_key="service.directive.worker_rlimit_nofile",
+            domain="runtime",
+            tuning_layer=TuningLayer.RUNTIME,
+            parameter_name="worker_rlimit_nofile",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.INTEGER,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.HIGH,
+            allowed_values=(),
+            forbidden_values=(),
+            min_value=1024,
+            max_value=2097152,
+            rationale_hint="test",
+            current_value="8192",
+        ),
+    )
+    hypotheses = (
+        TuningHypothesis(
+            phase=TunePhase.OPTIMIZE,
+            parameter_key="service.directive.worker_connections",
+            parameter_name="worker_connections",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            proposed_value="65535",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            apply_mode=ApplyMode.RELOAD,
+            rationale="raise concurrency",
+        ),
+    )
+
+    reason = _worker_connections_nofile_chain_violation_reason(
+        hypotheses,
+        candidate_pool=candidates,
+        active_changes={},
+    )
+
+    assert reason is not None
+    assert "worker_rlimit_nofile >= 65535" in reason
+
+
+def test_wide_sweep_neutralization_batches_access_log_and_gzip() -> None:
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.hypothesis_models import CandidateParameter
+    from tune.domain.tuning_layer import TuningLayer
+
+    candidates = (
+        CandidateParameter(
+            parameter_key="service.directive.access_log",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            parameter_name="access_log",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.ENUM,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.HIGH,
+            allowed_values=("off", "/var/log/nginx/access.log"),
+            forbidden_values=(),
+            min_value=None,
+            max_value=None,
+            rationale_hint="test",
+            current_value="/var/log/nginx/access.log",
+        ),
+        CandidateParameter(
+            parameter_key="service.directive.gzip",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            parameter_name="gzip",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            value_type=DirectiveValueType.ENUM,
+            apply_mode=ApplyMode.RELOAD,
+            priority_tier=PriorityTier.MEDIUM,
+            allowed_values=("on", "off"),
+            forbidden_values=(),
+            min_value=None,
+            max_value=None,
+            rationale_hint="test",
+            current_value="on",
+        ),
+    )
+    hypotheses = (
+        TuningHypothesis(
+            phase=TunePhase.WIDE_SWEEP,
+            parameter_key="service.directive.access_log",
+            parameter_name="access_log",
+            domain="service_config",
+            tuning_layer=TuningLayer.SERVICE,
+            proposed_value="off",
+            source=CandidateSource.SERVICE_DIRECTIVE,
+            apply_mode=ApplyMode.RELOAD,
+            rationale="turn off logging",
+        ),
+    )
+
+    normalized = _normalize_wide_sweep_neutralization_hypotheses(
+        hypotheses,
+        phase=TunePhase.WIDE_SWEEP,
+        candidate_pool=candidates,
+        active_changes={},
+    )
+
+    values = {hypothesis.parameter_key: hypothesis.proposed_value for hypothesis in normalized}
+    assert values["service.directive.access_log"] == "off"
+    assert values["service.directive.gzip"] == "off"
+
+
+def test_hierarchy_gate_routes_to_unsatisfied_prerequisite_group() -> None:
+    from onboard.domain.models import (
+        ApplyMode,
+        DirectiveValueType,
+        PerformanceHierarchy,
+        PerformanceHierarchyGroup,
+        PerformanceHierarchyParameter,
+        PriorityTier,
+    )
+    from tune.domain.hypothesis_models import CandidateParameter
+    from tune.domain.tuning_layer import TuningLayer
+
+    worker = CandidateParameter(
+        parameter_key="service.directive.worker_processes",
+        domain="service_config",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="worker_processes",
+        source=CandidateSource.SERVICE_DIRECTIVE,
+        value_type=DirectiveValueType.INTEGER,
+        apply_mode=ApplyMode.RELOAD,
+        priority_tier=PriorityTier.HIGH,
+        allowed_values=(),
+        forbidden_values=(),
+        min_value=1,
+        max_value=112,
+        rationale_hint="test",
+        current_value="16",
+    )
+    access_log = CandidateParameter(
+        parameter_key="service.directive.access_log",
+        domain="service_config",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="access_log",
+        source=CandidateSource.SERVICE_DIRECTIVE,
+        value_type=DirectiveValueType.ENUM,
+        apply_mode=ApplyMode.RELOAD,
+        priority_tier=PriorityTier.HIGH,
+        allowed_values=("off", "/var/log/nginx/access.log"),
+        forbidden_values=(),
+        min_value=None,
+        max_value=None,
+        rationale_hint="test",
+        current_value="/var/log/nginx/access.log",
+    )
+    hierarchy = PerformanceHierarchy(
+        version="1.1",
+        description="test",
+        groups=(
+            PerformanceHierarchyGroup(
+                group_id="1_cpu_parallelism",
+                description="cpu",
+                parameters=(
+                    PerformanceHierarchyParameter(
+                        name="worker_processes",
+                        target_perf="56-112",
+                        candidate_key="service.directive.worker_processes",
+                        target_type="range",
+                        target_value="56-112",
+                        enforceable=True,
+                    ),
+                ),
+            ),
+            PerformanceHierarchyGroup(
+                group_id="4_protocol_payload",
+                description="payload",
+                parameters=(
+                    PerformanceHierarchyParameter(
+                        name="access_log",
+                        target_perf="off",
+                        candidate_key="service.directive.access_log",
+                        target_type="exact",
+                        target_value="off",
+                        enforceable=True,
+                    ),
+                ),
+                depends_on_groups=("1_cpu_parallelism",),
+            ),
+        ),
+    )
+
+    gated = _enforce_hierarchy_candidate_gate(
+        phase=TunePhase.OPTIMIZE,
+        phase_candidates=(access_log,),
+        all_candidates=(access_log, worker),
+        active_changes={},
+        performance_hierarchy=hierarchy,
+    )
+
+    assert [candidate.parameter_key for candidate in gated] == [
+        "service.directive.worker_processes"
+    ]

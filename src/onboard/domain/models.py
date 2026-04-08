@@ -140,6 +140,34 @@ class ParameterGroup:
 
 
 @dataclass(frozen=True)
+class PerformanceHierarchyParameter:
+    name: str
+    target_perf: str
+    inspect_cmd: str | None = None
+    detail: str | None = None
+    candidate_key: str | None = None
+    target_type: str | None = None
+    target_value: str | None = None
+    enforceable: bool = False
+    depends_on_groups: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PerformanceHierarchyGroup:
+    group_id: str
+    description: str
+    parameters: tuple[PerformanceHierarchyParameter, ...]
+    depends_on_groups: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PerformanceHierarchy:
+    version: str | None
+    description: str | None
+    groups: tuple[PerformanceHierarchyGroup, ...]
+
+
+@dataclass(frozen=True)
 class ServiceTunableSurface:
     allowed_directives: dict[str, DirectiveConstraint]
     forbidden_directives: tuple[str, ...]
@@ -158,6 +186,8 @@ class ServiceTunableSurface:
     cgroup_resource_controls: dict[str, DirectiveConstraint] = field(default_factory=dict)
     # Parameter groups: when any member is proposed, enforce all members together.
     parameter_groups: tuple[ParameterGroup, ...] = ()
+    # Optional merged hierarchy metadata (migration target for *-perf-hierarchy.yaml).
+    performance_hierarchy: PerformanceHierarchy | None = None
 
 
 @dataclass(frozen=True)

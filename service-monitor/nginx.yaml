@@ -199,6 +199,190 @@ tunable_surface:
           target_value: "on"
         - parameter_key: service.directive.tcp_nodelay
           target_value: "on"
+  performance_hierarchy:
+    version: "1.1"
+    description: "NGINX Parameter Hierarchy with RHEL 9.7 Inspection Commands"
+    groups:
+      1_cpu_parallelism:
+        description: "The Engine: Mapping NGINX to Physical Hardware"
+        parameters:
+          worker_processes:
+            target_perf: "auto (or 112)"
+            inspect_cmd: "nginx -T | grep -E '^worker_processes'"
+            detail: "Current count of active workers in the process tree."
+            candidate_key: "service.directive.worker_processes"
+            target_type: "range"
+            target_value: "56-112"
+            enforceable: true
+          worker_cpu_affinity:
+            target_perf: "auto"
+            inspect_cmd: "ps -mo pid,tid,psr,comm -p $(pgrep -n nginx)"
+            detail: "Shows which logical CPU (PSR column) each worker thread is currently pinned to."
+            candidate_key: "service.directive.worker_cpu_affinity"
+            enforceable: false
+          accept_mutex:
+            target_perf: "off"
+            inspect_cmd: "nginx -T | grep 'accept_mutex'"
+            detail: "Verifies if workers are competing for connections without serialization."
+            enforceable: false
+
+      2_concurrency_ingress:
+        description: "The Gates: Total Volume of Simultaneous Traffic"
+        depends_on_groups:
+          - "1_cpu_parallelism"
+        parameters:
+          worker_rlimit_nofile:
+            target_perf: "200000+"
+            inspect_cmd: "cat /proc/$(pgrep -n nginx)/limits | grep 'Max open files'"
+            detail: "Verifies the effective hard/soft file descriptor limits for the master process."
+            candidate_key: "service.directive.worker_rlimit_nofile"
+            target_type: "min"
+            target_value: "200000"
+            enforceable: true
+          worker_connections:
+            target_perf: "65535"
+            inspect_cmd: "nginx -T | grep 'worker_connections'"
+            detail: "Max connections allowed per worker process."
+            candidate_key: "service.directive.worker_connections"
+            target_type: "exact"
+            target_value: "65535"
+            enforceable: true
+          listen_backlog:
+            target_perf: "65535"
+            inspect_cmd: "ss -plnt sport eq :80"
+            detail: "The 'Send-Q' column shows the current kernel listener backlog depth for port 80."
+            candidate_key: "sysctl.net.core.somaxconn"
+            target_type: "exact"
+            target_value: "65535"
+            enforceable: true
+          multi_accept:
+            target_perf: "on"
+            inspect_cmd: "nginx -T | grep 'multi_accept'"
+            detail: "Verifies if workers accept all new connections in a single cycle."
+            candidate_key: "service.directive.multi_accept"
+            target_type: "exact"
+            target_value: "on"
+            enforceable: true
+
+      3_io_fast_path:
+        description: "The Express Lane: Data Movement Efficiency"
+        depends_on_groups:
+          - "2_concurrency_ingress"
+        parameters:
+          sendfile:
+            target_perf: "on"
+            inspect_cmd: "nginx -T | grep 'sendfile '"
+            detail: "Ensures the zero-copy kernel-to-NIC path is active."
+            candidate_key: "service.directive.sendfile"
+            target_type: "exact"
+            target_value: "on"
+            enforceable: true
+          tcp_nopush:
+            target_perf: "on"
+            inspect_cmd: "nginx -T | grep 'tcp_nopush'"
+            detail: "Confirms packet header packing is enabled."
+            candidate_key: "service.directive.tcp_nopush"
+            target_type: "exact"
+            target_value: "on"
+            enforceable: true
+          tcp_nodelay:
+            target_perf: "on"
+            inspect_cmd: "nginx -T | grep 'tcp_nodelay'"
+            detail: "Verifies the disabling of Nagle's algorithm for small-packet latency."
+            candidate_key: "service.directive.tcp_nodelay"
+            target_type: "exact"
+            target_value: "on"
+            enforceable: true
+          aio:
+            target_perf: "threads"
+            inspect_cmd: "nginx -T | grep 'aio '"
+            detail: "Confirms if NGINX is using the thread pool for non-blocking I/O."
+            candidate_key: "service.directive.aio"
+            target_type: "exact"
+            target_value: "threads"
+            enforceable: true
+          directio:
+            target_perf: "512"
+            inspect_cmd: "nginx -T | grep 'directio '"
+            detail: "Checks for page cache bypass on large files."
+            enforceable: false
+          open_file_cache:
+            target_perf: "max=200000"
+            inspect_cmd: "nginx -T | grep 'open_file_cache '"
+            detail: "Displays entries and TTL for the metadata cache."
+            candidate_key: "service.directive.open_file_cache"
+            target_type: "string_prefix"
+            target_value: "max=200000"
+            enforceable: true
+
+      4_protocol_payload:
+        description: "The Efficiency: Reducing Per-Request Overhead"
+        depends_on_groups:
+          - "1_cpu_parallelism"
+          - "2_concurrency_ingress"
+          - "3_io_fast_path"
+        parameters:
+          keepalive_timeout:
+            target_perf: "30-65"
+            inspect_cmd: "nginx -T | grep 'keepalive_timeout'"
+            detail: "Idle connection timeout value."
+            candidate_key: "service.directive.keepalive_timeout"
+            target_type: "range"
+            target_value: "30-65"
+            enforceable: true
+          keepalive_requests:
+            target_perf: "10000"
+            inspect_cmd: "nginx -T | grep 'keepalive_requests'"
+            detail: "Max requests allowed per persistent connection."
+            candidate_key: "service.directive.keepalive_requests"
+            target_type: "exact"
+            target_value: "10000"
+            enforceable: true
+          client_body_buffer_size:
+            target_perf: "128k"
+            inspect_cmd: "nginx -T | grep 'client_body_buffer_size'"
+            detail: "RAM allocated for request body processing."
+            enforceable: false
+          access_log:
+            target_perf: "off"
+            inspect_cmd: "nginx -T | grep 'access_log'"
+            detail: "Checks if the 'log tax' is disabled for benchmarking."
+            candidate_key: "service.directive.access_log"
+            target_type: "exact"
+            target_value: "off"
+            enforceable: true
+          error_log_level:
+            target_perf: "warn"
+            inspect_cmd: "nginx -T | grep 'error_log'"
+            detail: "Displays logging verbosity."
+            enforceable: false
+
+      5_throttling_governors:
+        description: "The Brakes: Security and Resource Constraints"
+        depends_on_groups:
+          - "4_protocol_payload"
+        parameters:
+          gzip:
+            target_perf: "off"
+            inspect_cmd: "nginx -T | grep -E '^gzip '"
+            detail: "Ensures CPU-intensive compression is disabled."
+            candidate_key: "service.directive.gzip"
+            target_type: "exact"
+            target_value: "off"
+            enforceable: true
+          limit_rate:
+            target_perf: "0"
+            inspect_cmd: "nginx -T | grep 'limit_rate'"
+            detail: "Checks for bandwidth throttling caps (0 = disabled)."
+            candidate_key: "service.directive.limit_rate"
+            target_type: "exact"
+            target_value: "0"
+            enforceable: true
+          limit_req:
+            target_perf: "off"
+            inspect_cmd: "nginx -T | grep 'limit_req'"
+            detail: "Checks for request rate-limiting zones."
+            enforceable: false
   interdependencies:
     - worker_processes -> verify CPU topology and NUMA layout
     - worker_connections -> verify file descriptor limits
