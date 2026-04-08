@@ -515,10 +515,58 @@ class EnvDiagnosticExecutor:
                 stdout="MemoryMax=268435456\n",
                 stderr="",
             )
+        if "Max open files" in command:
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="Max open files            1024                 1024                 files\n",
+                stderr="",
+            )
+        if "smp_affinity_list" in command:
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="0\n0\n",
+                stderr="",
+            )
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
 
-def _build_env_hierarchy_host_profile() -> HostProfile:
+def _build_env_hierarchy_host_profile(
+    *,
+    include_limits: bool = False,
+    include_irq_affinity: bool = False,
+) -> HostProfile:
+    parameters = [
+        HostPerformanceHierarchyParameter(
+            name="CPUQuota",
+            target_perf="none",
+            inspect_cmd="systemctl show nginx.service -p CPUQuota",
+        ),
+        HostPerformanceHierarchyParameter(
+            name="MemoryMax",
+            target_perf="none",
+            inspect_cmd="systemctl show nginx.service -p MemoryMax",
+        ),
+    ]
+    if include_limits:
+        parameters.append(
+            HostPerformanceHierarchyParameter(
+                name="LimitNOFILE",
+                target_perf="1048576",
+                inspect_cmd="cat /proc/$(pgrep -n nginx)/limits | grep 'Max open files'",
+            )
+        )
+    if include_irq_affinity:
+        parameters.append(
+            HostPerformanceHierarchyParameter(
+                name="NIC_IRQ_affinity",
+                target_perf="balanced (all cores)",
+                inspect_cmd=(
+                    "cat /proc/irq/$(grep eno /proc/interrupts | awk '{print $1}' | tr -d ':')/smp_affinity_list"
+                ),
+            )
+        )
     hierarchy = HostPerformanceHierarchy(
         version="1.0",
         description="host env hierarchy",
@@ -526,18 +574,7 @@ def _build_env_hierarchy_host_profile() -> HostProfile:
             HostPerformanceHierarchyGroup(
                 group_id="1_systemd_resource_limits",
                 description="systemd limits",
-                parameters=(
-                    HostPerformanceHierarchyParameter(
-                        name="CPUQuota",
-                        target_perf="none",
-                        inspect_cmd="systemctl show nginx.service -p CPUQuota",
-                    ),
-                    HostPerformanceHierarchyParameter(
-                        name="MemoryMax",
-                        target_perf="none",
-                        inspect_cmd="systemctl show nginx.service -p MemoryMax",
-                    ),
-                ),
+                parameters=tuple(parameters),
             ),
         ),
     )
@@ -626,3 +663,50 @@ def test_env_diagnostic_does_not_apply_hierarchy_fixes_when_cleanup_disabled(
     assert any("systemctl show nginx.service -p MemoryMax" in cmd for cmd in executor.commands)
     assert not any("systemctl set-property nginx.service CPUQuota=" in cmd for cmd in executor.commands)
     assert not any("systemctl set-property nginx.service MemoryMax=" in cmd for cmd in executor.commands)
+
+
+def test_env_diagnostic_uses_dropin_for_limitnofile_hierarchy_fix(tmp_path: Path) -> None:
+    executor = EnvDiagnosticExecutor()
+    instance = HostTuneInstance(
+        config_loader=EnvCleanupEnabledConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: executor,
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+    instance.load_preflight(Path("config.yaml"))
+    instance.host_profile = _build_env_hierarchy_host_profile(include_limits=True)
+
+    instance.clear_environment_blockers(Path("config.yaml"))
+
+    assert any("Max open files" in cmd for cmd in executor.commands)
+    assert any("hosttune-limitnofile.conf" in cmd for cmd in executor.commands)
+    assert not any(
+        "systemctl set-property nginx.service LimitNOFILE=" in cmd
+        for cmd in executor.commands
+    )
+
+
+def test_env_diagnostic_fixes_nic_irq_affinity_via_irqbalance(tmp_path: Path) -> None:
+    executor = EnvDiagnosticExecutor()
+    instance = HostTuneInstance(
+        config_loader=EnvCleanupEnabledConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: executor,
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+    instance.load_preflight(Path("config.yaml"))
+    instance.host_profile = _build_env_hierarchy_host_profile(include_irq_affinity=True)
+
+    instance.clear_environment_blockers(Path("config.yaml"))
+
+    assert any("smp_affinity_list" in cmd for cmd in executor.commands)
+    assert any(
+        "systemctl enable --now irqbalance && systemctl restart irqbalance" in cmd
+        for cmd in executor.commands
+    )

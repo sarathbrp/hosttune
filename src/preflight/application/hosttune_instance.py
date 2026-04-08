@@ -446,6 +446,8 @@ class HostTuneInstance:
             return minimum is not None and minimum < 65_535
         if name == "irqbalance":
             return value.strip().lower() != "active"
+        if name == "nic_irq_affinity":
+            return self._irq_affinity_pinned_to_cpu0(output)
         if name == "thp":
             return "[madvise]" not in output and value.strip().lower() != "madvise"
         if name == "cpu_governor":
@@ -468,11 +470,25 @@ class HostTuneInstance:
         if name == "ioweight":
             return "systemctl set-property nginx.service IOWeight=100"
         if name == "limitnofile":
-            return "systemctl set-property nginx.service LimitNOFILE=1048576 && systemctl restart nginx.service"
+            return (
+                "mkdir -p /etc/systemd/system/nginx.service.d && "
+                "printf '[Service]\\nLimitNOFILE=1048576\\n' > "
+                "/etc/systemd/system/nginx.service.d/hosttune-limitnofile.conf && "
+                "systemctl daemon-reload && "
+                "systemctl restart nginx.service"
+            )
         if name == "limitnproc":
-            return "systemctl set-property nginx.service LimitNPROC=65535 && systemctl restart nginx.service"
+            return (
+                "mkdir -p /etc/systemd/system/nginx.service.d && "
+                "printf '[Service]\\nLimitNPROC=65535\\n' > "
+                "/etc/systemd/system/nginx.service.d/hosttune-limitnproc.conf && "
+                "systemctl daemon-reload && "
+                "systemctl restart nginx.service"
+            )
         if name == "irqbalance":
             return "systemctl enable --now irqbalance"
+        if name == "nic_irq_affinity":
+            return "systemctl enable --now irqbalance && systemctl restart irqbalance"
         if name == "thp":
             return "echo madvise > /sys/kernel/mm/transparent_hugepage/enabled"
         if name == "cpu_governor":
@@ -502,6 +518,13 @@ class HostTuneInstance:
         if len(values) < 2:
             return None
         return min(values[0], values[1])
+
+    def _irq_affinity_pinned_to_cpu0(self, output: str) -> bool:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            return False
+        allowed = {"0", "0-0"}
+        return all(line in allowed for line in lines)
 
     def run_tune(
         self,

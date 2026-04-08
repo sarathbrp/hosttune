@@ -39,11 +39,11 @@ groups:
     parameters:
       irqbalance:
         target_perf: "active"
-        inspect_cmd: "systemctl is-active irqbalance"
+        inspect_cmd: "systemctl is-active --quiet irqbalance && echo active || echo inactive"
         detail: "Stopping this (R1-R6) causes 'Interrupt Storms' on single cores."
       NIC_IRQ_affinity:
         target_perf: "balanced (all cores)"
-        inspect_cmd: "cat /proc/irq/$(grep eno /proc/interrupts | awk '{print $1}' | tr -d ':')/smp_affinity_list"
+        inspect_cmd: "cat /proc/irq/$(grep eno /proc/interrupts | head -n1 | awk '{print $1}' | tr -d ':')/smp_affinity_list 2>/dev/null"
         detail: "Pinning to CPU0 (R1) or small ranges (R2-R4) creates a bottleneck on the NIC data plane."
       NUMA_policy:
         target_perf: "default (local)"
