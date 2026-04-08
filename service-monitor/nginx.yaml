@@ -107,8 +107,7 @@ tunable_surface:
         - "on"
         - "off"
       apply_mode: reload
-      forbidden_values:
-        - "off"
+      forbidden_values: []
     limit_rate:
       value_type: string
       priority_tier: high

@@ -318,6 +318,51 @@ application_discovery_sanity:
     assert result.recommended_action.proposed_value == "max=200000"
 
 
+def test_main_triage_rules_offer_open_file_cache_presets() -> None:
+    from onboard.domain.models import ApplyMode, DirectiveValueType, PriorityTier
+    from tune.domain.hypothesis_models import CandidateParameter, CandidateSource
+    from tune.domain.tuning_layer import TuningLayer
+
+    base = build_hypothesis_context()
+    open_file_cache_candidate = CandidateParameter(
+        parameter_key="service.directive.open_file_cache",
+        domain="service_config",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="open_file_cache",
+        source=CandidateSource.SERVICE_DIRECTIVE,
+        value_type=DirectiveValueType.STRING,
+        apply_mode=ApplyMode.RELOAD,
+        priority_tier=PriorityTier.MEDIUM,
+        allowed_values=(),
+        forbidden_values=("off", "on", "true", "enable"),
+        min_value=None,
+        max_value=None,
+        rationale_hint="open_file_cache presets",
+        current_value="off",
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=(open_file_cache_candidate,),
+        deferred_candidates=(),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+
+    result = RuleBasedTriage(TriageRulesLoader().load(Path("triage-rules.yaml"))).evaluate(context)
+
+    assert result.recommended_action is not None
+    assert result.recommended_action.parameter_key == "service.directive.open_file_cache"
+    assert result.recommended_action.proposed_value == "max=200000 inactive=20s"
+    assert any(
+        item.parameter_key == "service.directive.open_file_cache"
+        and item.proposed_value == "max=100000 inactive=60s"
+        for item in result.alternate_recommendations
+    )
+
+
 def test_environment_blocker_triggers_on_telemetry_keyword() -> None:
     from tune.application.rule_based_triage import TriageRuleset
 

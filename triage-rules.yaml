@@ -169,15 +169,31 @@ application_discovery_sanity:
       gzip adds CPU overhead per response. On fast local networks the
       bandwidth saving is negligible; disabling improves RPS.
 
-  - id: nginx_enable_open_file_cache
+  - id: nginx_recommend_open_file_cache_hotset
     enabled: true
-    action: autofix
+    action: recommend
     kind: service_current_not
     service_name: nginx
     candidate_key: service.directive.open_file_cache
-    proposed_value: "max=200000"
+    proposed_value: "max=200000 inactive=20s"
     only_when_current_in:
       - "off"
+      - "on"
+      - "true"
+      - "enable"
+
+  - id: nginx_recommend_open_file_cache_balanced
+    enabled: true
+    action: recommend
+    kind: service_current_not
+    service_name: nginx
+    candidate_key: service.directive.open_file_cache
+    proposed_value: "max=100000 inactive=60s"
+    only_when_current_in:
+      - "off"
+      - "on"
+      - "true"
+      - "enable"
 
   - id: signal_nginx_cpu_affinity_on_dual_numa
     enabled: true
