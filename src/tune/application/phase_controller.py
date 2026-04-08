@@ -246,10 +246,11 @@ class PhaseController:
 
     def _is_marginal_gain_plateau(self, state: TuneState) -> bool:
         """Stop if last N benchmarked iterations all had marginal homepage gain
-        AND large/medium workloads showed no improvement."""
+        AND large/medium workloads showed no improvement.
+        Only considers non-RESOLVE iterations — resolver gains are expected."""
         benchmarked = [
             r for r in state.iteration_records
-            if r.evaluation_result is not None
+            if r.evaluation_result is not None and r.phase is not TunePhase.RESOLVE
         ]
         if len(benchmarked) < self.marginal_gain_iterations:
             return False
@@ -269,8 +270,24 @@ class PhaseController:
         return True
 
     def _near_historical_best(self, state: TuneState) -> bool:
-        """Stop when homepage RPS reaches historical_best_pct of KB best."""
+        """Stop when homepage RPS reaches historical_best_pct of KB best.
+
+        Only fires in OPTIMIZE/EXPLOIT — not during RESOLVE (which is
+        deterministic setup and may already exceed the stale KB best).
+        Requires at least 1 non-RESOLVE benchmarked iteration so we don't
+        stop before the LLM has had a chance to explore.
+        """
         if state.kb_best_homepage_rps <= 0 or state.best_configuration is None:
+            return False
+        # Only active after RESOLVE phase is done.
+        if state.current_phase is TunePhase.RESOLVE:
+            return False
+        # Require at least 1 LLM iteration (non-resolve benchmarked).
+        llm_benchmarked = [
+            r for r in state.iteration_records
+            if r.phase is not TunePhase.RESOLVE and r.evaluation_result is not None
+        ]
+        if not llm_benchmarked:
             return False
         for rec in reversed(state.iteration_records):
             if rec.evaluation_result is not None:
