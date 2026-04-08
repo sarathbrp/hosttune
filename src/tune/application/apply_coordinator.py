@@ -641,10 +641,11 @@ class SystemdUnitLimitApplier:
             f"sed -i 's|^{prop}=.*|{prop}={new_value}|' \"$_f\"; "
             f"done; true"
         )
+        # Use printf '%s\n%s\n' to avoid format-string issues with % in values.
         write_cmd = (
             f"mkdir -p {shlex.quote(dropin_dir)} && "
             f"{overwrite_existing} && "
-            f"printf '[Service]\\n{prop}={new_value}\\n' > {shlex.quote(dropin_file)}"
+            f"printf '%s\\n%s\\n' '[Service]' {shlex.quote(f'{prop}={new_value}')} > {shlex.quote(dropin_file)}"
         )
         apply_parts = [write_cmd, *self._post_set_commands(context, hypothesis.apply_mode)]
         apply_command = " && ".join(apply_parts)
@@ -658,7 +659,7 @@ class SystemdUnitLimitApplier:
             rollback_write = f"rm -f {shlex.quote(dropin_file)}"
         else:
             rollback_write = (
-                f"printf '[Service]\\n{prop}={previous_raw}\\n' > {shlex.quote(dropin_file)}"
+                f"printf '%s\\n%s\\n' '[Service]' {shlex.quote(f'{prop}={previous_raw}')} > {shlex.quote(dropin_file)}"
             )
         rollback_parts = [rollback_write, *self._post_set_commands(context, hypothesis.apply_mode)]
         rollback_command = " && ".join(rollback_parts)
@@ -743,10 +744,11 @@ class SystemdCgroupControlApplier:
             f"sed -i 's|^{prop}=.*|{prop_assignment}|' \"$_f\"; "
             f"done; true"
         )
+        # Use printf '%s\n%s\n' to avoid format-string issues with % in CPUQuota=N%.
         write_cmd = (
             f"mkdir -p {shlex.quote(dropin_dir)} && "
             f"{overwrite_existing} && "
-            f"printf '[Service]\\n{prop_assignment}\\n' > {shlex.quote(dropin_file)}"
+            f"printf '%s\\n%s\\n' '[Service]' {shlex.quote(prop_assignment)} > {shlex.quote(dropin_file)}"
         )
         apply_parts = [write_cmd, *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode)]
         apply_command = " && ".join(apply_parts)
@@ -760,7 +762,7 @@ class SystemdCgroupControlApplier:
         else:
             prev_assignment = self.property_assignment(prop, previous_value)
             rollback_write = (
-                f"printf '[Service]\\n{prev_assignment}\\n' > {shlex.quote(dropin_file)}"
+                f"printf '%s\\n%s\\n' '[Service]' {shlex.quote(prev_assignment)} > {shlex.quote(dropin_file)}"
             )
         rollback_parts = [
             rollback_write,
