@@ -253,7 +253,10 @@ class UnifiedResolver:
         preflight_facts: dict[str, int],
     ) -> str | None:
         if source == "recipe":
-            return recipe_values.get(param_key)
+            value = recipe_values.get(param_key)
+            if value is not None and not self._recipe_value_valid(param_spec, value):
+                return None  # Recipe value violates graph constraints — fall through to kb/graph.
+            return value
         if source == "kb":
             conf = confidence_scores.get(param_key)
             if conf is not None and conf[2] >= 0.80:
@@ -266,6 +269,25 @@ class UnifiedResolver:
         if source == "llm":
             return "__llm_deferred__"
         return None
+
+    def _recipe_value_valid(self, param_spec: dict[str, Any], value: str) -> bool:
+        """Return False if the recipe value violates the graph's floor/ceiling constraints.
+
+        A stored recipe may contain pathological values (e.g. somaxconn=1 from a
+        broken run). Reject any recipe value that falls outside the graph bounds so
+        the resolver falls through to the graph source instead.
+        """
+        try:
+            v = int(value)
+        except (ValueError, TypeError):
+            return True  # Non-integer values (enum/string) — trust the recipe.
+        floor = param_spec.get("floor")
+        if floor is not None and v < floor:
+            return False
+        ceiling = param_spec.get("ceiling")
+        if ceiling is not None and v > ceiling:
+            return False
+        return True
 
     def _graph_value(
         self,
