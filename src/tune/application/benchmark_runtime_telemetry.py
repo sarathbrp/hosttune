@@ -254,16 +254,24 @@ def format_runtime_telemetry_digest(
         quota_match = re.search(r'CPUQuota=([^\n]+)', last_cg)
         quota_str = quota_match.group(1).strip() if quota_match else None
 
+        # Throttle ratio = fraction of benchmark window nginx was paused.
+        # elapsed = number of samples × 5s interval (sample rate).
+        elapsed_usec = len(samples) * 5 * 1_000_000  # µs
+        throttle_ratio = (delta_us / elapsed_usec * 100) if elapsed_usec > 0 else 0.0
+
         if delta_us > 0 or delta_nr > 0:
-            throttle_pct = (delta_us / (delta_us + max(1, us_last - delta_us))) * 100 if us_last > 0 else 0
-            note = ""
-            if delta_us > 5_000_000:  # >5 seconds throttled across sample window
-                note = " — CRITICAL: cgroup is heavily throttled, CPUQuota is the bottleneck"
-            elif delta_nr > 10:
-                note = " — moderate throttling detected, consider raising CPUQuota"
+            if throttle_ratio >= 50:
+                note = " — CRITICAL: CPUQuota is the primary bottleneck"
+            elif throttle_ratio >= 20:
+                note = " — significant: CPUQuota is meaningfully limiting throughput"
+            elif throttle_ratio >= 5:
+                note = " — moderate: CPUQuota is a contributing factor"
+            else:
+                note = " — minor throttling, not the primary bottleneck"
             lines.append(
                 f"cgroup CPU throttle (first→last): nr_throttled={delta_nr:+d} "
-                f"throttled_usec={delta_us:+,}µs{note}"
+                f"throttled_usec={delta_us:+,}µs "
+                f"throttle_ratio={throttle_ratio:.1f}%{note}"
             )
             if quota_str:
                 lines.append(f"  CPUQuota={quota_str}")

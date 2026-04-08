@@ -586,35 +586,36 @@ def format_working_hypothesis_lines(digest: str) -> list[str]:
             )
 
     # ── cgroup CPU throttling ─────────────────────────────────────────────────
-    cg_throttle = re.search(r"cgroup CPU throttle.*?throttled_usec=([+-]?\d[,\d]*)µs", digest)
+    cg_throttle = re.search(r"throttle_ratio=([\d.]+)%", digest)
     cg_healthy = "cgroup CPU throttle: not throttled" in digest
-    cg_unavailable = "cgroup_cpu_stat" not in digest and "cgroup CPU" not in digest
+    cg_unavailable = "cgroup CPU" not in digest
 
     if cg_throttle:
-        delta_us_str = cg_throttle.group(1).replace(",", "")
-        try:
-            delta_us = int(delta_us_str)
-        except ValueError:
-            delta_us = 0
-        if delta_us > 5_000_000:
+        ratio = float(cg_throttle.group(1))
+        if ratio >= 50:
             hypotheses.append(
-                "CRITICAL: cgroup CPU throttling (>5s throttled per sample window): "
-                "CPUQuota is the PRIMARY bottleneck — system appears idle but nginx is "
-                "CPU-starved. vmstat idle% is misleading (shows system-wide not per-service). "
+                f"CRITICAL cgroup CPU throttling (throttle_ratio={ratio:.1f}%): "
+                "nginx is paused more than half the time — CPUQuota IS the primary bottleneck. "
+                "vmstat shows high idle because idle is system-wide across all cores; "
+                "nginx is CPU-starved at the cgroup level. "
                 "Fix: raise systemd.cgroup.cpu_quota_percent to 400+ "
                 "(400% = 4 full cores on this 112-core host). "
                 "Priority: fix this BEFORE any other parameter."
             )
-        elif delta_us > 500_000:
+        elif ratio >= 20:
             hypotheses.append(
-                f"Moderate cgroup CPU throttling ({delta_us:,}µs throttled): "
-                "CPUQuota is partially limiting nginx throughput. "
-                "Candidate: systemd.cgroup.cpu_quota_percent — raise to remove cap."
+                f"Significant cgroup CPU throttling (throttle_ratio={ratio:.1f}%): "
+                "CPUQuota is meaningfully limiting nginx — ~{ratio:.0f}% of benchmark time "
+                "nginx processes were paused. Raise systemd.cgroup.cpu_quota_percent."
+            )
+        elif ratio >= 5:
+            hypotheses.append(
+                f"Moderate cgroup CPU throttling (throttle_ratio={ratio:.1f}%): "
+                "CPUQuota is a contributing factor but not the primary bottleneck."
             )
         else:
             hypotheses.append(
-                "Minor cgroup throttling detected — CPUQuota may be a minor factor "
-                "but not the primary bottleneck."
+                f"Minor cgroup throttling (throttle_ratio={ratio:.1f}%) — CPUQuota not the bottleneck."
             )
     elif cg_healthy:
         hypotheses.append(
