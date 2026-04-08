@@ -110,6 +110,9 @@ class TuneEngine:
     logger: ExecutionLogger = NullExecutionLogger()
     compiled_path: Path | None = None
     auto_compile_threshold: int = 30
+    mlflow_enabled: bool = False
+    mlflow_tracking_uri: str = "http://localhost:5000"
+    mlflow_experiment_name: str = "hosttune"
 
     def run(
         self,
@@ -126,6 +129,8 @@ class TuneEngine:
             c for c in all_candidates if c.availability is CandidateAvailability.DEFERRED
         )
         self.logger.stage_start("tune")
+        if self.mlflow_enabled:
+            self._mlflow_start_run(context)
         baseline_checks = self.health_validator.validate_baseline(context, target_executor)
         baseline_failed_checks = tuple(check for check in baseline_checks if not check.passed)
         if baseline_failed_checks:
@@ -381,6 +386,8 @@ class TuneEngine:
                 )
             self.recorder.record(context, record)
             self.recorder.record_scoreboard(context, state.scoreboard)
+            if self.mlflow_enabled:
+                self._mlflow_log_iteration(record, history_record, state.total_iterations)
             # Track failed/inconclusive to prevent retry loops.
             if (
                 history_record.status
@@ -453,7 +460,119 @@ class TuneEngine:
         )
         self.logger.stage_end("tune")
         self._maybe_auto_compile(context)
+        if self.mlflow_enabled:
+            self._mlflow_log_session_end(context, state)
+            try:
+                import mlflow as _mlflow
+                _mlflow.end_run()
+            except Exception:
+                pass
         return state
+
+    # ── MLflow helpers ────────────────────────────────────────────────────────
+
+    def _mlflow_start_run(self, context: TuneContext) -> None:
+        try:
+            import mlflow
+            mlflow.set_tracking_uri(self.mlflow_tracking_uri)
+            mlflow.set_experiment(self.mlflow_experiment_name)
+            session_id = context.artifacts.session_id if context.artifacts else "unknown"
+            mlflow.start_run(run_name=f"{context.onboard.service_name}-{session_id}")
+            params: dict[str, str | int | float] = {
+                "session_id": session_id,
+                "service": context.onboard.service_name,
+                "max_iterations": context.preflight.policy.max_iterations,
+            }
+            cpu = getattr(context.preflight, "cpu", None)
+            if cpu:
+                params["cpu_logical_cores"] = getattr(cpu, "logical_cores", "unknown")
+                params["numa_nodes"] = getattr(cpu, "numa_nodes", "unknown")
+            network = getattr(context.preflight, "network", None)
+            if network:
+                params["nic_driver"] = getattr(network, "driver", "unknown")
+            platform = getattr(context.preflight, "platform", None)
+            if platform:
+                params["platform"] = getattr(platform, "platform_summary", "unknown")
+            mlflow.log_params(params)
+        except Exception as exc:
+            self.logger.stage_detail("tune", f"MLflow start_run failed (non-fatal): {exc}")
+
+    def _mlflow_log_iteration(
+        self,
+        record: TuneIterationRecord,
+        history_record: HypothesisRecord,
+        step: int,
+    ) -> None:
+        try:
+            import mlflow
+            metrics: dict[str, float] = {"duration_seconds": record.duration_seconds}
+            if record.benchmark_result:
+                for ws in record.benchmark_result.workload_summaries:
+                    metrics[f"rps_{ws.workload_name}"] = ws.median_requests_per_second
+                    metrics[f"latency_ms_{ws.workload_name}"] = ws.median_latency_ms
+            if record.evaluation_result:
+                evals = record.evaluation_result.workload_evaluations
+                if evals:
+                    metrics["avg_relative_change"] = sum(
+                        w.relative_change for w in evals
+                    ) / len(evals)
+            mlflow.log_metrics(metrics, step=step)
+            mlflow.set_tags({
+                "last_phase": record.phase.value,
+                "last_parameter": record.hypothesis.parameter_key,
+                "last_decision": history_record.status.value,
+            })
+        except Exception as exc:
+            self.logger.stage_detail("tune", f"MLflow log_iteration failed (non-fatal): {exc}")
+
+    def _mlflow_log_session_end(self, context: TuneContext, state: TuneState) -> None:
+        try:
+            import mlflow
+            metrics: dict[str, float] = {"total_iterations": float(state.total_iterations)}
+            if state.best_configuration:
+                metrics["best_score"] = state.best_configuration.score
+                metrics["best_iteration"] = float(state.best_configuration.iteration_number)
+            metrics.update(self._sum_session_tokens(context))
+            mlflow.log_metrics(metrics)
+            if context.artifacts:
+                hyp_dir = context.artifacts.session_directory / "hypotheses"
+                session_id = context.artifacts.session_id
+                for path in (
+                    hyp_dir / f"tune_scoreboard_{session_id}.json",
+                    hyp_dir / f"tune_iterations_{session_id}.jsonl",
+                ):
+                    if path.exists():
+                        mlflow.log_artifact(str(path))
+        except Exception as exc:
+            self.logger.stage_detail("tune", f"MLflow log_session_end failed (non-fatal): {exc}")
+
+    def _sum_session_tokens(self, context: TuneContext) -> dict[str, float]:
+        if context.artifacts is None:
+            return {}
+        prompt_file = (
+            context.artifacts.session_directory
+            / "hypotheses"
+            / f"prompt_artifacts_{context.artifacts.session_id}.jsonl"
+        )
+        if not prompt_file.exists():
+            return {}
+        total_input = total_output = total_total = 0
+        try:
+            for line in prompt_file.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                tu = entry.get("token_usage") or {}
+                total_input += tu.get("input_tokens", 0)
+                total_output += tu.get("output_tokens", 0)
+                total_total += tu.get("total_tokens", 0)
+        except Exception:
+            return {}
+        return {
+            "tokens_input_total": float(total_input),
+            "tokens_output_total": float(total_output),
+            "tokens_total_session": float(total_total),
+        }
 
     def _maybe_auto_compile(self, context: TuneContext) -> None:
         """Compile DSPy hypothesis prompt once enough accepted examples accumulate.
@@ -930,9 +1049,12 @@ class TuneEngine:
                 _batch_keys = batch_applied_keys or set()
                 # Batch masking is reliable with 3+ params; with only 2,
                 # rollback of one still gives a measurable signal.
+                # EXPLOIT phase always runs attribution — it explicitly changes
+                # batch-applied params to new values, so rollback is meaningful.
                 is_batch_param = (
                     primary.parameter_key in _batch_keys
                     and len(_batch_keys) >= 3
+                    and phase is not TunePhase.EXPLOIT
                 )
                 if is_batch_param:
                     # Batch-applied param: per-param attribution is

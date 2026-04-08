@@ -2,4 +2,5 @@ openai>=1.52
 PyYAML>=6.0
 langgraph>=0.2.39
 prettytable>=3.10
-dspy-ai>=2.5
+dspy-ai>=3.1
+mlflow>=2.14

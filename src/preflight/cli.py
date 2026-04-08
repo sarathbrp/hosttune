@@ -177,6 +177,9 @@ def build_tune_engine(
     use_unified_resolver: bool = False,
     dependency_graph_path: str = "tuning-dependency-graph.yaml",
     compiled_path: Path | None = None,
+    mlflow_enabled: bool = False,
+    mlflow_tracking_uri: str = "http://localhost:5000",
+    mlflow_experiment_name: str = "hosttune",
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
@@ -250,6 +253,9 @@ def build_tune_engine(
         recorder=TuneRecorder(),
         logger=execution_logger,
         compiled_path=compiled_path,
+        mlflow_enabled=mlflow_enabled,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
     )
 
 
@@ -312,6 +318,9 @@ def main() -> int:
                     compiled_path=Path(loaded_config.dspy_compiled_path)
                     if loaded_config.dspy_compiled_path
                     else None,
+                    mlflow_enabled=loaded_config.mlflow_enabled,
+                    mlflow_tracking_uri=loaded_config.mlflow_tracking_uri,
+                    mlflow_experiment_name=loaded_config.mlflow_experiment_name,
                 ),
             )
     except ValueError as error:

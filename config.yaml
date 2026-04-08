@@ -19,7 +19,7 @@ policy:
   allow_environment_cleanup: true
   rollback_required: true
   max_iterations: 6
-  benchmark_stability_threshold: 0.10
+  benchmark_stability_threshold: 0.05
 
 tune:
   prompt_compression: true
@@ -29,6 +29,11 @@ tune:
   use_unified_resolver: true
   dependency_graph_path: tuning-dependency-graph.yaml
   dspy_compiled_path: artifacts/dspy_compiled.json
+
+mlflow:
+  enabled: false
+  tracking_uri: http://localhost:5000
+  experiment_name: hosttune
 
 benchmark:
   runner:

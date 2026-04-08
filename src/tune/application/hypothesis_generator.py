@@ -588,4 +588,9 @@ class DeterministicHypothesisGenerator:
                     return str(numeric_value)
             msg = f"No safe values remain for {candidate.parameter_key}"
             raise ValueError(msg)
-        return "1"
+        msg = (
+            f"Cannot propose a safe default for {candidate.parameter_key}: "
+            "no allowed_values, min_value, or max_value defined. "
+            "LLM context is required to tune this parameter."
+        )
+        raise ValueError(msg)

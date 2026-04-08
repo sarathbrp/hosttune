@@ -16,6 +16,22 @@ from tune.domain.apply_models import AppliedChange
 from tune.domain.hypothesis_models import TuningHypothesis
 from tune.domain.tune_context import TuneContext
 
+_SSH_NOISE_PATTERNS = ("Identity file", "not accessible", "Warning:")
+
+
+def _cmd_error(result: object) -> str:
+    """Return a clean error string from a command result, stripping SSH noise."""
+    stderr = getattr(result, "stderr", "") or ""
+    stdout = getattr(result, "stdout", "") or ""
+    exit_code = getattr(result, "exit_code", "?")
+    clean = "\n".join(
+        line for line in stderr.splitlines()
+        if not any(p in line for p in _SSH_NOISE_PATTERNS)
+    ).strip()
+    detail = clean or stdout.strip() or stderr.strip()
+    return f"(exit={exit_code}) {detail}"
+
+
 _SYSTEMD_LIMIT_PROPERTIES: dict[str, str] = {
     "limit_nofile": "LimitNOFILE",
     "limit_nproc": "LimitNPROC",
@@ -176,7 +192,7 @@ class NginxDirectiveApplier:
             operation = "insert" if not was_present else "replace"
             msg = (
                 f"Failed to {operation} nginx directive {hypothesis.parameter_name!r} "
-                f"in {config_path}: {apply_result.stderr or apply_result.stdout}"
+                f"in {config_path}: {_cmd_error(apply_result)}"
             )
             raise ValueError(msg)
         restore_command = (
@@ -388,7 +404,7 @@ class SysctlApplier:
         apply_command = self._build_sysctl_command(sysctl_name, hypothesis.proposed_value)
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
-            msg = f"Failed to apply sysctl change: {apply_result.stderr or apply_result.stdout}"
+            msg = f"Failed to apply sysctl change: {_cmd_error(apply_result)}"
             raise ValueError(msg)
         rollback_command = self._build_sysctl_command(sysctl_name, current_value)
         return AppliedChange(
@@ -432,7 +448,7 @@ class NetworkRingApplier:
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
             msg = (
-                f"Failed to apply network ring change: {apply_result.stderr or apply_result.stdout}"
+                f"Failed to apply network ring change: {_cmd_error(apply_result)}"
             )
             raise ValueError(msg)
         rollback_command = self._build_ethtool_command(
@@ -532,7 +548,7 @@ class PrlimitApplier:
         apply_command = f"prlimit --pid {shlex.quote(pid)} --nofile={new_soft}:{new_hard}"
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
-            msg = f"Failed to apply prlimit NOFILE: {apply_result.stderr or apply_result.stdout}"
+            msg = f"Failed to apply prlimit NOFILE: {_cmd_error(apply_result)}"
             raise ValueError(msg)
         rollback_command = f"prlimit --pid {shlex.quote(pid)} --nofile={prev_soft}:{prev_hard}"
         return AppliedChange(
@@ -603,10 +619,7 @@ class SystemdUnitLimitApplier:
         apply_command = " && ".join(apply_parts)
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
-            msg = (
-                "Failed to apply systemd unit limit: "
-                f"{apply_result.stderr or apply_result.stdout}"
-            )
+            msg = f"Failed to apply systemd unit limit: {_cmd_error(apply_result)}"
             raise ValueError(msg)
         rollback_set = (
             f"systemctl set-property {shlex.quote(unit)} "
@@ -696,8 +709,7 @@ class SystemdCgroupControlApplier:
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
             msg = (
-                "Failed to apply systemd cgroup control: "
-                f"{apply_result.stderr or apply_result.stdout}"
+                f"Failed to apply systemd cgroup control: {_cmd_error(apply_result)}"
             )
             raise ValueError(msg)
         rollback_set = (
@@ -737,8 +749,7 @@ class NicQueueApplier:
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
             msg = (
-                f"Failed to set NIC queue count to {new_value}: "
-                f"{apply_result.stderr or apply_result.stdout}"
+                f"Failed to set NIC queue count to {new_value}: {_cmd_error(apply_result)}"
             )
             raise ValueError(msg)
         rollback_command = f"ethtool -L {iface} combined {shlex.quote(current)}"
@@ -784,8 +795,7 @@ class CpuGovernorApplier:
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
             msg = (
-                f"Failed to set CPU governor to {new_governor!r}: "
-                f"{apply_result.stderr or apply_result.stdout}"
+                f"Failed to set CPU governor to {new_governor!r}: {_cmd_error(apply_result)}"
             )
             raise ValueError(msg)
         rollback_command = f"cpupower frequency-set -g {shlex.quote(current)}"

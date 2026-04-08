@@ -254,7 +254,17 @@ class PhaseController:
         if phase is TunePhase.OPTIMIZE:
             if not candidates:
                 return True
-            return len(phase_history) >= 2 and not positive_signal
+            # Only count iterations that ran a benchmark — pre-apply rejections
+            # (no-op checks, constraint violations) don't represent genuine LLM
+            # hypothesis tests and should not trigger phase advancement.
+            benchmarked = [
+                r for r in phase_history
+                if r.status is not HypothesisStatus.REJECTED_PRE_APPLY
+            ]
+            if len(benchmarked) >= 2 and not positive_signal:
+                return True
+            # Safety valve: avoid looping indefinitely on repeated pre-apply failures.
+            return len(phase_history) >= 5 and not positive_signal
         # Adaptive: advance if all phase iterations failed (no signal).
         if (
             len(phase_history) >= 3

@@ -29,6 +29,9 @@ class LoadedConfig:
     use_unified_resolver: bool = False
     dependency_graph_path: str = "tuning-dependency-graph.yaml"
     dspy_compiled_path: str | None = None
+    mlflow_enabled: bool = False
+    mlflow_tracking_uri: str = "http://localhost:5000"
+    mlflow_experiment_name: str = "hosttune"
 
 
 class ConfigLoader:
@@ -79,6 +82,11 @@ class ConfigLoader:
         raw_compiled = tune_section.get("dspy_compiled_path")
         dspy_compiled_path = str(raw_compiled) if raw_compiled else None
 
+        mlflow_section = content.get("mlflow") or {}
+        mlflow_enabled = bool(mlflow_section.get("enabled", False))
+        mlflow_tracking_uri = str(mlflow_section.get("tracking_uri", "http://localhost:5000"))
+        mlflow_experiment_name = str(mlflow_section.get("experiment_name", "hosttune"))
+
         return LoadedConfig(
             target=target,
             policy=policy,
@@ -92,6 +100,9 @@ class ConfigLoader:
             use_unified_resolver=use_unified_resolver,
             dependency_graph_path=dependency_graph_path,
             dspy_compiled_path=dspy_compiled_path,
+            mlflow_enabled=mlflow_enabled,
+            mlflow_tracking_uri=mlflow_tracking_uri,
+            mlflow_experiment_name=mlflow_experiment_name,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:
