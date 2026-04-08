@@ -68,6 +68,9 @@ class CaptureDebugLogger(DebugExecutionLogger):
     def __init__(self) -> None:
         self.messages: list[str] = []
 
+    def debug_enabled(self) -> bool:
+        return True
+
     def stage_detail(self, stage: str, message: str) -> None:
         self.messages.append(f"{stage}:{message}")
 
@@ -475,6 +478,45 @@ def test_deterministic_hypothesis_generator_skips_tried_candidates() -> None:
     hypothesis = DeterministicHypothesisGenerator().generate(context)[0]
 
     assert hypothesis.parameter_key != first_candidate.parameter_key
+
+
+def test_deterministic_hypothesis_generator_skips_unsupported_candidate_defaults() -> None:
+    base_context = build_hypothesis_context()
+    first = base_context.candidates[0]
+    second = base_context.candidates[1]
+    unsupported = replace(
+        first,
+        parameter_key="sysctl.net.core.somaxconn",
+        parameter_name="net.core.somaxconn",
+        allowed_values=(),
+        forbidden_values=(),
+        min_value=None,
+        max_value=None,
+    )
+    supported = replace(
+        second,
+        parameter_key="service.directive.access_log",
+        parameter_name="access_log",
+        allowed_values=("off", "/var/log/nginx/access.log"),
+        forbidden_values=(),
+        min_value=None,
+        max_value=None,
+    )
+    context = HypothesisContext(
+        tune_context=base_context.tune_context,
+        phase=TunePhase.WIDE_SWEEP,
+        iteration_number=1,
+        candidates=(unsupported, supported),
+        deferred_candidates=(),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+
+    hypothesis = DeterministicHypothesisGenerator().generate(context)[0]
+
+    assert hypothesis.parameter_key == "service.directive.access_log"
+    assert hypothesis.proposed_value == "off"
 
 
 def test_diminishing_return_blocks_re_escalation_without_gain() -> None:

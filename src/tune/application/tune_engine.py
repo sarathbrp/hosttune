@@ -455,39 +455,13 @@ class TuneEngine:
                 full_candidates=all_candidates,
             )
             state.record_iteration(record, history_record)
-            if (
-                state.best_configuration is not None
-                and state.best_configuration.iteration_number != previous_best_iteration
-            ):
-                self.logger.stage_detail(
-                    "tune",
-                    (
-                        "Best config updated: "
-                        f"iteration={state.best_configuration.iteration_number} "
-                        f"score={state.best_configuration.score:.2%}"
-                    ),
-                )
-                self._record_kb_event(
-                    context=context,
-                    component="best_config_tracker",
-                    event_type="best_config_updated",
-                    iteration_number=state.best_configuration.iteration_number,
-                    phase=phase,
-                    payload={
-                        "score": state.best_configuration.score,
-                        "parameter_values": state.best_configuration.parameter_values,
-                        "workloads": []
-                        if record.evaluation_result is None
-                        else [
-                            {
-                                "workload_name": item.workload_name,
-                                "relative_change": item.relative_change,
-                                "current_requests_per_second": item.current_requests_per_second,
-                            }
-                            for item in record.evaluation_result.workload_evaluations
-                        ],
-                    },
-                )
+            self._record_best_config_update(
+                context=context,
+                state=state,
+                previous_best_iteration=previous_best_iteration,
+                record=record,
+                phase=phase,
+            )
             self.recorder.record(context, record)
             self.recorder.record_scoreboard(context, state.scoreboard)
             if self.mlflow_enabled:
@@ -1161,6 +1135,15 @@ class TuneEngine:
                 iteration_number=iteration_number,
                 phase=phase,
                 payload={
+                    "parameter_key": primary.parameter_key,
+                    "proposed_value": primary.proposed_value,
+                    "applied_parameter_values": [
+                        {
+                            "parameter_key": hypothesis.parameter_key,
+                            "proposed_value": hypothesis.proposed_value,
+                        }
+                        for hypothesis in valid
+                    ],
                     "decision": evaluation_result.decision.value,
                     "summary": evaluation_result.summary,
                     "guardrails_held": evaluation_result.guardrails_held,
@@ -2025,6 +2008,7 @@ class TuneEngine:
         started_timer = perf_counter()
         applied: dict[str, AppliedChange] = {}
         primary_hypothesis = hypotheses[0]
+        hypothesis_by_key = {hypothesis.parameter_key: hypothesis for hypothesis in hypotheses}
         for hypothesis in hypotheses:
             try:
                 ac = self.apply_coordinator.apply(
@@ -2032,6 +2016,20 @@ class TuneEngine:
                 )
                 applied[hypothesis.parameter_key] = ac
                 state.active_changes[hypothesis.parameter_key] = ac
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="change_applied",
+                    iteration_number=iteration_number,
+                    phase=primary_hypothesis.phase,
+                    payload={
+                        "parameter_key": hypothesis.parameter_key,
+                        "previous_value": ac.previous_value,
+                        "applied_value": ac.applied_value,
+                        "apply_mode": ac.apply_mode.value,
+                        "apply_command": ac.apply_command,
+                    },
+                )
             except Exception as exc:
                 self.logger.stage_detail(
                     "tune",
@@ -2039,11 +2037,37 @@ class TuneEngine:
                     f"{hypothesis.parameter_key}="
                     f"{hypothesis.proposed_value}: {exc}",
                 )
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="apply_failed",
+                    iteration_number=iteration_number,
+                    phase=primary_hypothesis.phase,
+                    payload={
+                        "parameter_key": hypothesis.parameter_key,
+                        "error": str(exc),
+                    },
+                )
         if not applied:
             return
         primary_ac = next(iter(applied.values()))
         validation_result = self.health_validator.validate(
             context, primary_ac, target_executor
+        )
+        self._record_kb_event(
+            context=context,
+            component="tuning_executor",
+            event_type="validation_completed",
+            iteration_number=iteration_number,
+            phase=primary_hypothesis.phase,
+            payload={
+                "parameter_key": primary_hypothesis.parameter_key,
+                "healthy": validation_result.healthy,
+                "checks": [
+                    {"name": check.name, "passed": check.passed, "detail": check.detail}
+                    for check in validation_result.checks
+                ],
+            },
         )
         if not validation_result.healthy:
             self.logger.stage_warning(
@@ -2054,6 +2078,17 @@ class TuneEngine:
             self._rollback_all(applied, target_executor)
             for key in applied:
                 state.active_changes.pop(key, None)
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="rollback_completed",
+                iteration_number=iteration_number,
+                phase=primary_hypothesis.phase,
+                payload={
+                    "parameters": sorted(applied),
+                    "reason": "validation_failed",
+                },
+            )
             return
         benchmark_result = self.benchmark_executor.run(
             context=context,
@@ -2064,10 +2099,67 @@ class TuneEngine:
         )
         self._log_benchmark(benchmark_result)
         batch_phase = primary_hypothesis.phase
+        self._record_kb_event(
+            context=context,
+            component="benchmark_runner",
+            event_type="benchmark_completed",
+            iteration_number=iteration_number,
+            phase=batch_phase,
+            payload={
+                "stable": benchmark_result.stable,
+                "run_count": benchmark_result.run_count,
+                "variance_threshold": benchmark_result.variance_threshold,
+                "workloads": [
+                    {
+                        "workload_name": item.workload_name,
+                        "median_requests_per_second": item.median_requests_per_second,
+                        "median_total_requests": item.median_total_requests,
+                        "median_latency_ms": item.median_latency_ms,
+                        "relative_variance": item.relative_variance,
+                        "stable": item.stable,
+                    }
+                    for item in benchmark_result.workload_summaries
+                ],
+            },
+        )
         evaluation_result = self.result_evaluator.evaluate(
             context, benchmark_result, phase=batch_phase
         )
         self._log_evaluation(evaluation_result)
+        applied_parameter_values = [
+            {
+                "parameter_key": parameter_key,
+                "proposed_value": hypothesis_by_key[parameter_key].proposed_value,
+            }
+            for parameter_key in sorted(applied)
+            if parameter_key in hypothesis_by_key
+        ]
+        self._record_kb_event(
+            context=context,
+            component="benchmark_runner",
+            event_type="evaluation_completed",
+            iteration_number=iteration_number,
+            phase=batch_phase,
+            payload={
+                "parameter_key": primary_hypothesis.parameter_key,
+                "proposed_value": primary_hypothesis.proposed_value,
+                "applied_parameter_values": applied_parameter_values,
+                "decision": evaluation_result.decision.value,
+                "summary": evaluation_result.summary,
+                "guardrails_held": evaluation_result.guardrails_held,
+                "drift_detected": evaluation_result.drift_detected,
+                "workloads": [
+                    {
+                        "workload_name": item.workload_name,
+                        "baseline_requests_per_second": item.baseline_requests_per_second,
+                        "current_requests_per_second": item.current_requests_per_second,
+                        "relative_change": item.relative_change,
+                        "above_noise_floor": item.above_noise_floor,
+                    }
+                    for item in evaluation_result.workload_evaluations
+                ],
+            },
+        )
         completed_at = datetime.now(UTC)
         duration_seconds = perf_counter() - started_timer
         status = self._resolve_status(evaluation_result)
@@ -2080,6 +2172,17 @@ class TuneEngine:
             self._rollback_all(applied, target_executor)
             for key in applied:
                 state.active_changes.pop(key, None)
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="rollback_completed",
+                iteration_number=iteration_number,
+                phase=batch_phase,
+                payload={
+                    "parameters": sorted(applied),
+                    "reason": "evaluation_rejected",
+                },
+            )
         else:
             # ACCEPTED, PROMISING, or INCONCLUSIVE — keep changes.
             label = status.value
@@ -2111,7 +2214,19 @@ class TuneEngine:
             status=status,
             evaluation_summary=evaluation_result.summary,
         )
+        previous_best_iteration = (
+            None
+            if state.best_configuration is None
+            else state.best_configuration.iteration_number
+        )
         state.record_iteration(record, history_record)
+        self._record_best_config_update(
+            context=context,
+            state=state,
+            previous_best_iteration=previous_best_iteration,
+            record=record,
+            phase=batch_phase,
+        )
         self.recorder.record(context, record)
         self.recorder.record_scoreboard(context, state.scoreboard)
         self.logger.stage_detail(
@@ -2136,6 +2251,7 @@ class TuneEngine:
         started_timer = perf_counter()
         applied: dict[str, AppliedChange] = {}
         primary_hypothesis: TuningHypothesis | None = None
+        hypothesis_by_key = {hypothesis.parameter_key: hypothesis for hypothesis in hypotheses}
         for hypothesis in hypotheses:
             if primary_hypothesis is None:
                 primary_hypothesis = hypothesis
@@ -2143,17 +2259,54 @@ class TuneEngine:
                 ac = self.apply_coordinator.apply(context, hypothesis, target_executor)
                 applied[hypothesis.parameter_key] = ac
                 state.active_changes[hypothesis.parameter_key] = ac
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="change_applied",
+                    iteration_number=iteration_number,
+                    phase=hypothesis.phase,
+                    payload={
+                        "parameter_key": hypothesis.parameter_key,
+                        "previous_value": ac.previous_value,
+                        "applied_value": ac.applied_value,
+                        "apply_mode": ac.apply_mode.value,
+                        "apply_command": ac.apply_command,
+                    },
+                )
             except Exception as exc:
                 self.logger.stage_detail(
                     "tune",
                     f"{log_prefix}: failed "
                     f"{hypothesis.parameter_key}={hypothesis.proposed_value}: {exc}",
                 )
+                self._record_kb_event(
+                    context=context,
+                    component="tuning_executor",
+                    event_type="apply_failed",
+                    iteration_number=iteration_number,
+                    phase=hypothesis.phase,
+                    payload={"parameter_key": hypothesis.parameter_key, "error": str(exc)},
+                )
         if not applied or primary_hypothesis is None:
             self.logger.stage_detail("tune", f"{log_prefix}: no params applied successfully.")
             return
         primary_ac = next(iter(applied.values()))
         validation_result = self.health_validator.validate(context, primary_ac, target_executor)
+        self._record_kb_event(
+            context=context,
+            component="tuning_executor",
+            event_type="validation_completed",
+            iteration_number=iteration_number,
+            phase=primary_hypothesis.phase,
+            payload={
+                "parameter_key": primary_hypothesis.parameter_key,
+                "healthy": validation_result.healthy,
+                "checks": [
+                    {"name": check.name, "passed": check.passed, "detail": check.detail}
+                    for check in validation_result.checks
+                ],
+            },
+        )
         if not validation_result.healthy:
             self.logger.stage_warning(
                 "tune", f"{log_prefix}: health check failed; rolling back all."
@@ -2161,6 +2314,17 @@ class TuneEngine:
             self._rollback_all(applied, target_executor)
             for key in applied:
                 state.active_changes.pop(key, None)
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="rollback_completed",
+                iteration_number=iteration_number,
+                phase=primary_hypothesis.phase,
+                payload={
+                    "parameters": sorted(applied),
+                    "reason": "validation_failed",
+                },
+            )
             return
         benchmark_result = self.benchmark_executor.run(
             context=context,
@@ -2171,10 +2335,67 @@ class TuneEngine:
         )
         self._log_benchmark(benchmark_result)
         batch_phase = primary_hypothesis.phase
+        self._record_kb_event(
+            context=context,
+            component="benchmark_runner",
+            event_type="benchmark_completed",
+            iteration_number=iteration_number,
+            phase=batch_phase,
+            payload={
+                "stable": benchmark_result.stable,
+                "run_count": benchmark_result.run_count,
+                "variance_threshold": benchmark_result.variance_threshold,
+                "workloads": [
+                    {
+                        "workload_name": item.workload_name,
+                        "median_requests_per_second": item.median_requests_per_second,
+                        "median_total_requests": item.median_total_requests,
+                        "median_latency_ms": item.median_latency_ms,
+                        "relative_variance": item.relative_variance,
+                        "stable": item.stable,
+                    }
+                    for item in benchmark_result.workload_summaries
+                ],
+            },
+        )
         evaluation_result = self.result_evaluator.evaluate(
             context, benchmark_result, phase=batch_phase
         )
         self._log_evaluation(evaluation_result)
+        applied_parameter_values = [
+            {
+                "parameter_key": parameter_key,
+                "proposed_value": hypothesis_by_key[parameter_key].proposed_value,
+            }
+            for parameter_key in sorted(applied)
+            if parameter_key in hypothesis_by_key
+        ]
+        self._record_kb_event(
+            context=context,
+            component="benchmark_runner",
+            event_type="evaluation_completed",
+            iteration_number=iteration_number,
+            phase=batch_phase,
+            payload={
+                "parameter_key": primary_hypothesis.parameter_key,
+                "proposed_value": primary_hypothesis.proposed_value,
+                "applied_parameter_values": applied_parameter_values,
+                "decision": evaluation_result.decision.value,
+                "summary": evaluation_result.summary,
+                "guardrails_held": evaluation_result.guardrails_held,
+                "drift_detected": evaluation_result.drift_detected,
+                "workloads": [
+                    {
+                        "workload_name": item.workload_name,
+                        "baseline_requests_per_second": item.baseline_requests_per_second,
+                        "current_requests_per_second": item.current_requests_per_second,
+                        "relative_change": item.relative_change,
+                        "above_noise_floor": item.above_noise_floor,
+                    }
+                    for item in evaluation_result.workload_evaluations
+                ],
+            },
+        )
         completed_at = datetime.now(UTC)
         duration_seconds = perf_counter() - started_timer
         status = self._resolve_status(evaluation_result)
@@ -2186,6 +2407,17 @@ class TuneEngine:
             for key in applied:
                 state.active_changes.pop(key, None)
             status = HypothesisStatus.INCONCLUSIVE
+            self._record_kb_event(
+                context=context,
+                component="tuning_executor",
+                event_type="rollback_completed",
+                iteration_number=iteration_number,
+                phase=batch_phase,
+                payload={
+                    "parameters": sorted(applied),
+                    "reason": "evaluation_not_accepted",
+                },
+            )
         else:
             self.logger.stage_detail(
                 "tune",
@@ -2213,7 +2445,19 @@ class TuneEngine:
             status=status,
             evaluation_summary=evaluation_result.summary,
         )
+        previous_best_iteration = (
+            None
+            if state.best_configuration is None
+            else state.best_configuration.iteration_number
+        )
         state.record_iteration(record, history_record)
+        self._record_best_config_update(
+            context=context,
+            state=state,
+            previous_best_iteration=previous_best_iteration,
+            record=record,
+            phase=batch_phase,
+        )
         self.recorder.record(context, record)
         self.recorder.record_scoreboard(context, state.scoreboard)
         self.logger.stage_detail(
@@ -2363,6 +2607,49 @@ class TuneEngine:
             iteration_number=iteration_number,
             phase=None if phase is None else phase.value,
             service_name=context.onboard.service_name,
+        )
+
+    def _record_best_config_update(
+        self,
+        *,
+        context: TuneContext,
+        state: TuneState,
+        previous_best_iteration: int | None,
+        record: TuneIterationRecord,
+        phase: TunePhase,
+    ) -> None:
+        if state.best_configuration is None:
+            return
+        if state.best_configuration.iteration_number == previous_best_iteration:
+            return
+        self.logger.stage_detail(
+            "tune",
+            (
+                "Best config updated: "
+                f"iteration={state.best_configuration.iteration_number} "
+                f"score={state.best_configuration.score:.2%}"
+            ),
+        )
+        self._record_kb_event(
+            context=context,
+            component="best_config_tracker",
+            event_type="best_config_updated",
+            iteration_number=state.best_configuration.iteration_number,
+            phase=phase,
+            payload={
+                "score": state.best_configuration.score,
+                "parameter_values": state.best_configuration.parameter_values,
+                "workloads": []
+                if record.evaluation_result is None
+                else [
+                    {
+                        "workload_name": item.workload_name,
+                        "relative_change": item.relative_change,
+                        "current_requests_per_second": item.current_requests_per_second,
+                    }
+                    for item in record.evaluation_result.workload_evaluations
+                ],
+            },
         )
 
     def _log_hypothesis(

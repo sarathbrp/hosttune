@@ -272,13 +272,15 @@ class KnowledgeBase:
         query = """
             SELECT run_id, target_host, service_name, platform_summary, cpu_logical_cores,
                    cpu_core_band, numa_nodes, total_memory_kib, nic_driver, stop_reason,
-                   best_score, best_iteration, best_config_json
+                   best_score, best_iteration, best_config_json, completed_at_utc
             FROM runs
             WHERE service_name=?
               AND cpu_core_band=?
               AND numa_nodes=?
               AND platform_summary=?
               AND completed_at_utc IS NOT NULL
+              AND best_score IS NOT NULL
+              AND COALESCE(best_config_json, '') NOT IN ('', '{}')
         """
         if nic_driver:
             query += " AND nic_driver=?"
@@ -286,15 +288,27 @@ class KnowledgeBase:
         if exclude_run_id is not None:
             query += " AND run_id<>?"
             params.append(exclude_run_id)
-        query += " ORDER BY COALESCE(best_score, -9999.0) DESC, completed_at_utc DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY completed_at_utc DESC"
         with sqlite3.connect(self.path) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(query, tuple(params)).fetchall()
+        if not rows:
+            return []
+        homepage_rps_by_run = self._best_homepage_rps_by_run([row["run_id"] for row in rows])
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: (
+                homepage_rps_by_run.get(row["run_id"], 0.0),
+                float(row["best_score"] or 0.0),
+                str(row["completed_at_utc"] or ""),
+            ),
+            reverse=True,
+        )
         results: list[dict[str, Any]] = []
-        for row in rows:
+        for row in ranked_rows[:limit]:
             item = dict(row)
             item["best_config"] = json.loads(item.pop("best_config_json") or "{}")
+            item["best_homepage_rps"] = homepage_rps_by_run.get(item["run_id"], 0.0)
             results.append(item)
         return results
 
@@ -361,26 +375,11 @@ class KnowledgeBase:
         if not runs:
             return []
         run_ids = [run["run_id"] for run in runs]
-        placeholders = ", ".join("?" for _ in run_ids)
-        with sqlite3.connect(self.path) as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                "SELECT payload_json FROM events"  # noqa: S608
-                f" WHERE run_id IN ({placeholders})"
-                " AND component = 'benchmark_runner'"
-                " AND event_type = 'evaluation_completed'"
-                " ORDER BY id ASC",
-                tuple(run_ids),
-            ).fetchall()
         pairs: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
-        for row in rows:
-            payload = json.loads(row["payload_json"])
-            decision = payload.get("decision", "")
+        for decision, key, value in self._collect_parameter_decisions(run_ids):
             if decision not in ("reject", "inconclusive"):
                 continue
-            key = payload.get("parameter_key", "")
-            value = payload.get("proposed_value", "")
             if key and value and (key, value) not in seen:
                 seen.add((key, value))
                 pairs.append((key, value))
@@ -479,31 +478,129 @@ class KnowledgeBase:
         if not runs:
             return {}
         run_ids = [run["run_id"] for run in runs]
-        placeholders = ", ".join("?" for _ in run_ids)
-        with sqlite3.connect(self.path) as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                "SELECT payload_json FROM events"  # noqa: S608
-                f" WHERE run_id IN ({placeholders})"
-                " AND component = 'benchmark_runner'"
-                " AND event_type = 'evaluation_completed'"
-                " ORDER BY id ASC",
-                tuple(run_ids),
-            ).fetchall()
         counts: dict[str, list[int]] = {}  # key -> [tests, accepted]
-        for row in rows:
-            payload = json.loads(row["payload_json"])
-            key = payload.get("parameter_key", "")
+        for decision, key, _value in self._collect_parameter_decisions(run_ids):
             if not key:
                 continue
             entry = counts.setdefault(key, [0, 0])
             entry[0] += 1
-            if payload.get("decision") == "accept":
+            if decision == "accept":
                 entry[1] += 1
         return {
             key: (tests, accepted, accepted / tests if tests > 0 else 0.0)
             for key, (tests, accepted) in counts.items()
         }
+
+    def _best_homepage_rps_by_run(self, run_ids: list[str]) -> dict[str, float]:
+        if not run_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in run_ids)
+        with sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT run_id, payload_json FROM events"  # noqa: S608
+                f" WHERE run_id IN ({placeholders})"
+                " AND event_type = 'best_config_updated'"
+                " ORDER BY id ASC",
+                tuple(run_ids),
+            ).fetchall()
+        best: dict[str, float] = {}
+        for row in rows:
+            run_id = str(row["run_id"])
+            payload = json.loads(row["payload_json"])
+            workloads = payload.get("workloads", [])
+            if not isinstance(workloads, list):
+                continue
+            for workload in workloads:
+                if not isinstance(workload, dict):
+                    continue
+                if workload.get("workload_name") != "homepage":
+                    continue
+                rps = workload.get("current_requests_per_second")
+                if rps is None:
+                    continue
+                try:
+                    value = float(rps)
+                except (TypeError, ValueError):
+                    continue
+                if value > best.get(run_id, 0.0):
+                    best[run_id] = value
+        return best
+
+    def _collect_parameter_decisions(
+        self,
+        run_ids: list[str],
+    ) -> list[tuple[str, str, str]]:
+        """Return [(decision, parameter_key, proposed_value)] from run events.
+
+        Supports:
+        - New payloads carrying parameter_key/proposed_value.
+        - Batch payloads carrying applied_parameter_values.
+        - Legacy payloads with neither key/value by joining same-iteration
+          change_applied events.
+        """
+        if not run_ids:
+            return []
+        placeholders = ", ".join("?" for _ in run_ids)
+        with sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT run_id, iteration_number, component, event_type, payload_json FROM events"  # noqa: S608
+                f" WHERE run_id IN ({placeholders})"
+                " AND ("
+                "      (component = 'benchmark_runner' AND event_type = 'evaluation_completed')"
+                "   OR (component = 'tuning_executor' AND event_type = 'change_applied')"
+                " )"
+                " ORDER BY id ASC",
+                tuple(run_ids),
+            ).fetchall()
+        applied_by_iteration: dict[tuple[str, int], dict[str, str]] = {}
+        decisions: list[tuple[str, str, str]] = []
+        for row in rows:
+            run_id = str(row["run_id"])
+            iteration_raw = row["iteration_number"]
+            payload = json.loads(row["payload_json"])
+            event_type = str(row["event_type"])
+            if event_type == "change_applied":
+                if iteration_raw is None:
+                    continue
+                parameter_key = str(payload.get("parameter_key", "")).strip()
+                applied_value = payload.get("applied_value")
+                if parameter_key == "" or applied_value is None:
+                    continue
+                iter_key = (run_id, int(iteration_raw))
+                bucket = applied_by_iteration.setdefault(iter_key, {})
+                bucket[parameter_key] = str(applied_value)
+                continue
+            if event_type != "evaluation_completed":
+                continue
+            decision = str(payload.get("decision", "")).strip()
+            if decision == "":
+                continue
+            parameter_values: dict[str, str] = {}
+            # Preferred: explicit batch mapping.
+            applied_parameter_values = payload.get("applied_parameter_values")
+            if isinstance(applied_parameter_values, list):
+                for item in applied_parameter_values:
+                    if not isinstance(item, dict):
+                        continue
+                    key = str(item.get("parameter_key", "")).strip()
+                    value = item.get("proposed_value", item.get("applied_value"))
+                    if key == "" or value is None:
+                        continue
+                    parameter_values[key] = str(value)
+            # Explicit single-parameter fields.
+            key_single = str(payload.get("parameter_key", "")).strip()
+            value_single = payload.get("proposed_value")
+            if key_single and value_single is not None:
+                parameter_values[key_single] = str(value_single)
+            # Legacy fallback: infer from change_applied within same iteration.
+            if not parameter_values and iteration_raw is not None:
+                iter_key = (run_id, int(iteration_raw))
+                parameter_values.update(applied_by_iteration.get(iter_key, {}))
+            for parameter_key, proposed_value in parameter_values.items():
+                decisions.append((decision, parameter_key, proposed_value))
+        return decisions
 
     def store_degradation_recipe(
         self,

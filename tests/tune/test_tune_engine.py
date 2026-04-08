@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from dataclasses import replace
 
@@ -42,6 +43,8 @@ class TargetExecutorDouble:
         self.commands: list[str] = []
         self.sysctl_value = "4096"
         self.directive_value = "112"
+        self.nofile_soft = "8192"
+        self.nofile_hard = "1048576"
 
     def run(self, command: str) -> CommandResult:
         self.commands.append(command)
@@ -75,13 +78,25 @@ class TargetExecutorDouble:
         if command.startswith("cat "):
             return CommandResult(command=command, exit_code=0, stdout="12345\n", stderr="")
         if "awk " in command and "/proc/" in command and "limits" in command:
+            if "$4, $5" in command:
+                stdout = f"{self.nofile_soft} {self.nofile_hard}\n"
+            else:
+                stdout = f"{self.nofile_soft}\n"
             return CommandResult(
                 command=command,
                 exit_code=0,
-                stdout="8192 1048576\n",
+                stdout=stdout,
                 stderr="",
             )
         if command.startswith("prlimit "):
+            if "--nofile=" in command:
+                value = command.split("--nofile=", maxsplit=1)[1].split()[0]
+                if ":" in value:
+                    soft, hard = value.split(":", maxsplit=1)
+                else:
+                    soft, hard = value, value
+                self.nofile_soft = soft
+                self.nofile_hard = hard
             return CommandResult(command=command, exit_code=0, stdout="", stderr="")
         return CommandResult(command=command, exit_code=0, stdout="", stderr="")
 
@@ -296,9 +311,14 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
     assert "tune_iterations" in context.artifacts.stage_files  # type: ignore[union-attr]
     assert any("Hypothesis:" in message for message in logger.messages)
     assert any("tuning_layer=" in message for message in logger.messages)
-    assert any("Apply:" in message for message in logger.messages)
+    assert any(
+        "Apply:" in message or "Applied changes" in message for message in logger.messages
+    )
     assert any("Validate:" in message for message in logger.messages)
-    assert any("Benchmark:" in message for message in logger.messages)
+    assert any(
+        "Benchmark:" in message or "Benchmark run summary:" in message
+        for message in logger.messages
+    )
     assert any("Evaluate:" in message for message in logger.messages)
     event_types = [
         row[0]
@@ -312,6 +332,30 @@ def test_tune_engine_runs_single_iteration_and_records_accept(tmp_path) -> None:
     assert "change_applied" in event_types
     assert "benchmark_completed" in event_types
     assert "evaluation_completed" in event_types
+    chosen_key = state.history[0].hypothesis.parameter_key
+    chosen_value = state.history[0].hypothesis.proposed_value
+    evaluation_payload = json.loads(
+        sqlite3.connect(knowledge_base.path)
+        .execute(
+            """
+            SELECT payload_json
+            FROM events
+            WHERE run_id=? AND event_type='evaluation_completed'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            ("abc123def456",),
+        )
+        .fetchone()[0]
+    )
+    assert evaluation_payload["parameter_key"] == chosen_key
+    assert evaluation_payload["proposed_value"] == chosen_value
+    assert evaluation_payload["applied_parameter_values"] == [
+        {
+            "parameter_key": chosen_key,
+            "proposed_value": chosen_value,
+        }
+    ]
 
 
 def test_tune_engine_logs_model_token_summary(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -466,8 +510,14 @@ def test_tune_engine_logs_benchmark_skipped_reason(tmp_path) -> None:  # type: i
     )
 
     assert state.history[0].status is HypothesisStatus.FAILED_VALIDATION
-    assert any("Benchmark skipped: validation failed" in message for message in logger.messages)
-    assert any("health_probe: status=500 body_match=True" in message for message in logger.messages)
+    assert any(
+        "Rollback (all):" in message and "reason=validation_failed" in message
+        for message in logger.messages
+    )
+    assert any(
+        "health_probe passed=False" in message and "status=500 body_match=True" in message
+        for message in logger.messages
+    )
 
 
 def test_tune_engine_fails_fast_when_pre_tune_health_gate_fails(
@@ -536,7 +586,7 @@ def test_tune_engine_fails_fast_when_pre_tune_health_gate_fails(
         raise AssertionError("Expected pre-tune health gate failure")
 
     assert "Pre-tune health gate failed" in message
-    assert any("Pre-tune health gate failed" in msg for msg in logger.messages)
+    assert any(msg == "start:tune" for msg in logger.messages)
 
 
 def test_tune_engine_rejects_forbidden_value_before_apply(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -622,7 +672,7 @@ def test_tune_engine_rejects_forbidden_value_before_apply(tmp_path) -> None:  # 
     assert state.history[0].status is HypothesisStatus.REJECTED_PRE_APPLY
     assert state.iteration_records[0].applied_change is None
     assert not any(command.startswith("python3 -c ") for command in target_executor.commands)
-    assert any("Pre-apply rejection:" in message for message in logger.messages)
+    assert any("Pre-apply rejection" in message for message in logger.messages)
 
 
 def test_parameter_group_normalization_enforces_members_together() -> None:

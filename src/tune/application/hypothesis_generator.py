@@ -584,10 +584,17 @@ class DeterministicHypothesisGenerator:
             for record in context.history
             if record.phase == context.phase
         }
+        unsupported_keys: list[str] = []
         for candidate in context.candidates:
             if candidate.parameter_key in tried_keys:
                 continue
-            proposed_value = self._default_value(candidate)
+            try:
+                proposed_value = self._default_value(candidate)
+            except ValueError:
+                # Some candidates (for example free-form sysctls) do not carry
+                # deterministic bounds; skip and continue to the next candidate.
+                unsupported_keys.append(candidate.parameter_key)
+                continue
             return (
                 TuningHypothesis(
                     phase=context.phase,
@@ -605,6 +612,12 @@ class DeterministicHypothesisGenerator:
                     model_usage=None,
                 ),
             )
+        if unsupported_keys:
+            msg = (
+                "No untried candidates with deterministic defaults remain for the current phase. "
+                f"Unsupported keys: {', '.join(unsupported_keys)}"
+            )
+            raise ValueError(msg)
         msg = "No untried candidates remain for the current phase."
         raise ValueError(msg)
 

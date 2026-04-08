@@ -1,11 +1,64 @@
 """PrettyTable formatting helpers for tune logging."""
 from __future__ import annotations
 
-from prettytable import PrettyTable
+from typing import Protocol
+
+try:
+    from prettytable import PrettyTable
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal test envs
+    PrettyTable = None  # type: ignore[assignment]
 
 
-def _table(*field_names: str, max_width: int = 35) -> PrettyTable:
-    t = PrettyTable(list(field_names))
+class _RenderableTable(Protocol):
+    align: str
+    max_width: int
+
+    def add_row(self, row: list[object]) -> None:
+        ...
+
+
+class _FallbackTable:
+    def __init__(self, field_names: list[str]) -> None:
+        self.field_names = field_names
+        self.rows: list[list[str]] = []
+        self.align = "l"
+        self.max_width = 35
+
+    def add_row(self, row: list[object]) -> None:
+        self.rows.append([self._clip(str(cell)) for cell in row])
+
+    def _clip(self, value: str) -> str:
+        if self.max_width > 3 and len(value) > self.max_width:
+            return value[: self.max_width - 3] + "..."
+        return value
+
+    def __str__(self) -> str:
+        headers = [self._clip(name) for name in self.field_names]
+        widths = [len(h) for h in headers]
+        for row in self.rows:
+            for index, cell in enumerate(row):
+                widths[index] = max(widths[index], len(cell))
+
+        def _line() -> str:
+            return "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+
+        def _render_row(values: list[str]) -> str:
+            cells = [f" {value.ljust(widths[idx])} " for idx, value in enumerate(values)]
+            return "|" + "|".join(cells) + "|"
+
+        parts = [_line(), _render_row(headers), _line()]
+        for row in self.rows:
+            parts.append(_render_row(row))
+        parts.append(_line())
+        return "\n".join(parts)
+
+
+def _table(*field_names: str, max_width: int = 35) -> _RenderableTable:
+    t: _RenderableTable
+    if PrettyTable is None:
+        t = _FallbackTable(list(field_names))
+    else:
+        t = PrettyTable(list(field_names))
     t.align = "l"
     t.max_width = max_width
     return t
