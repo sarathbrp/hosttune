@@ -550,6 +550,16 @@ class TuneEngine:
                 "last_parameter": record.hypothesis.parameter_key,
                 "last_decision": history_record.status.value,
             })
+            # Log hypothesis rationale as text artifact for this step.
+            if record.hypothesis.rationale:
+                mlflow.log_text(
+                    f"parameter: {record.hypothesis.parameter_key}\n"
+                    f"value: {record.hypothesis.proposed_value}\n"
+                    f"phase: {record.phase.value}\n"
+                    f"decision: {history_record.status.value}\n\n"
+                    f"rationale:\n{record.hypothesis.rationale}",
+                    artifact_file=f"prompts/iter{step:03d}_hypothesis.txt",
+                )
         except Exception as exc:
             self.logger.stage_detail("tune", f"MLflow log_iteration failed (non-fatal): {exc}")
 
@@ -565,12 +575,17 @@ class TuneEngine:
             if context.artifacts:
                 hyp_dir = context.artifacts.session_directory / "hypotheses"
                 session_id = context.artifacts.session_id
+                # Upload run summaries.
                 for path in (
                     hyp_dir / f"tune_scoreboard_{session_id}.json",
                     hyp_dir / f"tune_iterations_{session_id}.jsonl",
+                    hyp_dir / f"prompt_artifacts_{session_id}.jsonl",
                 ):
                     if path.exists():
                         mlflow.log_artifact(str(path))
+                # Upload all per-iteration hypothesis files (prompt + response + tokens).
+                for hyp_file in sorted(hyp_dir.glob("iter*_hybrid_hypothesizer.json")):
+                    mlflow.log_artifact(str(hyp_file), artifact_path="prompts")
         except Exception as exc:
             self.logger.stage_detail("tune", f"MLflow log_session_end failed (non-fatal): {exc}")
 
