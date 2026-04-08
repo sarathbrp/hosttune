@@ -182,15 +182,13 @@ class TuneEngine:
                 recipe_fix_sequence=recipe_seq,
                 prior_blocked_pairs=prior_blocked,
             )
-            total_applied = 0
+            # Batch all resolver layers into ONE benchmark instead of N.
+            # The dependency graph guarantees layers are safe to apply together.
+            from tune.application.format_table import resolver_apply_table
+            all_resolver_hyps: list[TuningHypothesis] = []
             for layer_name, layer_hyps in layer_hypotheses:
                 if not layer_hyps:
                     continue
-                param_names = ", ".join(
-                    f"{h.parameter_key}={h.proposed_value}"
-                    for h in layer_hyps
-                )
-                from tune.application.format_table import resolver_apply_table
                 self.logger.stage_detail(
                     "tune",
                     resolver_apply_table(
@@ -198,22 +196,23 @@ class TuneEngine:
                         [(h.parameter_key, h.proposed_value) for h in layer_hyps],
                     ),
                 )
-                pre_count = len(state.active_changes)
+                all_resolver_hyps.extend(layer_hyps)
+            pre_count = len(state.active_changes)
+            if all_resolver_hyps:
                 self._apply_resolver_layer(
-                    context, state, layer_hyps,
+                    context, state, all_resolver_hyps,
                     target_executor, benchmark_executor,
-                    layer_name,
+                    "resolver_batch",
                 )
-                post_count = len(state.active_changes)
-                if post_count > pre_count:
-                    total_applied += post_count - pre_count
-                    all_candidates = (
-                        self.candidate_catalog_builder.build(
-                            context, target_executor
-                        )
-                    )
-                else:
-                    layer_statuses[layer_name] = LayerStatus.ROLLED_BACK.value
+            total_applied = len(state.active_changes) - pre_count
+            if total_applied > 0:
+                all_candidates = self.candidate_catalog_builder.build(
+                    context, target_executor
+                )
+                # Mark all contributing layers as fixed.
+                for layer_name, layer_hyps in layer_hypotheses:
+                    if layer_hyps:
+                        layer_statuses[layer_name] = LayerStatus.FIXED.value
             state.layer_statuses = layer_statuses
             from tune.application.format_table import resolver_summary_table
             layer_param_counts = {name: len(hyps) for name, hyps in layer_hypotheses}
