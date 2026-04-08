@@ -43,6 +43,12 @@ _SYSTEMD_CGROUP_PROPERTIES: dict[str, str] = {
     "cpu_quota_percent": "CPUQuota",
     "memory_max_mib": "MemoryMax",
 }
+# systemctl show uses different property names than unit file directives.
+# CPUQuota is write-only in drop-ins; reads use CPUQuotaPerSecUSec (µs/s).
+_SYSTEMD_CGROUP_READ_PROPERTIES: dict[str, str] = {
+    "CPUQuota": "CPUQuotaPerSecUSec",
+    "MemoryMax": "MemoryMax",
+}
 
 
 def _service_reload_command(context: TuneContext, apply_mode: ApplyMode) -> str | None:
@@ -692,12 +698,40 @@ class SystemdCgroupControlApplier:
 
     @staticmethod
     def read_property_value(executor: CommandExecutor, unit: str, prop: str) -> str:
-        cmd = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(prop)} --value"
+        # Use the readable property name (e.g. CPUQuotaPerSecUSec not CPUQuota).
+        read_prop = _SYSTEMD_CGROUP_READ_PROPERTIES.get(prop, prop)
+        cmd = f"systemctl show {shlex.quote(unit)} --property={shlex.quote(read_prop)} --value"
         result = executor.run(cmd)
         if result.exit_code != 0:
-            msg = f"Failed to read {prop} for unit {unit!r}"
+            msg = f"Failed to read {read_prop} for unit {unit!r}"
             raise ValueError(msg)
         return result.stdout.strip()
+
+    @staticmethod
+    def _parse_usec(value: str) -> int | None:
+        """Parse systemd time values (e.g. '4s', '150ms', '4000000') into µs."""
+        v = value.strip()
+        if not v or v in ("infinity", "0"):
+            return None
+        if v.endswith("ms"):
+            try:
+                return int(float(v[:-2]) * 1_000)
+            except ValueError:
+                return None
+        if v.endswith("us"):
+            try:
+                return int(v[:-2])
+            except ValueError:
+                return None
+        if v.endswith("s") and not v.endswith("ms"):
+            try:
+                return int(float(v[:-1]) * 1_000_000)
+            except ValueError:
+                return None
+        try:
+            return int(v)
+        except ValueError:
+            return None
 
     @staticmethod
     def normalize_property_value(prop: str, raw_value: str) -> str | None:
@@ -705,7 +739,12 @@ class SystemdCgroupControlApplier:
         if not value or value == "infinity":
             return None
         if prop == "CPUQuota":
-            return value.removesuffix("%")
+            # raw_value is CPUQuotaPerSecUSec — convert µs/s to percent.
+            # 100% = 1,000,000 µs/s → quota_percent = µs / 10000
+            us = SystemdCgroupControlApplier._parse_usec(value)
+            if us is None:
+                return None
+            return str(us // 10_000)
         if prop == "MemoryMax":
             if value.isdigit():
                 return str(int(value) // (1024 * 1024))
