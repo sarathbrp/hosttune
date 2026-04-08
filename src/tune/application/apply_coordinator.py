@@ -674,7 +674,11 @@ class SystemdUnitLimitApplier:
 
 @dataclass
 class SystemdCgroupControlApplier:
-    """Apply systemd cgroup resource controls via systemctl set-property."""
+    """Apply systemd cgroup resource controls via a systemd drop-in file.
+
+    Same approach as SystemdUnitLimitApplier — uses drop-ins instead of
+    set-property to handle persistent degrader overrides (e.g. CPUQuota=15%).
+    """
 
     @staticmethod
     def property_name(control_name: str) -> str:
@@ -728,27 +732,36 @@ class SystemdCgroupControlApplier:
         previous_raw = self.read_property_value(executor, unit, prop)
         previous_value = self.normalize_property_value(prop, previous_raw) or "infinity"
         new_value = hypothesis.proposed_value.strip()
-        set_cmd = (
-            f"systemctl set-property {shlex.quote(unit)} "
-            f"{shlex.quote(self.property_assignment(prop, new_value))}"
+        prop_assignment = self.property_assignment(prop, new_value)  # e.g. CPUQuota=400%
+        dropin_dir = f"/etc/systemd/system/{unit}.d"
+        dropin_file = f"{dropin_dir}/zz_hosttune_{control_name}.conf"
+        overwrite_existing = (
+            f"for _f in {shlex.quote(dropin_dir)}/*.conf; do "
+            f"[ -f \"$_f\" ] && grep -q '^{prop}=' \"$_f\" 2>/dev/null && "
+            f"sed -i 's|^{prop}=.*|{prop_assignment}|' \"$_f\"; "
+            f"done"
         )
-        apply_parts = [
-            set_cmd,
-            *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode),
-        ]
+        write_cmd = (
+            f"mkdir -p {shlex.quote(dropin_dir)} && "
+            f"{overwrite_existing} && "
+            f"printf '[Service]\\n{prop_assignment}\\n' > {shlex.quote(dropin_file)}"
+        )
+        apply_parts = [write_cmd, *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode)]
         apply_command = " && ".join(apply_parts)
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
-            msg = (
-                f"Failed to apply systemd cgroup control: {_cmd_error(apply_result)}"
-            )
+            msg = f"Failed to apply systemd cgroup control: {_cmd_error(apply_result)}"
             raise ValueError(msg)
-        rollback_set = (
-            f"systemctl set-property {shlex.quote(unit)} "
-            f"{shlex.quote(f'{prop}={previous_raw}')}"
-        )
+        _CGROUP_DEFAULTS = {"infinity", "18446744073709551615", ""}
+        if previous_raw.lower() in _CGROUP_DEFAULTS:
+            rollback_write = f"rm -f {shlex.quote(dropin_file)}"
+        else:
+            prev_assignment = self.property_assignment(prop, previous_value)
+            rollback_write = (
+                f"printf '[Service]\\n{prev_assignment}\\n' > {shlex.quote(dropin_file)}"
+            )
         rollback_parts = [
-            rollback_set,
+            rollback_write,
             *SystemdUnitLimitApplier._post_set_commands(context, hypothesis.apply_mode),
         ]
         rollback_command = " && ".join(rollback_parts)
