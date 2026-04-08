@@ -42,9 +42,9 @@ from preflight.infrastructure.probes.storage_probe import StorageProbe
 from preflight.infrastructure.runtime_artifact_store import RuntimeArtifactStore
 from preflight.interfaces.console_reporter import ConsoleReporter
 from preflight.interfaces.execution_logger import (
-    ColorExecutionLogger,
     ExecutionLogger,
     NullExecutionLogger,
+    StdlibExecutionLogger,
 )
 from snapshot.application.snapshot_runner import SnapshotRunner
 from tune.application.apply_coordinator import (
@@ -115,16 +115,8 @@ def build_discovery_runner(
     )
 
 
-def build_instance(
-    verbose: bool = False,
-    debug: bool = False,
-    color: bool = True,
-) -> HostTuneInstance:
-    logger: ExecutionLogger
-    if debug or verbose:
-        logger = ColorExecutionLogger(debug=debug, color=color)
-    else:
-        logger = NullExecutionLogger()
+def build_instance() -> HostTuneInstance:
+    logger: ExecutionLogger = StdlibExecutionLogger()
     return HostTuneInstance(
         config_loader=ConfigLoader(),
         discovery_runner_factory=lambda benchmark_command: build_discovery_runner(
@@ -274,20 +266,10 @@ def main() -> int:
         description="Run step1 discovery and optional baseline benchmark."
     )
     parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Print customer-safe stage and summary logs to stderr.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print internal debug logs including exact commands.",
-    )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable ANSI colour output (default: auto-detect from terminal).",
+        "--log-level",
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Override log level (default: read from config.yaml log_level, fallback INFO).",
     )
     parser.add_argument(
         "config",
@@ -298,11 +280,27 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    instance = build_instance(
-        verbose=args.verbose or args.debug,
-        debug=args.debug,
-        color=not args.no_color,
+    # Configure stdlib logging early using config.yaml log_level (or CLI override).
+    # Read just the log_level key directly to avoid a full config parse at this point.
+    import logging as _logging
+    import yaml as _yaml
+    _raw_cfg: dict = {}
+    try:
+        _raw_cfg = _yaml.safe_load(Path(args.config).read_text()) or {}
+    except Exception:
+        pass
+    _level_str = (args.log_level or str(_raw_cfg.get("log_level", "INFO"))).upper()
+    _level = getattr(_logging, _level_str, _logging.INFO)
+    _logging.basicConfig(
+        level=_level,
+        format="%(message)s",
+        stream=sys.stderr,
     )
+    # Suppress noisy third-party loggers at INFO+.
+    for _noisy in ("httpx", "openai", "httpcore", "urllib3", "mlflow"):
+        _logging.getLogger(_noisy).setLevel(_logging.WARNING)
+
+    instance = build_instance()
     try:
         loaded_config = instance.config_loader.load(args.config)
         preflight = instance.load_preflight(args.config)

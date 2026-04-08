@@ -33,6 +33,7 @@ class LoadedConfig:
     mlflow_tracking_uri: str = "http://localhost:5000"
     mlflow_experiment_name: str = "hosttune"
     skip_attribution: bool = False
+    log_level: str = "INFO"
     stopping_marginal_gain_threshold: float = 0.03
     stopping_marginal_gain_iterations: int = 2
     stopping_historical_best_pct: float = 0.85
@@ -92,6 +93,7 @@ class ConfigLoader:
         mlflow_tracking_uri = str(mlflow_section.get("tracking_uri", "http://localhost:5000"))
         mlflow_experiment_name = str(mlflow_section.get("experiment_name", "hosttune"))
         skip_attribution = bool(tune_section.get("skip_attribution", False))
+        log_level = str(content.get("log_level", "INFO")).upper()
 
         stopping_section = tune_section.get("stopping") or {}
         stopping_marginal_gain_threshold = float(stopping_section.get("marginal_gain_threshold", 0.03))
@@ -116,6 +118,7 @@ class ConfigLoader:
             mlflow_tracking_uri=mlflow_tracking_uri,
             mlflow_experiment_name=mlflow_experiment_name,
             skip_attribution=skip_attribution,
+            log_level=log_level,
             stopping_marginal_gain_threshold=stopping_marginal_gain_threshold,
             stopping_marginal_gain_iterations=stopping_marginal_gain_iterations,
             stopping_historical_best_pct=stopping_historical_best_pct,
