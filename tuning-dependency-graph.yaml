@@ -80,6 +80,11 @@ layers:
         ceiling: 2097152     # 2M = kernel max (fs.file-max bound)
         dependency: "Hard ceiling for worker_rlimit_nofile"
         resolve_from: [recipe, kb, graph]
+      systemd.unit.limit_nproc:
+        floor: 2048          # worker_processes(56) + master + threads → 64 causes EAGAIN
+        ceiling: 655350      # beyond 655K gives no benefit
+        dependency: "LimitNPROC < worker_count causes fork failures under any load"
+        resolve_from: [recipe, kb, graph]
       runtime.prlimit.nofile_soft:
         floor: 524288
         ceiling: 2097152     # must not exceed systemd LimitNOFILE

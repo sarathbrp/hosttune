@@ -380,7 +380,12 @@ def format_environment_blockers_lines(
         "systemd.unit.limit_nofile": ("LimitNOFILE", 65535),
         "systemd.unit.limit_nproc": ("LimitNPROC", 1024),
     }
-    candidate_map = {c.parameter_key: c for c in context.candidates}
+    # Use full_candidates (unfiltered catalog) so blockers are visible in all
+    # phases including EXPLOIT where phase-filtered candidates may omit them.
+    candidate_map = {
+        c.parameter_key: c
+        for c in (context.full_candidates if context.full_candidates else context.candidates)
+    }
 
     for key, (label, unit, threshold) in cgroup_keys.items():
         c = candidate_map.get(key)

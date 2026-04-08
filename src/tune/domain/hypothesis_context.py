@@ -33,6 +33,9 @@ class HypothesisContext:
     confidence_scores: tuple[tuple[str, int, int, float], ...] = ()
     # Dependency layer statuses from unified resolver (empty in legacy mode).
     layer_statuses: tuple[tuple[str, str], ...] = ()
+    # Full (unfiltered) candidate catalog — used for environment blocker checks
+    # which must show blockers regardless of which phase we're in.
+    full_candidates: tuple[CandidateParameter, ...] = ()
     # Current RPS per workload after all applied changes (from last benchmarked iteration).
     current_workload_rps: tuple[tuple[str, float], ...] = ()
     # All-time best RPS per workload from KB (top-1 across prior sessions, same host).

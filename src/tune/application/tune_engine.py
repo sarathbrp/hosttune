@@ -381,6 +381,7 @@ class TuneEngine:
                 target_executor=target_executor,
                 benchmark_executor=benchmark_executor,
                 batch_applied_keys=batch_applied_keys,
+                full_candidates=all_candidates,
             )
             state.record_iteration(record, history_record)
             if (
@@ -738,6 +739,7 @@ class TuneEngine:
         target_executor: CommandExecutor,
         benchmark_executor: CommandExecutor,
         batch_applied_keys: set[str] | None = None,
+        full_candidates: tuple[CandidateParameter, ...] = (),
     ) -> tuple[TuneIterationRecord, HypothesisRecord]:
         started_at = datetime.now(UTC)
         started_timer = perf_counter()
@@ -766,6 +768,7 @@ class TuneEngine:
             layer_statuses=tuple(sorted(state.layer_statuses.items())),
             current_workload_rps=_current_workload_rps(state),
             kb_best_workload_rps=_kb_best_workload_rps(context),
+            full_candidates=full_candidates,
         )
         try:
             hypotheses = self.hypothesis_generator.generate(hyp_context)
