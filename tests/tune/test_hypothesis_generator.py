@@ -17,6 +17,7 @@ from tune.application.rule_based_triage import RuleBasedTriage, TriageRulesLoade
 from tune.domain.hypothesis_context import HypothesisContext
 from tune.domain.hypothesis_models import (
     CandidateAvailability,
+    CandidateParameter,
     HypothesisRecord,
     HypothesisStatus,
     ModelCompletion,
@@ -267,6 +268,112 @@ def test_llm_hypothesis_generator_rejects_duplicate_parameter_value_pair() -> No
 
     with pytest.raises(ValueError, match="duplicate parameter/value pair .*current_value_source="):
         generator.generate(context)
+
+
+def test_llm_hypothesis_generator_repairs_forbidden_enum_value() -> None:
+    base = build_hypothesis_context()
+    class MinimalModelClient:
+        def __init__(self, response: dict[str, object]) -> None:
+            self._response = response
+
+        def complete(self, context: HypothesisContext) -> ModelCompletion:
+            _ = context
+            return ModelCompletion(content=json.dumps(self._response))
+
+    candidate = CandidateParameter(
+        parameter_key="service.directive.tcp_nopush",
+        domain="service_config",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="tcp_nopush",
+        source=base.candidates[0].source,
+        value_type=base.candidates[0].value_type,
+        apply_mode=base.candidates[0].apply_mode,
+        priority_tier=base.candidates[0].priority_tier,
+        allowed_values=("on", "off"),
+        forbidden_values=("off",),
+        min_value=None,
+        max_value=None,
+        rationale_hint="test",
+        current_value="off",
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=(candidate,),
+        deferred_candidates=(),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+    generator = LlmHypothesisGenerator(
+        model_client=MinimalModelClient(
+            _valid_response(
+                parameter_key="service.directive.tcp_nopush",
+                proposed_value="off",
+                rationale="test forbidden repair",
+            )
+        ),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
+    )
+
+    hypothesis = generator.generate(context)[0]
+
+    assert hypothesis.parameter_key == "service.directive.tcp_nopush"
+    assert hypothesis.proposed_value == "on"
+
+
+def test_llm_hypothesis_generator_repairs_noop_enum_value() -> None:
+    base = build_hypothesis_context()
+    class MinimalModelClient:
+        def __init__(self, response: dict[str, object]) -> None:
+            self._response = response
+
+        def complete(self, context: HypothesisContext) -> ModelCompletion:
+            _ = context
+            return ModelCompletion(content=json.dumps(self._response))
+
+    candidate = CandidateParameter(
+        parameter_key="service.directive.multi_accept",
+        domain="service_config",
+        tuning_layer=TuningLayer.SERVICE,
+        parameter_name="multi_accept",
+        source=base.candidates[0].source,
+        value_type=base.candidates[0].value_type,
+        apply_mode=base.candidates[0].apply_mode,
+        priority_tier=base.candidates[0].priority_tier,
+        allowed_values=("on", "off"),
+        forbidden_values=(),
+        min_value=None,
+        max_value=None,
+        rationale_hint="test",
+        current_value="on",
+    )
+    context = HypothesisContext(
+        tune_context=base.tune_context,
+        phase=base.phase,
+        iteration_number=base.iteration_number,
+        candidates=(candidate,),
+        deferred_candidates=(),
+        history=(),
+        active_parameter_keys=(),
+        best_parameter_values=(),
+    )
+    generator = LlmHypothesisGenerator(
+        model_client=MinimalModelClient(
+            _valid_response(
+                parameter_key="service.directive.multi_accept",
+                proposed_value="on",
+                rationale="test noop repair",
+            )
+        ),
+        triage=RuleBasedTriage(TriageRulesLoader().load(RULES_PATH)),
+    )
+
+    hypothesis = generator.generate(context)[0]
+
+    assert hypothesis.parameter_key == "service.directive.multi_accept"
+    assert hypothesis.proposed_value == "off"
 
 
 def test_llm_hypothesis_generator_rejects_array_payload() -> None:

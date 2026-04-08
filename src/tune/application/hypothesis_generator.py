@@ -222,6 +222,7 @@ class LlmHypothesisGenerator:
             expected_benchmark_impact = self._require_string(raw, "expected_benchmark_impact")
             rollback_plan = self._require_string(raw, "rollback_plan")
             candidate = self._find_candidate(context, parameter_key)
+            proposed_value = self._sanitize_proposed_value(candidate, proposed_value)
             self._validate_proposed_value(candidate, proposed_value)
             self._validate_against_history(context, candidate, proposed_value)
             self._validate_contract_fields(candidate, tuning_layer, apply_mode)
@@ -276,6 +277,26 @@ class LlmHypothesisGenerator:
                 rollback_plan=rollback_plan,
             ),
         )
+
+    def _sanitize_proposed_value(
+        self,
+        candidate: CandidateParameter,
+        proposed_value: str,
+    ) -> str:
+        """Repair invalid enum proposals to a safe alternative when possible."""
+        is_forbidden = proposed_value in candidate.forbidden_values
+        is_noop = candidate.current_value is not None and proposed_value == candidate.current_value
+        if not (is_forbidden or is_noop):
+            return proposed_value
+        if not candidate.allowed_values:
+            return proposed_value
+        for allowed_value in candidate.allowed_values:
+            if allowed_value in candidate.forbidden_values:
+                continue
+            if candidate.current_value is not None and allowed_value == candidate.current_value:
+                continue
+            return allowed_value
+        return proposed_value
 
     def _generate_knowledge_driven(
         self,
@@ -380,6 +401,18 @@ class LlmHypothesisGenerator:
         candidate: CandidateParameter,
         proposed_value: str,
     ) -> None:
+        if proposed_value in candidate.forbidden_values:
+            msg = (
+                f"Model proposed forbidden value {proposed_value!r} "
+                f"for {candidate.parameter_key}"
+            )
+            raise ValueError(msg)
+        if candidate.current_value is not None and proposed_value == candidate.current_value:
+            msg = (
+                f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key} "
+                f"(current_value_source={candidate.current_value_source})"
+            )
+            raise ValueError(msg)
         if candidate.allowed_values and proposed_value not in candidate.allowed_values:
             msg = (
                 f"Model proposed unsupported value {proposed_value!r} "
@@ -394,12 +427,6 @@ class LlmHypothesisGenerator:
             raise ValueError(msg)
         if candidate.max_value is not None and numeric_value > candidate.max_value:
             msg = f"Value {numeric_value} is above maximum for {candidate.parameter_key}"
-            raise ValueError(msg)
-        if candidate.current_value is not None and proposed_value == candidate.current_value:
-            msg = (
-                f"Model proposed no-op value {proposed_value!r} for {candidate.parameter_key} "
-                f"(current_value_source={candidate.current_value_source})"
-            )
             raise ValueError(msg)
 
     _BOUNDARY_PUSH_KEYS = frozenset(
