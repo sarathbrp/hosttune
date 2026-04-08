@@ -113,12 +113,18 @@ class UnifiedResolver:
                     blocked_set=blocked_set,
                 )
                 if proposed is None:
+                    target_hint = str(
+                        param_spec.get("target")
+                        or param_spec.get("floor")
+                        or param_spec.get("ceiling")
+                        or "-"
+                    )
                     decision_rows.append((
                         param_key,
                         str(candidate.current_value),
-                        "-",
-                        "-",
-                        "SKIP",
+                        target_hint,
+                        "graph/autofix",
+                        "SKIP (at target)",
                     ))
                     continue
 
