@@ -575,7 +575,11 @@ class PrlimitApplier:
 
 @dataclass
 class SystemdUnitLimitApplier:
-    """Apply systemd unit LimitNOFILE / LimitNPROC via systemctl set-property."""
+    """Apply systemd unit LimitNOFILE / LimitNPROC via a systemd drop-in file.
+
+    Uses /etc/systemd/system/<unit>.d/hosttune_<limit>.conf instead of
+    systemctl set-property, which fails for static units (nginx.service).
+    """
 
     @staticmethod
     def property_name(limit_yaml_name: str) -> str:
@@ -623,23 +627,28 @@ class SystemdUnitLimitApplier:
         unit = context.onboard.service.identity.systemd_unit_name
         previous_raw = self.read_property_value(executor, unit, prop)
         new_value = hypothesis.proposed_value.strip()
-        set_cmd = (
-            f"systemctl set-property {shlex.quote(unit)} " f"{shlex.quote(f'{prop}={new_value}')}"
+        # Drop-in approach: works for static units where set-property fails.
+        dropin_dir = f"/etc/systemd/system/{unit}.d"
+        dropin_file = f"{dropin_dir}/hosttune_{limit_name}.conf"
+        write_cmd = (
+            f"mkdir -p {shlex.quote(dropin_dir)} && "
+            f"printf '[Service]\\n{prop}={new_value}\\n' > {shlex.quote(dropin_file)}"
         )
-        apply_parts = [set_cmd, *self._post_set_commands(context, hypothesis.apply_mode)]
+        apply_parts = [write_cmd, *self._post_set_commands(context, hypothesis.apply_mode)]
         apply_command = " && ".join(apply_parts)
         apply_result = executor.run(apply_command)
         if apply_result.exit_code != 0:
             msg = f"Failed to apply systemd unit limit: {_cmd_error(apply_result)}"
             raise ValueError(msg)
-        rollback_set = (
-            f"systemctl set-property {shlex.quote(unit)} "
-            f"{shlex.quote(f'{prop}={previous_raw}')}"
-        )
-        rollback_parts = [
-            rollback_set,
-            *self._post_set_commands(context, hypothesis.apply_mode),
-        ]
+        # Rollback: remove drop-in if system default, otherwise restore old value.
+        _SYSTEMD_INFINITY = {"infinity", "18446744073709551615", ""}
+        if previous_raw.lower() in _SYSTEMD_INFINITY:
+            rollback_write = f"rm -f {shlex.quote(dropin_file)}"
+        else:
+            rollback_write = (
+                f"printf '[Service]\\n{prop}={previous_raw}\\n' > {shlex.quote(dropin_file)}"
+            )
+        rollback_parts = [rollback_write, *self._post_set_commands(context, hypothesis.apply_mode)]
         rollback_command = " && ".join(rollback_parts)
         return AppliedChange(
             hypothesis=hypothesis,
