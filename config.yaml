@@ -39,7 +39,7 @@ benchmark:
   runner:
     mode: local
   contestant_name: hosttune
-  script_path: /root/hackathon-tools/benchmark.sh
+  script_path: /root/hackathon-tools/benchmark-fast.sh
   compare_script_path: /root/hackathon-tools/compare-results.sh
   results_directory: /root/hackathon-results
   cooling_period_seconds: 30
