@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 import shlex
 from dataclasses import dataclass
@@ -363,17 +364,16 @@ class NginxDirectiveApplier:
             "    lines.insert(end, f'{indent}{entry}')\n"
             "path.write_text('\\n'.join(lines)+'\\n')\n"
         )
-        return " ".join(
-            (
-                "python3",
-                "-c",
-                shlex.quote(python_script),
-                shlex.quote(config_path),
-                shlex.quote(directive_name),
-                shlex.quote(directive_value),
-                shlex.quote(context_name),
-            )
-        )
+        # Use base64 to pass the multiline script safely through SSH
+        # without newline stripping issues (python3 -c loses indentation via SSH).
+        encoded = base64.b64encode(python_script.encode()).decode()
+        args = " ".join([
+            shlex.quote(config_path),
+            shlex.quote(directive_name),
+            shlex.quote(directive_value),
+            shlex.quote(context_name),
+        ])
+        return f"echo {shlex.quote(encoded)} | base64 -d | python3 - {args}"
 
     def _build_delete_command(
         self,
