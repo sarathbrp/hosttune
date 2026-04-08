@@ -133,9 +133,9 @@ layers:
         dependency: "CPU overhead; disable for RPS optimization"
         resolve_from: [autofix]
       service.directive.open_file_cache:
-        target: "max=200000"
+        target: "max=200000 inactive=20s"   # full valid nginx syntax including TTL
         dependency: "Caches file descriptors; avoids re-open per request"
-        resolve_from: [autofix]
+        resolve_from: [autofix, graph]      # graph fallback when no triage rule fires
       service.directive.limit_rate:
         target: "0"
         dependency: "Any non-zero value is a hard bandwidth throttle"
