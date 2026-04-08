@@ -97,28 +97,38 @@ class TuneState:
 
     @staticmethod
     def _allocate_unified_budget(max_iterations: int) -> dict[TunePhase, int]:
-        """Budget allocation: RESOLVE does not count against max_iterations.
+        """Proportional budget: OPTIMIZE 50% / EXPLOIT 30% / REBOOT_BATCH 20%.
 
-        The resolver applies one iteration per dependency graph layer; the
-        number of layers is determined by graph structure, not user config.
-        OPTIMIZE + EXPLOIT + REBOOT_BATCH share the full max_iterations budget.
+        RESOLVE does not count against max_iterations — it runs however many
+        dependency graph layers require. The remaining budget is split:
+          - OPTIMIZE (LLM exploration): 50%
+          - EXPLOIT  (best-config refinement): 30%
+          - REBOOT_BATCH (reboot-required params): 20%
+
+        Scales automatically as max_iterations increases. Minimum 1 per active
+        phase (REBOOT_BATCH gets 0 for very small budgets).
         """
         budgets = {phase: 0 for phase in TunePhase}
         if max_iterations <= 0:
             return budgets
-        # RESOLVE budget is generous — it won't be exhausted by layer iterations.
-        # stop_reason excludes RESOLVE from the budget-exhaustion check.
+        # RESOLVE is uncapped — stop_reason excludes it from exhaustion check.
         budgets[TunePhase.RESOLVE] = max_iterations
-        remaining = max_iterations
-        # Reserve at least 1 for OPTIMIZE when possible.
-        budgets[TunePhase.EXPLOIT] = min(2, max(0, remaining - 1))
-        remaining -= budgets[TunePhase.EXPLOIT]
-        budgets[TunePhase.OPTIMIZE] = max(0, remaining)
-        if max_iterations > 4:
-            budgets[TunePhase.REBOOT_BATCH] = 1
-            budgets[TunePhase.OPTIMIZE] = max(
-                0, budgets[TunePhase.OPTIMIZE] - 1
-            )
+        if max_iterations == 1:
+            budgets[TunePhase.OPTIMIZE] = 1
+            return budgets
+        # Proportional split with rounding; remainder goes to OPTIMIZE.
+        exploit = max(1, round(max_iterations * 0.30))
+        reboot  = max(0, round(max_iterations * 0.20)) if max_iterations > 3 else 0
+        optimize = max(1, max_iterations - exploit - reboot)
+        # Clamp total to exact max_iterations.
+        total = optimize + exploit + reboot
+        if total > max_iterations:
+            optimize -= (total - max_iterations)
+        elif total < max_iterations:
+            optimize += (max_iterations - total)
+        budgets[TunePhase.OPTIMIZE]     = max(1, optimize)
+        budgets[TunePhase.EXPLOIT]      = exploit
+        budgets[TunePhase.REBOOT_BATCH] = reboot
         return budgets
 
     def rebalance_budget(self, pre_applied_count: int) -> None:
