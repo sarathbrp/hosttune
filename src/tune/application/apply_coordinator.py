@@ -632,8 +632,17 @@ class SystemdUnitLimitApplier:
         # zz_ prefix ensures we sort last alphabetically, overriding any
         # degrader drop-ins (e.g. limits.conf which sorts before zz_*).
         dropin_file = f"{dropin_dir}/zz_hosttune_{limit_name}.conf"
+        # Also overwrite any existing drop-in that sets the same property —
+        # prevents degrader files from winning even if sorted after ours.
+        overwrite_existing = (
+            f"for _f in {shlex.quote(dropin_dir)}/*.conf; do "
+            f"[ -f \"$_f\" ] && grep -q '^{prop}=' \"$_f\" 2>/dev/null && "
+            f"sed -i 's|^{prop}=.*|{prop}={new_value}|' \"$_f\"; "
+            f"done"
+        )
         write_cmd = (
             f"mkdir -p {shlex.quote(dropin_dir)} && "
+            f"{overwrite_existing} && "
             f"printf '[Service]\\n{prop}={new_value}\\n' > {shlex.quote(dropin_file)}"
         )
         apply_parts = [write_cmd, *self._post_set_commands(context, hypothesis.apply_mode)]
