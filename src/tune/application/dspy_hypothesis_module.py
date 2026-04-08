@@ -92,12 +92,16 @@ def reset_predictor() -> None:
     _PREDICTOR = None
 
 
-def call_predictor(context: str, compiled_path: Path | None = None) -> HypothesisProposal:
-    """Call the predictor and return a typed HypothesisProposal.
+def call_predictor(
+    context: str, compiled_path: Path | None = None
+) -> tuple[HypothesisProposal, str | None]:
+    """Call the predictor and return (HypothesisProposal, reasoning).
 
-    This is the typed boundary: everything inside DSPy returns Any; everything
-    outside this function sees a concrete HypothesisProposal.
+    reasoning is DSPy's ChainOfThought internal reasoning step — the model's
+    step-by-step thinking before producing the structured output. May be None
+    if the model didn't emit a reasoning field.
     """
     predictor = get_predictor(compiled_path)
     result = predictor(context=context)
-    return cast(HypothesisProposal, result.hypothesis)
+    reasoning: str | None = getattr(result, "reasoning", None)
+    return cast(HypothesisProposal, result.hypothesis), reasoning

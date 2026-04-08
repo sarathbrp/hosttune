@@ -464,23 +464,36 @@ class LlmHypothesisGenerator:
             last_proposed_int = int(last_attempt.hypothesis.proposed_value)
         except ValueError:
             return
-        # Only block if the new proposal is a further escalation (higher value).
-        if proposed_int <= last_proposed_int:
-            return
         # Allow re-escalation if the last attempt was accepted or promising.
         if last_attempt.status.value in ("accepted", "promising"):
             return
-        # Allow re-escalation if the last value was pathologically low (<=1) —
-        # this indicates a bad previous value (e.g. from deterministic fallback),
-        # not a legitimate boundary test. Recovery should never be blocked.
+        # Allow re-escalation if the last value was pathologically low (<=1).
         if last_proposed_int <= 1:
             return
-        raise ValueError(
-            f"Diminishing-return suppression: {candidate.parameter_key} was "
-            f"escalated to {last_proposed_int} in iteration "
-            f"{last_attempt.iteration_number} with status={last_attempt.status.value}; "
-            f"blocking further escalation to {proposed_int} without prior verified gain"
-        )
+        # Block further escalation beyond the last failed attempt.
+        if proposed_int > last_proposed_int:
+            raise ValueError(
+                f"Diminishing-return suppression: {candidate.parameter_key} was "
+                f"escalated to {last_proposed_int} in iteration "
+                f"{last_attempt.iteration_number} with status={last_attempt.status.value}; "
+                f"blocking further escalation to {proposed_int} without prior verified gain"
+            )
+        # Also block values in the same direction (between current and last failed attempt).
+        # e.g. tried 112 (up from 56) → failed → block 96 (still up from 56, same direction).
+        try:
+            current_int = int(candidate.current_value) if candidate.current_value else None
+        except (ValueError, TypeError):
+            current_int = None
+        if current_int is not None and current_int != last_proposed_int:
+            lo = min(current_int, last_proposed_int)
+            hi = max(current_int, last_proposed_int)
+            if lo < proposed_int < hi:
+                raise ValueError(
+                    f"Diminishing-return suppression: {candidate.parameter_key} already "
+                    f"tried {last_proposed_int} (same direction from {current_int}) "
+                    f"with status={last_attempt.status.value}; "
+                    f"blocking same-direction attempt of {proposed_int}"
+                )
 
     def _validate_contract_fields(
         self,

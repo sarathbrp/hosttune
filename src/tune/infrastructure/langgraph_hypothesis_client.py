@@ -43,11 +43,16 @@ class LangGraphHypothesisClient:
         from tune.application.dspy_hypothesis_module import call_predictor
 
         try:
-            proposal = call_predictor(prompt, self.compiled_path)
+            proposal, reasoning = call_predictor(prompt, self.compiled_path)
         except Exception as exc:
             msg = f"[hybrid_hypothesizer] DSPy call failed: {type(exc).__name__}: {exc}"
             raise ValueError(msg) from exc
 
+        if reasoning:
+            self.logger.stage_detail(
+                "tune",
+                f"Chain of thought reasoning:\n{reasoning}",
+            )
         content = proposal.model_dump_json()
         usage = self._extract_dspy_usage()
         return content, usage
@@ -116,11 +121,19 @@ class LangGraphHypothesisClient:
                     "total_tokens": usage.total_tokens,
                 }
             )
+            # Extract reasoning from response JSON if present (DSPy ChainOfThought).
+            reasoning_text: str | None = None
+            try:
+                parsed = json.loads(response)
+                reasoning_text = parsed.get("reasoning") or parsed.get("Reasoning")
+            except Exception:
+                pass
             data = {
                 "iteration": iteration,
                 "phase": context.phase.value,
                 "agent": agent,
                 "prompt": prompt,
+                "chain_of_thought": reasoning_text,
                 "response": response,
                 "token_usage": token_usage,
             }
