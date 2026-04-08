@@ -629,7 +629,9 @@ class SystemdUnitLimitApplier:
         new_value = hypothesis.proposed_value.strip()
         # Drop-in approach: works for static units where set-property fails.
         dropin_dir = f"/etc/systemd/system/{unit}.d"
-        dropin_file = f"{dropin_dir}/hosttune_{limit_name}.conf"
+        # zz_ prefix ensures we sort last alphabetically, overriding any
+        # degrader drop-ins (e.g. limits.conf which sorts before zz_*).
+        dropin_file = f"{dropin_dir}/zz_hosttune_{limit_name}.conf"
         write_cmd = (
             f"mkdir -p {shlex.quote(dropin_dir)} && "
             f"printf '[Service]\\n{prop}={new_value}\\n' > {shlex.quote(dropin_file)}"
