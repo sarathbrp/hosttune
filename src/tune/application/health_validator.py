@@ -335,7 +335,11 @@ class HealthValidator:
         command = "nginx -t"
         result = executor.run(command)
         passed = result.exit_code == 0
-        detail = result.stderr.strip() or result.stdout.strip() or "nginx -t returned no output"
+        clean_stderr = "\n".join(
+            line for line in result.stderr.splitlines()
+            if "Identity file" not in line and "not accessible" not in line
+        ).strip()
+        detail = clean_stderr or result.stdout.strip() or "nginx -t returned no output"
         return ValidationCheck(
             name="config_syntax",
             passed=passed,
