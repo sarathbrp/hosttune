@@ -2358,46 +2358,15 @@ class TuneEngine:
             )
 
     def _log_benchmark(self, benchmark_result: TuneBenchmarkResult) -> None:
-        self.logger.stage_detail(
-            "tune",
-            (
-                "Benchmark: "
-                f"stable={benchmark_result.stable} "
-                f"run_count={benchmark_result.run_count} "
-                f"variance_threshold={benchmark_result.variance_threshold:.2%}"
-            ),
-        )
-        for summary in benchmark_result.workload_summaries:
-            self.logger.stage_detail(
-                "tune",
-                (
-                    f"Benchmark workload: {summary.workload_name} "
-                    f"rps={summary.median_requests_per_second:.2f} "
-                    f"latency_ms={summary.median_latency_ms:.2f} "
-                    f"variance={summary.relative_variance:.2%} "
-                    f"stable={summary.stable}"
-                ),
-            )
+        from tune.application.format_table import benchmark_summary_table
+        self.logger.stage_detail("tune", benchmark_summary_table(benchmark_result))
 
     def _log_evaluation(self, evaluation_result: EvaluationResult) -> None:
-        self.logger.stage_detail(
-            "tune",
-            (
-                "Evaluate: "
-                f"decision={evaluation_result.decision.value} "
-                f"guardrails_held={evaluation_result.guardrails_held} "
-                f"drift_detected={evaluation_result.drift_detected}"
-            ),
+        from tune.application.format_table import evaluation_table
+        decision = evaluation_result.decision.value
+        logger_fn = (
+            self.logger.stage_warning
+            if decision in ("reject", "inconclusive")
+            else self.logger.stage_detail
         )
-        self.logger.stage_detail("tune", f"Evaluate summary: {evaluation_result.summary}")
-        for workload in evaluation_result.workload_evaluations:
-            self.logger.stage_detail(
-                "tune",
-                (
-                    f"Evaluate workload: {workload.workload_name} "
-                    f"baseline_rps={workload.baseline_requests_per_second:.2f} "
-                    f"current_rps={workload.current_requests_per_second:.2f} "
-                    f"change={workload.relative_change:.2%} "
-                    f"above_noise_floor={workload.above_noise_floor}"
-                ),
-            )
+        logger_fn("tune", evaluation_table(evaluation_result))

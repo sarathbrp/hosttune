@@ -72,6 +72,49 @@ def pre_apply_rejection_table(layer: str, parameter: str, reason: str) -> str:
     return f"Pre-apply rejection\n{t}"
 
 
+def benchmark_summary_table(benchmark_result: object) -> str:
+    """Prettytable for benchmark workload summaries."""
+    from tune.domain.benchmark_models import TuneBenchmarkResult
+    result: TuneBenchmarkResult = benchmark_result  # type: ignore[assignment]
+    t = _table("Workload", "RPS", "Latency ms", "Variance", "Stable")
+    for s in result.workload_summaries:
+        t.add_row([
+            s.workload_name,
+            f"{s.median_requests_per_second:,.0f}",
+            f"{s.median_latency_ms:.2f}",
+            f"{s.relative_variance:.2%}",
+            "✓" if s.stable else "✗",
+        ])
+    status = "stable" if result.stable else "UNSTABLE"
+    return (
+        f"Benchmark run summary: {status} | "
+        f"variance_threshold={result.variance_threshold:.1%}\n{t}"
+    )
+
+
+def evaluation_table(evaluation_result: object) -> str:
+    """Prettytable for per-workload evaluation with decision and signal."""
+    from tune.domain.evaluation_models import EvaluationResult, EvaluationDecision
+    result: EvaluationResult = evaluation_result  # type: ignore[assignment]
+    decision = result.decision.value.upper()
+    t = _table("Workload", "Baseline RPS", "Current RPS", "Change", "Signal", max_width=15)
+    for w in result.workload_evaluations:
+        change_pct = w.relative_change * 100
+        sign = "+" if change_pct >= 0 else ""
+        signal = "above noise" if w.above_noise_floor else "noise"
+        t.add_row([
+            w.workload_name,
+            f"{w.baseline_requests_per_second:,.0f}",
+            f"{w.current_requests_per_second:,.0f}",
+            f"{sign}{change_pct:.1f}%",
+            signal,
+        ])
+    return (
+        f"Evaluate: decision={decision} | "
+        f"guardrails={result.guardrails_held} | drift={result.drift_detected}\n{t}"
+    )
+
+
 def apply_failed_table(parameter: str, error: str) -> str:
     """Single-row table for an apply failure."""
     t = _table("Parameter", "Error", max_width=80)
