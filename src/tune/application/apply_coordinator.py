@@ -634,11 +634,12 @@ class SystemdUnitLimitApplier:
         dropin_file = f"{dropin_dir}/zz_hosttune_{limit_name}.conf"
         # Also overwrite any existing drop-in that sets the same property —
         # prevents degrader files from winning even if sorted after ours.
+        # 'for' loop exits 1 when glob matches nothing; '; true' neutralizes it.
         overwrite_existing = (
             f"for _f in {shlex.quote(dropin_dir)}/*.conf; do "
             f"[ -f \"$_f\" ] && grep -q '^{prop}=' \"$_f\" 2>/dev/null && "
             f"sed -i 's|^{prop}=.*|{prop}={new_value}|' \"$_f\"; "
-            f"done"
+            f"done; true"
         )
         write_cmd = (
             f"mkdir -p {shlex.quote(dropin_dir)} && "
@@ -735,11 +736,12 @@ class SystemdCgroupControlApplier:
         prop_assignment = self.property_assignment(prop, new_value)  # e.g. CPUQuota=400%
         dropin_dir = f"/etc/systemd/system/{unit}.d"
         dropin_file = f"{dropin_dir}/zz_hosttune_{control_name}.conf"
+        # 'for' loop exits 1 when glob matches nothing; '; true' neutralizes it.
         overwrite_existing = (
             f"for _f in {shlex.quote(dropin_dir)}/*.conf; do "
             f"[ -f \"$_f\" ] && grep -q '^{prop}=' \"$_f\" 2>/dev/null && "
             f"sed -i 's|^{prop}=.*|{prop_assignment}|' \"$_f\"; "
-            f"done"
+            f"done; true"
         )
         write_cmd = (
             f"mkdir -p {shlex.quote(dropin_dir)} && "
