@@ -748,3 +748,63 @@ def test_phase_controller_wide_sweep_never_selects_deferred_candidates() -> None
     filtered = PhaseController().filter_candidates(TunePhase.WIDE_SWEEP, state, candidates)
     assert filtered
     assert all(c.availability is CandidateAvailability.ACTIVE for c in filtered)
+
+
+def test_phase_controller_keeps_mechanical_failure_keys_eligible() -> None:
+    alpha = CandidateParameter(
+        parameter_key="systemd.cgroup.cpu_quota_percent",
+        domain="runtime",
+        tuning_layer=TuningLayer.RUNTIME,
+        parameter_name="cpu_quota_percent",
+        source=CandidateSource.SYSTEMD_CGROUP_CONTROL,
+        value_type=DirectiveValueType.INTEGER,
+        apply_mode=ApplyMode.RESTART,
+        priority_tier=PriorityTier.HIGH,
+        allowed_values=(),
+        forbidden_values=(),
+        min_value=15,
+        max_value=400,
+        rationale_hint="test",
+    )
+    beta = replace(
+        alpha,
+        parameter_key="sysctl.net.core.netdev_max_backlog",
+        parameter_name="net.core.netdev_max_backlog",
+        domain="kernel_sysctl",
+        tuning_layer=TuningLayer.KERNEL,
+        source=CandidateSource.SERVICE_SYSCTL,
+    )
+    gamma = replace(
+        alpha,
+        parameter_key="runtime.prlimit.nofile_soft",
+        parameter_name="nofile_soft",
+        source=CandidateSource.RUNTIME_PRLIMIT,
+    )
+    state = TuneState.initialize(10)
+    state.history = [
+        HypothesisRecord(
+            iteration_number=1,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=_hypothesis_from_wide_sweep_candidate(alpha),
+            status=HypothesisStatus.FAILED_VALIDATION,
+        ),
+        HypothesisRecord(
+            iteration_number=2,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=_hypothesis_from_wide_sweep_candidate(beta),
+            status=HypothesisStatus.REJECTED,
+        ),
+        HypothesisRecord(
+            iteration_number=3,
+            phase=TunePhase.WIDE_SWEEP,
+            hypothesis=_hypothesis_from_wide_sweep_candidate(gamma),
+            status=HypothesisStatus.REJECTED_PRE_APPLY,
+        ),
+    ]
+
+    filtered = PhaseController().filter_candidates(TunePhase.OPTIMIZE, state, (alpha, beta, gamma))
+
+    assert {c.parameter_key for c in filtered} == {
+        "systemd.cgroup.cpu_quota_percent",
+        "runtime.prlimit.nofile_soft",
+    }

@@ -177,17 +177,31 @@ class PhaseController:
         If every attempt for a key resulted in rejected/inconclusive/failed,
         suppress it to avoid wasting iterations on dead-end parameters.
         Keys with at least one accepted/promising attempt are kept.
+        Keys that only saw mechanical failures (pre-apply rejection or validation
+        failure with no benchmark/evaluation) stay eligible for retry.
         """
         positive_keys: set[str] = set()
         tried_keys: set[str] = set()
+        statuses_by_key: dict[str, set[HypothesisStatus]] = {}
         for record in state.history:
             key = record.hypothesis.parameter_key
             if key == "__no_hypothesis__":
                 continue
             tried_keys.add(key)
+            statuses_by_key.setdefault(key, set()).add(record.status)
             if record.status in (HypothesisStatus.ACCEPTED, HypothesisStatus.PROMISING):
                 positive_keys.add(key)
-        failed_keys = tried_keys - positive_keys
+        mechanical_failure_only_keys = {
+            key
+            for key, statuses in statuses_by_key.items()
+            if statuses.issubset(
+                {
+                    HypothesisStatus.FAILED_VALIDATION,
+                    HypothesisStatus.REJECTED_PRE_APPLY,
+                }
+            )
+        }
+        failed_keys = tried_keys - positive_keys - mechanical_failure_only_keys
         if not failed_keys:
             return candidates
         return tuple(
