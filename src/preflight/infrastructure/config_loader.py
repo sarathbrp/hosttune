@@ -32,6 +32,7 @@ class LoadedConfig:
     mlflow_enabled: bool = False
     mlflow_tracking_uri: str = "http://localhost:5000"
     mlflow_experiment_name: str = "hosttune"
+    skip_attribution: bool = False
 
 
 class ConfigLoader:
@@ -86,6 +87,7 @@ class ConfigLoader:
         mlflow_enabled = bool(mlflow_section.get("enabled", False))
         mlflow_tracking_uri = str(mlflow_section.get("tracking_uri", "http://localhost:5000"))
         mlflow_experiment_name = str(mlflow_section.get("experiment_name", "hosttune"))
+        skip_attribution = bool(tune_section.get("skip_attribution", False))
 
         return LoadedConfig(
             target=target,
@@ -103,6 +105,7 @@ class ConfigLoader:
             mlflow_enabled=mlflow_enabled,
             mlflow_tracking_uri=mlflow_tracking_uri,
             mlflow_experiment_name=mlflow_experiment_name,
+            skip_attribution=skip_attribution,
         )
 
     def _load_target(self, data: dict[str, Any]) -> TargetConfig:

@@ -25,6 +25,7 @@ tune:
   prompt_compression: true
   kb_batch_apply: true
   skip_marginal_attribution: true
+  skip_attribution: true
   marginal_attribution_multiplier: 1.0
   use_unified_resolver: true
   dependency_graph_path: tuning-dependency-graph.yaml

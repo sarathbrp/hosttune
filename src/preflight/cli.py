@@ -180,6 +180,7 @@ def build_tune_engine(
     mlflow_enabled: bool = False,
     mlflow_tracking_uri: str = "http://localhost:5000",
     mlflow_experiment_name: str = "hosttune",
+    skip_attribution: bool = False,
 ) -> TuneEngine:
     execution_logger = logger or NullExecutionLogger()
     try:
@@ -256,6 +257,7 @@ def build_tune_engine(
         mlflow_enabled=mlflow_enabled,
         mlflow_tracking_uri=mlflow_tracking_uri,
         mlflow_experiment_name=mlflow_experiment_name,
+        skip_attribution=skip_attribution,
     )
 
 
@@ -321,6 +323,7 @@ def main() -> int:
                     mlflow_enabled=loaded_config.mlflow_enabled,
                     mlflow_tracking_uri=loaded_config.mlflow_tracking_uri,
                     mlflow_experiment_name=loaded_config.mlflow_experiment_name,
+                    skip_attribution=loaded_config.skip_attribution,
                 ),
             )
     except ValueError as error:

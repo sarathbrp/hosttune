@@ -107,6 +107,7 @@ class TuneEngine:
     kb_batch_apply: bool = False
     skip_marginal_attribution: bool = False
     marginal_attribution_multiplier: float = 2.0
+    skip_attribution: bool = False
     logger: ExecutionLogger = NullExecutionLogger()
     compiled_path: Path | None = None
     auto_compile_threshold: int = 30
@@ -1061,7 +1062,19 @@ class TuneEngine:
                     and len(_batch_keys) >= 3
                     and phase is not TunePhase.EXPLOIT
                 )
-                if is_batch_param:
+                if self.skip_attribution:
+                    self.logger.stage_detail(
+                        "tune",
+                        f"Attribution skipped: skip_attribution=True "
+                        f"avg_change={avg_change:.1%}; accepting directly.",
+                    )
+                    attribution_verification = AttributionVerificationResult(
+                        verified=True,
+                        summary="skipped (skip_attribution=True)",
+                        reverted_benchmark_result=None,
+                        average_drop=avg_change,
+                    )
+                elif is_batch_param:
                     # Batch-applied param: per-param attribution is
                     # unreliable because other batch params mask the drop.
                     self.logger.stage_detail(
