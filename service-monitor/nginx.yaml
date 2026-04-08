@@ -191,6 +191,15 @@ tunable_surface:
       priority_tier: high
     - name: net.ipv4.ip_local_port_range
       priority_tier: medium
+    - name: net.ipv4.tcp_tw_reuse
+      priority_tier: low
+      rationale_hint: "0=safe(default); 1=breaks NAT; 2=RFC6191. Keep 0 for inbound-only nginx."
+    - name: net.ipv4.tcp_rmem
+      priority_tier: medium
+      rationale_hint: "Format: 'min default max' bytes. Unlocks auto-tuning to match rmem_max. Recommended: 4096 87380 16777216"
+    - name: net.ipv4.tcp_wmem
+      priority_tier: medium
+      rationale_hint: "Send-side mirror of tcp_rmem. Recommended: 4096 87380 16777216"
   network_ring_priority_tier: medium
   runtime_limits:
     nofile_soft:

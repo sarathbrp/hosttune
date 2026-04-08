@@ -59,6 +59,18 @@ layers:
         ceiling: 10          # >10 causes aggressive swapping under load
         dependency: "High values swap aggressively, adding latency"
         resolve_from: [recipe, kb, graph]
+      sysctl.net.ipv4.tcp_tw_reuse:
+        target: "0"          # 0=safe for all envs; 1 breaks NAT, 2 unsafe; neutralize any degrader
+        dependency: "Degraders set this to 1/2; keep at 0 for inbound-only nginx (no outbound TW reuse needed)"
+        resolve_from: [recipe, kb, graph]
+      sysctl.net.ipv4.tcp_rmem:
+        target: "4096 87380 16777216"   # min=4K default=85K max=16MB — aligns auto-tuning with rmem_max
+        dependency: "Unlocks full rmem_max buffer for auto-tuning; without this kernel uses 85KB default ceiling"
+        resolve_from: [recipe, kb, graph]
+      sysctl.net.ipv4.tcp_wmem:
+        target: "4096 87380 16777216"   # mirror tcp_rmem on the send side
+        dependency: "Send-side auto-tuning range; pairs with wmem_max and tcp_rmem"
+        resolve_from: [recipe, kb, graph]
 
   3_resource_valves:
     description: "OS-level resource ceilings — must be raised before nginx can use them"
