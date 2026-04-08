@@ -1,0 +1,95 @@
+version: "1.0"
+description: "Systemd and OS-level Parameter Hierarchy for 112-core RHEL 9.7"
+
+groups:
+  1_systemd_resource_limits:
+    description: "Cgroup-level constraints. These act as hard physical boundaries for the service."
+    parameters:
+      CPUQuota:
+        target_perf: "none"
+        inspect_cmd: "systemctl show nginx.service -p CPUQuota"
+        detail: "Percentage of total CPU time. '15%' in R1 caused a 90% RPS collapse."
+      CPUWeight:
+        target_perf: "100 (default)"
+        inspect_cmd: "systemctl show nginx.service -p CPUWeight"
+        detail: "Priority weighting for CPU cycles. Lower values (25-50) cause NGINX to lose cycles to background tasks."
+      MemoryMax:
+        target_perf: "none"
+        inspect_cmd: "systemctl show nginx.service -p MemoryMax"
+        detail: "Hard memory cap. R1's 256M limit causes OOM-killing under high concurrent load."
+      IOWeight:
+        target_perf: "100"
+        inspect_cmd: "systemctl show nginx.service -p IOWeight"
+        detail: "Priority for block I/O. Essential for logging stability."
+
+  2_process_limits:
+    description: "The OS permission gates for handles and tasks."
+    parameters:
+      LimitNOFILE:
+        target_perf: "1048576"
+        inspect_cmd: "cat /proc/$(pgrep -n nginx)/limits | grep 'Max open files'"
+        detail: "Must match NGINX worker_rlimit_nofile. Default (1024) is a hard RPS ceiling."
+      LimitNPROC:
+        target_perf: "65535"
+        inspect_cmd: "cat /proc/$(pgrep -n nginx)/limits | grep 'Max processes'"
+        detail: "Max processes/threads the NGINX user can spawn. R1's limit of 64 prevents worker scaling."
+
+  3_interrupt_topology:
+    description: "Hardware-to-CPU mapping. Determines how the 25Gbps NIC talks to the 112 cores."
+    parameters:
+      irqbalance:
+        target_perf: "active"
+        inspect_cmd: "systemctl is-active irqbalance"
+        detail: "Stopping this (R1-R6) causes 'Interrupt Storms' on single cores."
+      NIC_IRQ_affinity:
+        target_perf: "balanced (all cores)"
+        inspect_cmd: "cat /proc/irq/$(grep eno /proc/interrupts | awk '{print $1}' | tr -d ':')/smp_affinity_list"
+        detail: "Pinning to CPU0 (R1) or small ranges (R2-R4) creates a bottleneck on the NIC data plane."
+      NUMA_policy:
+        target_perf: "default (local)"
+        inspect_cmd: "numastat -p $(pgrep -n nginx)"
+        detail: "Interleave (R2) increases cross-socket UPI latency, slowing down request processing."
+
+  4_storage_performance:
+    description: "Filesystem and Block layer speed."
+    parameters:
+      readahead:
+        target_perf: "256 sectors"
+        inspect_cmd: "blockdev --getra /dev/sda"
+        detail: "R1's value of 8 sectors causes disk thrashing for 'Medium' and 'Large' file workloads."
+      IO_scheduler:
+        target_perf: "none (for NVMe) or mq-deadline"
+        inspect_cmd: "cat /sys/block/sda/queue/scheduler"
+        detail: "mq-deadline (R1) adds slight latency overhead compared to 'none' on high-speed SSDs."
+
+  5_power_memory_security:
+    description: "Global OS behavior and safety overhead."
+    parameters:
+      THP:
+        target_perf: "madvise"
+        inspect_cmd: "cat /sys/kernel/mm/transparent_hugepage/enabled"
+        detail: "Transparent Huge Pages. 'always' (R2, R4-R6) can cause jittery memory allocation."
+      CPU_governor:
+        target_perf: "performance"
+        inspect_cmd: "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+        detail: "Powersave (R2) caps CPU clock speed to ~992MHz, reducing per-op speed by 60%."
+      SELinux:
+        target_perf: "permissive (for benchmark)"
+        inspect_cmd: "getenforce"
+        detail: "Booleans like 'httpd_off' (R4) remove syscall validation overhead for 1.5M RPS."
+
+  6_network_filtering_tc:
+    description: "Packet-level throttles and latency injection."
+    parameters:
+      tc_bandwidth_cap:
+        target_perf: "none"
+        inspect_cmd: "tc qdisc show dev eno12399np0"
+        detail: "Hard throughput caps (R3: 5Gbps, R11: 1Gbps) simulate network congestion."
+      tc_latency:
+        target_perf: "none"
+        inspect_cmd: "tc qdisc show dev eno12399np0"
+        detail: "+500us in R3 adds massive p95 latency spikes to all workloads."
+      iptables_connlimit:
+        target_perf: "none"
+        inspect_cmd: "iptables -L -n -v | grep connlimit"
+        detail: "Simulates DDoS protection. Limits of 100-200 (R2, R6, R11) drop connections aggressively."

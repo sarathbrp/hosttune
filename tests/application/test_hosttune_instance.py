@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from baseline.domain.models import BaselineResult, BenchmarkConfig, WorkloadBenchmarkResult
+from host_profile.domain.models import (
+    HostPerformanceHierarchy,
+    HostPerformanceHierarchyGroup,
+    HostPerformanceHierarchyParameter,
+    HostProfile,
+    HostProfileIdentity,
+    HostTunableSurface,
+)
 from onboard.domain.models import CompatibilityReport, OnboardResult
 from onboard.infrastructure.service_definition_validator import ServiceDefinitionValidator
 from preflight.application.hosttune_instance import HostTuneInstance
@@ -489,3 +498,131 @@ def test_instance_runs_tune_and_persists_artifact(tmp_path: Path) -> None:
     assert instance.tune is result
     assert instance.artifacts is not None
     assert "tune" in instance.artifacts.stage_files
+
+
+class EnvDiagnosticExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def run(self, command: str) -> CommandResult:
+        self.commands.append(command)
+        if "systemctl show nginx.service -p CPUQuota" in command:
+            return CommandResult(command=command, exit_code=0, stdout="CPUQuota=15%\n", stderr="")
+        if "systemctl show nginx.service -p MemoryMax" in command:
+            return CommandResult(
+                command=command,
+                exit_code=0,
+                stdout="MemoryMax=268435456\n",
+                stderr="",
+            )
+        return CommandResult(command=command, exit_code=0, stdout="", stderr="")
+
+
+def _build_env_hierarchy_host_profile() -> HostProfile:
+    hierarchy = HostPerformanceHierarchy(
+        version="1.0",
+        description="host env hierarchy",
+        groups=(
+            HostPerformanceHierarchyGroup(
+                group_id="1_systemd_resource_limits",
+                description="systemd limits",
+                parameters=(
+                    HostPerformanceHierarchyParameter(
+                        name="CPUQuota",
+                        target_perf="none",
+                        inspect_cmd="systemctl show nginx.service -p CPUQuota",
+                    ),
+                    HostPerformanceHierarchyParameter(
+                        name="MemoryMax",
+                        target_perf="none",
+                        inspect_cmd="systemctl show nginx.service -p MemoryMax",
+                    ),
+                ),
+            ),
+        ),
+    )
+    return HostProfile(
+        identity=HostProfileIdentity(
+            name="rhel-9",
+            platform="rhel",
+            version="9",
+            variant=None,
+        ),
+        tunable_surface=HostTunableSurface(
+            network_queues=None,
+            cpu_governor=None,
+            host_sysctls=(),
+            environment_blockers=(),
+            performance_hierarchy=hierarchy,
+        ),
+    )
+
+
+class EnvCleanupEnabledConfigLoader(FakeConfigLoader):
+    def load(self, path: Path) -> LoadedConfig:
+        loaded = super().load(path)
+        return LoadedConfig(
+            target=loaded.target,
+            policy=replace(loaded.policy, allow_environment_cleanup=True),
+            service_name=loaded.service_name,
+            benchmark_config=loaded.benchmark_config,
+            host_profile_name=loaded.host_profile_name,
+        )
+
+
+class EnvCleanupDisabledConfigLoader(FakeConfigLoader):
+    def load(self, path: Path) -> LoadedConfig:
+        loaded = super().load(path)
+        return LoadedConfig(
+            target=loaded.target,
+            policy=replace(loaded.policy, allow_environment_cleanup=False),
+            service_name=loaded.service_name,
+            benchmark_config=loaded.benchmark_config,
+            host_profile_name=loaded.host_profile_name,
+        )
+
+
+def test_env_diagnostic_applies_hierarchy_fixes_when_cleanup_allowed(tmp_path: Path) -> None:
+    executor = EnvDiagnosticExecutor()
+    instance = HostTuneInstance(
+        config_loader=EnvCleanupEnabledConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: executor,
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+    instance.load_preflight(Path("config.yaml"))
+    instance.host_profile = _build_env_hierarchy_host_profile()
+
+    instance.clear_environment_blockers(Path("config.yaml"))
+
+    assert any("systemctl show nginx.service -p CPUQuota" in cmd for cmd in executor.commands)
+    assert any("systemctl show nginx.service -p MemoryMax" in cmd for cmd in executor.commands)
+    assert any("systemctl set-property nginx.service CPUQuota=" in cmd for cmd in executor.commands)
+    assert any("systemctl set-property nginx.service MemoryMax=" in cmd for cmd in executor.commands)
+
+
+def test_env_diagnostic_does_not_apply_hierarchy_fixes_when_cleanup_disabled(
+    tmp_path: Path,
+) -> None:
+    executor = EnvDiagnosticExecutor()
+    instance = HostTuneInstance(
+        config_loader=EnvCleanupDisabledConfigLoader(),
+        discovery_runner_factory=lambda benchmark_command: FakeRunner(),
+        onboard_runner_factory=lambda: FakeOnboardRunner(),
+        snapshot_runner_factory=lambda: None,  # type: ignore[arg-type]
+        baseline_runner_factory=lambda benchmark_config: None,  # type: ignore[arg-type]
+        executor_factory=lambda _target: executor,
+        artifact_store=RuntimeArtifactStore(base_directory=tmp_path / "artifacts"),
+    )
+    instance.load_preflight(Path("config.yaml"))
+    instance.host_profile = _build_env_hierarchy_host_profile()
+
+    instance.clear_environment_blockers(Path("config.yaml"))
+
+    assert any("systemctl show nginx.service -p CPUQuota" in cmd for cmd in executor.commands)
+    assert any("systemctl show nginx.service -p MemoryMax" in cmd for cmd in executor.commands)
+    assert not any("systemctl set-property nginx.service CPUQuota=" in cmd for cmd in executor.commands)
+    assert not any("systemctl set-property nginx.service MemoryMax=" in cmd for cmd in executor.commands)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+import re
 from typing import Protocol
 
 from baseline.application.baseline_runner import BaselineRunner
@@ -234,10 +235,12 @@ class HostTuneInstance:
         """
         if self.host_profile is None:
             return
+        surface = self.host_profile.tunable_surface
         blockers = getattr(
             self.host_profile.tunable_surface, "environment_blockers", ()
         )
-        if not blockers:
+        hierarchy = getattr(surface, "performance_hierarchy", None)
+        if not blockers and hierarchy is None:
             return
         loaded_config = self.config_loader.load(config_path)
         allow_fix = loaded_config.policy.allow_environment_cleanup
@@ -248,10 +251,46 @@ class HostTuneInstance:
         self.logger.stage_start("env_diagnostic")
         detected: list[str] = []
         fixed: list[str] = []
-        for blocker in blockers:
-            probe_cmd = blocker.probe_command.replace(
-                "{interface}", interface_name
+        self._run_environment_blocker_rules(
+            blockers=blockers,
+            executor=executor,
+            interface_name=interface_name,
+            allow_fix=allow_fix,
+            detected=detected,
+            fixed=fixed,
+        )
+        self._run_hierarchy_env_diagnostic(
+            hierarchy=hierarchy,
+            executor=executor,
+            interface_name=interface_name,
+            allow_fix=allow_fix,
+            detected=detected,
+            fixed=fixed,
+        )
+        if detected:
+            self.logger.stage_detail(
+                "env_diagnostic",
+                f"Summary: {len(detected)} blocker(s) detected, "
+                f"{len(fixed)} fixed.",
             )
+        else:
+            self.logger.stage_detail(
+                "env_diagnostic", "No blockers detected."
+            )
+        self.logger.stage_end("env_diagnostic")
+
+    def _run_environment_blocker_rules(
+        self,
+        *,
+        blockers: object,
+        executor: CommandExecutor,
+        interface_name: str,
+        allow_fix: bool,
+        detected: list[str],
+        fixed: list[str],
+    ) -> None:
+        for blocker in blockers:
+            probe_cmd = blocker.probe_command.replace("{interface}", interface_name)
             result = executor.run(probe_cmd)
             output = result.stdout.strip()
             triggered = False
@@ -290,12 +329,8 @@ class HostTuneInstance:
                     "policy.allow_environment_cleanup=false.",
                 )
                 continue
-            fix_cmd = blocker.fix_command.replace(
-                "{interface}", interface_name
-            )
-            self.logger.stage_detail(
-                "env_diagnostic", f"  Fixing: {fix_cmd}"
-            )
+            fix_cmd = blocker.fix_command.replace("{interface}", interface_name)
+            self.logger.stage_detail("env_diagnostic", f"  Fixing: {fix_cmd}")
             fix_result = executor.run(fix_cmd)
             if fix_result.exit_code == 0:
                 fixed.append(blocker.name)
@@ -310,17 +345,163 @@ class HostTuneInstance:
                     f"  {blocker.name}: fix failed "
                     f"(exit={fix_result.exit_code}): {detail}",
                 )
-        if detected:
-            self.logger.stage_detail(
-                "env_diagnostic",
-                f"Summary: {len(detected)} blocker(s) detected, "
-                f"{len(fixed)} fixed.",
-            )
-        else:
-            self.logger.stage_detail(
-                "env_diagnostic", "No blockers detected."
-            )
-        self.logger.stage_end("env_diagnostic")
+
+    def _run_hierarchy_env_diagnostic(
+        self,
+        *,
+        hierarchy: object | None,
+        executor: CommandExecutor,
+        interface_name: str,
+        allow_fix: bool,
+        detected: list[str],
+        fixed: list[str],
+    ) -> None:
+        if hierarchy is None:
+            return
+        groups = tuple(getattr(hierarchy, "groups", ()) or ())
+        for group in groups:
+            group_id = str(getattr(group, "group_id", "group"))
+            for parameter in tuple(getattr(group, "parameters", ()) or ()):
+                name = str(getattr(parameter, "name", "")).strip()
+                inspect_cmd = getattr(parameter, "inspect_cmd", None)
+                target_perf = str(getattr(parameter, "target_perf", "")).strip()
+                if not name or not isinstance(inspect_cmd, str) or inspect_cmd == "":
+                    continue
+                needs_fix = self._hierarchy_parameter_needs_fix(
+                    parameter_name=name,
+                    inspect_cmd=inspect_cmd,
+                    target_perf=target_perf,
+                    executor=executor,
+                    interface_name=interface_name,
+                )
+                if not needs_fix:
+                    continue
+                detected_name = f"{group_id}.{name}"
+                detected.append(detected_name)
+                self.logger.stage_detail(
+                    "env_diagnostic",
+                    f"Hierarchy mismatch: {detected_name} (target={target_perf or 'unspecified'})",
+                )
+                fix_cmd = self._hierarchy_fix_command(name, interface_name)
+                if fix_cmd is None:
+                    self.logger.stage_detail(
+                        "env_diagnostic",
+                        f"  {detected_name}: signal only (no deterministic fix command).",
+                    )
+                    continue
+                if not allow_fix:
+                    self.logger.stage_detail(
+                        "env_diagnostic",
+                        f"  {detected_name}: fix available but "
+                        "policy.allow_environment_cleanup=false.",
+                    )
+                    continue
+                self.logger.stage_detail("env_diagnostic", f"  Fixing: {fix_cmd}")
+                fix_result = executor.run(fix_cmd)
+                if fix_result.exit_code == 0:
+                    fixed.append(detected_name)
+                    self.logger.stage_detail(
+                        "env_diagnostic",
+                        f"  {detected_name}: fixed successfully.",
+                    )
+                else:
+                    detail = fix_result.stderr.strip() or fix_result.stdout.strip()
+                    self.logger.stage_detail(
+                        "env_diagnostic",
+                        f"  {detected_name}: fix failed "
+                        f"(exit={fix_result.exit_code}): {detail}",
+                    )
+
+    def _hierarchy_parameter_needs_fix(
+        self,
+        *,
+        parameter_name: str,
+        inspect_cmd: str,
+        target_perf: str,
+        executor: CommandExecutor,
+        interface_name: str,
+    ) -> bool:
+        result = executor.run(inspect_cmd.replace("{interface}", interface_name))
+        if result.exit_code != 0:
+            return False
+        output = result.stdout.strip()
+        value = self._normalize_inspect_value(output)
+        name = parameter_name.strip().lower()
+        if name == "cpuquota":
+            low = value.lower()
+            return low not in {"", "0", "0%", "infinity"}
+        if name == "memorymax":
+            low = value.lower()
+            return low not in {"", "infinity", "18446744073709551615"}
+        if name in {"cpuweight", "ioweight"}:
+            if value in {"", "[not set]"}:
+                return False
+            number = self._first_int(value)
+            return number is not None and number != 100
+        if name == "limitnofile":
+            minimum = self._min_two_ints(output)
+            return minimum is not None and minimum < 1_048_576
+        if name == "limitnproc":
+            minimum = self._min_two_ints(output)
+            return minimum is not None and minimum < 65_535
+        if name == "irqbalance":
+            return value.strip().lower() != "active"
+        if name == "thp":
+            return "[madvise]" not in output and value.strip().lower() != "madvise"
+        if name == "cpu_governor":
+            return value.strip().lower() != "performance"
+        if name in {"tc_bandwidth_cap", "tc_latency"}:
+            if target_perf.strip().lower() != "none":
+                return False
+            low = output.lower()
+            return any(token in low for token in ("netem", "tbf", "htb"))
+        return False
+
+    def _hierarchy_fix_command(self, parameter_name: str, interface_name: str) -> str | None:
+        name = parameter_name.strip().lower()
+        if name == "cpuquota":
+            return "systemctl set-property nginx.service CPUQuota="
+        if name == "memorymax":
+            return "systemctl set-property nginx.service MemoryMax="
+        if name == "cpuweight":
+            return "systemctl set-property nginx.service CPUWeight=100"
+        if name == "ioweight":
+            return "systemctl set-property nginx.service IOWeight=100"
+        if name == "limitnofile":
+            return "systemctl set-property nginx.service LimitNOFILE=1048576 && systemctl restart nginx.service"
+        if name == "limitnproc":
+            return "systemctl set-property nginx.service LimitNPROC=65535 && systemctl restart nginx.service"
+        if name == "irqbalance":
+            return "systemctl enable --now irqbalance"
+        if name == "thp":
+            return "echo madvise > /sys/kernel/mm/transparent_hugepage/enabled"
+        if name == "cpu_governor":
+            return "cpupower frequency-set -g performance"
+        if name in {"tc_bandwidth_cap", "tc_latency"}:
+            return f"tc qdisc del dev {interface_name} root 2>/dev/null || true"
+        return None
+
+    def _normalize_inspect_value(self, output: str) -> str:
+        for line in output.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if "=" in text:
+                return text.split("=", 1)[1].strip()
+            return text
+        return ""
+
+    def _first_int(self, text: str) -> int | None:
+        match = re.search(r"(\d+)", text)
+        if match is None:
+            return None
+        return int(match.group(1))
+
+    def _min_two_ints(self, text: str) -> int | None:
+        values = [int(value) for value in re.findall(r"\d+", text)]
+        if len(values) < 2:
+            return None
+        return min(values[0], values[1])
 
     def run_tune(
         self,

@@ -108,7 +108,7 @@ tunable_surface:
         val=$(systemctl show nginx.service --property=CPUQuota --value 2>/dev/null);
         case "$val" in infinity|"") echo 0;; *%) echo "${val%%%}";; *) echo 0;; esac
       threshold_above: 0
-      fix_command: "systemctl set-property nginx.service CPUQuota= && systemctl daemon-reload"
+      fix_command: "systemctl set-property nginx.service CPUQuota="
       priority: critical
       detail: "Systemd CPUQuota caps nginx CPU below 100%; removing quota"
 
@@ -117,7 +117,7 @@ tunable_surface:
         val=$(systemctl show nginx.service --property=MemoryMax --value 2>/dev/null);
         case "$val" in infinity|"") echo 0;; *) echo "$val";; esac
       threshold_above: 0
-      fix_command: "systemctl set-property nginx.service MemoryMax=infinity && systemctl daemon-reload"
+      fix_command: "systemctl set-property nginx.service MemoryMax="
       priority: critical
       detail: "Systemd MemoryMax restricts nginx memory; removing cap"
 
@@ -127,10 +127,8 @@ tunable_surface:
         case "$val" in infinity|"") echo 999999;; *) echo "$val";; esac
       threshold_below: 65536
       fix_command: >-
-        mkdir -p /etc/systemd/system/nginx.service.d &&
-        printf '[Service]\nLimitNOFILE=524288\n' > /etc/systemd/system/nginx.service.d/hosttune-nofile.conf &&
-        systemctl daemon-reload &&
-        systemctl restart nginx
+        systemctl set-property nginx.service LimitNOFILE=524288 &&
+        systemctl restart nginx.service
       priority: critical
       detail: "Systemd LimitNOFILE too low; nginx will hit fd exhaustion under load"
 
@@ -139,7 +137,7 @@ tunable_surface:
         val=$(systemctl show nginx.service --property=IOWeight --value 2>/dev/null);
         case "$val" in ""|"[not set]") echo 100;; *) echo "$val";; esac
       threshold_below: 50
-      fix_command: "systemctl set-property nginx.service IOWeight=100 && systemctl daemon-reload"
+      fix_command: "systemctl set-property nginx.service IOWeight=100"
       priority: high
       detail: "Systemd IOWeight too low; nginx I/O deprioritized vs other services"
 
@@ -148,7 +146,7 @@ tunable_surface:
         val=$(systemctl show nginx.service --property=CPUWeight --value 2>/dev/null);
         case "$val" in ""|"[not set]") echo 100;; *) echo "$val";; esac
       threshold_below: 50
-      fix_command: "systemctl set-property nginx.service CPUWeight=100 && systemctl daemon-reload"
+      fix_command: "systemctl set-property nginx.service CPUWeight=100"
       priority: high
       detail: "Systemd CPUWeight too low; nginx CPU deprioritized vs other services"
 

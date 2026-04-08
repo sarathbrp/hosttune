@@ -59,11 +59,35 @@ class EnvironmentBlocker:
 
 
 @dataclass(frozen=True)
+class HostPerformanceHierarchyParameter:
+    name: str
+    target_perf: str
+    inspect_cmd: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class HostPerformanceHierarchyGroup:
+    group_id: str
+    description: str
+    parameters: tuple[HostPerformanceHierarchyParameter, ...]
+    depends_on_groups: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class HostPerformanceHierarchy:
+    version: str | None
+    description: str | None
+    groups: tuple[HostPerformanceHierarchyGroup, ...]
+
+
+@dataclass(frozen=True)
 class HostTunableSurface:
     network_queues: NetworkQueueConstraint | None
     cpu_governor: CpuGovernorConstraint | None
     host_sysctls: tuple[HostSysctlTunable, ...]
     environment_blockers: tuple[EnvironmentBlocker, ...] = ()
+    performance_hierarchy: HostPerformanceHierarchy | None = None
 
 
 @dataclass(frozen=True)

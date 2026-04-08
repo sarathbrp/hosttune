@@ -33,6 +33,21 @@ def _valid_data() -> dict:
                     "rationale_hint": "Max receive socket buffer",
                 }
             ],
+            "performance_hierarchy": {
+                "version": "1.0",
+                "description": "host hierarchy",
+                "groups": {
+                    "1_systemd_resource_limits": {
+                        "description": "systemd limits",
+                        "parameters": {
+                            "CPUQuota": {
+                                "target_perf": "none",
+                                "inspect_cmd": "systemctl show nginx.service -p CPUQuota",
+                            }
+                        },
+                    }
+                },
+            },
         },
     }
 
@@ -50,6 +65,8 @@ def test_validator_parses_valid_rhel9_profile() -> None:
     assert profile.tunable_surface.cpu_governor.preferred_governor == "performance"
     assert len(profile.tunable_surface.host_sysctls) == 1
     assert profile.tunable_surface.host_sysctls[0].name == "net.core.rmem_max"
+    assert profile.tunable_surface.performance_hierarchy is not None
+    assert profile.tunable_surface.performance_hierarchy.groups[0].group_id == "1_systemd_resource_limits"
 
 
 def test_validator_accepts_null_network_queues_for_vm() -> None:
@@ -70,4 +87,11 @@ def test_validator_raises_on_invalid_priority_tier() -> None:
     data = _valid_data()
     data["tunable_surface"]["network_queues"]["priority_tier"] = "critical"
     with pytest.raises(ValueError):
+        HostProfileValidator().validate(data)
+
+
+def test_validator_rejects_invalid_performance_hierarchy_shape() -> None:
+    data = _valid_data()
+    data["tunable_surface"]["performance_hierarchy"] = ["invalid"]
+    with pytest.raises(ValueError, match="performance_hierarchy"):
         HostProfileValidator().validate(data)
