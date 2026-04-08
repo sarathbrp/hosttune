@@ -227,7 +227,7 @@ class HealthValidator:
                 'awk \'BEGIN{section=""} '
                 '/Current hardware settings:/{section="current"; next} '
                 '/Pre-set maximums:/{section="max"; next} '
-                f'section=="current" && $1=="{ring_name}:" {{print $2; exit}}\''
+                f'section=="current" && tolower($1)=="{ring_name}:" {{print $2; exit}}\''
             )
             result = executor.run(command)
             observed = result.stdout.strip()
