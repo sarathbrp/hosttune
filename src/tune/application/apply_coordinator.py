@@ -220,7 +220,7 @@ class NginxDirectiveApplier:
             ).strip()
             msg = (
                 f"nginx syntax error after writing {hypothesis.parameter_name!r}="
-                f"{hypothesis.proposed_value!r!r}; config restored. "
+                f"{hypothesis.proposed_value!r}; config restored. "
                 f"Error: {clean or syntax_result.stdout.strip()}"
             )
             raise ValueError(msg)
