@@ -92,6 +92,7 @@ class UnifiedResolver:
             layer_fixed = False
             layer_deferred = False
             layer_hyps: list[TuningHypothesis] = []
+            decision_rows: list[tuple[str, str, str, str, str]] = []
 
             for param_key, param_spec in params.items():
                 candidate = catalog_index.get(param_key)
@@ -112,34 +113,36 @@ class UnifiedResolver:
                     blocked_set=blocked_set,
                 )
                 if proposed is None:
-                    self.logger.stage_detail(
-                        "tune",
-                        f"Resolver [{layer_name}] "
-                        f"{param_key}: "
-                        f"found={candidate.current_value} "
-                        f"action=SKIP (already at target)",
-                    )
+                    decision_rows.append((
+                        param_key,
+                        str(candidate.current_value),
+                        "-",
+                        "-",
+                        "SKIP",
+                    ))
                     continue
 
                 if proposed.resolution_source == "llm":
                     layer_deferred = True
-                    self.logger.stage_detail(
-                        "tune",
-                        f"Resolver [{layer_name}] "
-                        f"{param_key}: "
-                        f"found={candidate.current_value} "
-                        f"action=DEFER (for LLM in OPTIMIZE phase)",
-                    )
+                    decision_rows.append((
+                        param_key,
+                        str(candidate.current_value),
+                        "-",
+                        "llm",
+                        "DEFER",
+                    ))
                     continue
 
                 if not self._check_constraint(
                     param_spec, proposed.proposed_value, all_resolved
                 ):
-                    self.logger.stage_detail(
-                        "tune",
-                        f"Resolver: {param_key}={proposed.proposed_value} "
-                        f"constraint not satisfied; skipping.",
-                    )
+                    decision_rows.append((
+                        param_key,
+                        str(candidate.current_value),
+                        proposed.proposed_value,
+                        proposed.resolution_source,
+                        "SKIP (constraint)",
+                    ))
                     continue
 
                 layer_fixed = True
@@ -160,15 +163,17 @@ class UnifiedResolver:
                 )
                 layer_hyps.append(hyp)
                 all_resolved.append(hyp)
-                self.logger.stage_detail(
-                    "tune",
-                    f"Resolver [{layer_name}] "
-                    f"{param_key}: "
-                    f"found={candidate.current_value} "
-                    f"target={proposed.proposed_value} "
-                    f"source={proposed.resolution_source} "
-                    f"action=APPLY",
-                )
+                decision_rows.append((
+                    param_key,
+                    str(candidate.current_value),
+                    proposed.proposed_value,
+                    proposed.resolution_source,
+                    "APPLY",
+                ))
+
+            if decision_rows:
+                from tune.application.format_table import resolver_layer_table
+                self.logger.stage_detail("tune", resolver_layer_table(layer_name, decision_rows))
 
             if layer_hyps:
                 layer_hypotheses.append((layer_name, layer_hyps))

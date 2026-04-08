@@ -189,9 +189,13 @@ class TuneEngine:
                     f"{h.parameter_key}={h.proposed_value}"
                     for h in layer_hyps
                 )
+                from tune.application.format_table import resolver_apply_table
                 self.logger.stage_detail(
                     "tune",
-                    f"Resolver applying {layer_name}: {param_names}",
+                    resolver_apply_table(
+                        layer_name,
+                        [(h.parameter_key, h.proposed_value) for h in layer_hyps],
+                    ),
                 )
                 pre_count = len(state.active_changes)
                 self._apply_resolver_layer(
@@ -210,11 +214,11 @@ class TuneEngine:
                 else:
                     layer_statuses[layer_name] = LayerStatus.ROLLED_BACK.value
             state.layer_statuses = layer_statuses
+            from tune.application.format_table import resolver_summary_table
+            layer_param_counts = {name: len(hyps) for name, hyps in layer_hypotheses}
             self.logger.stage_detail(
                 "tune",
-                f"Unified resolver: {total_applied} params retained "
-                f"across {len(layer_hypotheses)} layers. "
-                f"Statuses: {layer_statuses}",
+                resolver_summary_table(total_applied, layer_statuses, layer_param_counts),
             )
         else:
             # --- LEGACY PATH ---
@@ -791,13 +795,13 @@ class TuneEngine:
         valid: list[TuningHypothesis] = []
         primary_pre_apply = self.pre_apply_validator.validate(primary_candidate, primary)
         if not primary_pre_apply.allowed:
+            from tune.application.format_table import pre_apply_rejection_table
             self.logger.stage_detail(
                 "tune",
-                (
-                    "Pre-apply rejection: "
-                    f"tuning_layer={primary_candidate.tuning_layer.value} "
-                    f"parameter={primary.parameter_key} "
-                    f"reason={primary_pre_apply.reason}"
+                pre_apply_rejection_table(
+                    primary_candidate.tuning_layer.value,
+                    primary.parameter_key,
+                    primary_pre_apply.reason,
                 ),
             )
             self._record_kb_event(
@@ -859,16 +863,16 @@ class TuneEngine:
                 ac = self.apply_coordinator.apply(context, h, target_executor)
                 applied_changes[h.parameter_key] = ac
                 h_candidate = self._find_candidate(candidates, h.parameter_key)
+                from tune.application.format_table import apply_table
                 self.logger.stage_detail(
                     "tune",
-                    (
-                        "Apply: "
-                        f"tuning_layer={h_candidate.tuning_layer.value} "
-                        f"parameter={h.parameter_key} "
-                        f"previous={ac.previous_value} "
-                        f"applied={ac.applied_value} "
-                        f"mode={ac.apply_mode.value}"
-                    ),
+                    apply_table([(
+                        h.parameter_key,
+                        h_candidate.tuning_layer.value,
+                        str(ac.previous_value),
+                        str(ac.applied_value),
+                        ac.apply_mode.value,
+                    )]),
                 )
                 self._record_kb_event(
                     context=context,
@@ -886,7 +890,8 @@ class TuneEngine:
                 )
             except Exception as exc:
                 apply_error = exc
-                self.logger.stage_detail("tune", f"Apply failed for {h.parameter_key}: {exc}")
+                from tune.application.format_table import apply_failed_table
+                self.logger.stage_detail("tune", apply_failed_table(h.parameter_key, str(exc)))
                 self._record_kb_event(
                     context=context,
                     component="tuning_executor",
