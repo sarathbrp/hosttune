@@ -85,6 +85,11 @@ tunable_surface:
       apply_mode: reload
       forbidden_values:
         - "off"
+        - "on"          # 'on' is INVALID nginx syntax — use 'max=N inactive=Xs'
+      rationale_hint: >-
+        Valid syntax: 'max=200000 inactive=20s' (NOT 'on' — that is a syntax error).
+        max= sets the maximum number of cached entries; inactive= is the TTL.
+        Example: open_file_cache max=200000 inactive=20s;
     gzip:
       value_type: enum
       priority_tier: medium

@@ -208,6 +208,22 @@ class NginxDirectiveApplier:
                 directive_name=hypothesis.parameter_name,
             )
         )
+        # Validate config syntax BEFORE reloading — catches invalid directive values
+        # (e.g. 'open_file_cache on' instead of 'open_file_cache max=N inactive=Xs')
+        # and restores the original file immediately to avoid service disruption.
+        syntax_result = executor.run("nginx -t 2>&1")
+        if syntax_result.exit_code != 0:
+            executor.run(restore_command)
+            clean = "\n".join(
+                line for line in syntax_result.stdout.splitlines()
+                if "Identity file" not in line and "not accessible" not in line
+            ).strip()
+            msg = (
+                f"nginx syntax error after writing {hypothesis.parameter_name!r}="
+                f"{hypothesis.proposed_value!r!r}; config restored. "
+                f"Error: {clean or syntax_result.stdout.strip()}"
+            )
+            raise ValueError(msg)
         # Reload/restart nginx so the edited config takes effect before benchmarking.
         service_cmd = _service_reload_command(context, hypothesis.apply_mode)
         if service_cmd:
